@@ -407,7 +407,6 @@ void ModbusGatewayWorker::enterOffline()
 {
     m_state = LinkState::Offline;
     m_queue.close();
-    m_queue.clear();
     m_hasValidSnapshot = false;
     m_busy = false;
     // An in-flight write must still report its result (IPlcGateway contract:
@@ -419,7 +418,21 @@ void ModbusGatewayWorker::enterOffline()
                             QStringLiteral("link went offline"));
     }
     m_inFlight = std::nullopt;
+    // A write ack'd but not yet confirmed by readback, and a write queued but
+    // not yet dispatched, must both report failure — never silently dropped.
+    for (auto it = m_pendingConfirmations.constBegin();
+         it != m_pendingConfirmations.constEnd(); ++it) {
+        emit writeCompleted(it->address, false, QStringLiteral("offline"));
+    }
     m_pendingConfirmations.clear();
+    ModbusRequest queued;
+    while (m_queue.next(queued)) {
+        if (queued.kind == ModbusRequest::Kind::WriteCoil
+            || queued.kind == ModbusRequest::Kind::WriteRegister) {
+            emit writeCompleted(queued.address, false, QStringLiteral("offline"));
+        }
+    }
+    m_queue.clear();
     emit connectionStateChanged(false);
     scheduleReconnect();
 }
@@ -457,6 +470,15 @@ void ModbusGatewayWorker::tryDispatch()
             || req.kind == ModbusRequest::Kind::WriteRegister) {
             emit writeCompleted(req.address, false,
                                 QStringLiteral("send failed"));
+        } else if (req.isReadback) {
+            // A readback that could not be sent can never confirm the write:
+            // fail it and drop the pending confirmation so it never leaks.
+            const auto it = m_pendingConfirmations.constFind(req.requestId);
+            if (it != m_pendingConfirmations.constEnd()) {
+                emit writeCompleted(it->address, false,
+                                    QStringLiteral("readback send failed"));
+                m_pendingConfirmations.erase(it);
+            }
         }
         m_inFlight = std::nullopt;
         m_busy = false;
@@ -627,6 +649,7 @@ void ModbusGatewayWorker::handleWriteResult(const ModbusRequest &req, const Tran
     }
     // Write acknowledged: confirm by readback (spec §8.4).
     PendingWrite pw;
+    pw.address = req.address;
     pw.expected = req.value;
     pw.retriesLeft = m_cfg.readRetries;
     pw.requestId = req.id;

@@ -105,6 +105,7 @@ private:
     void checkHeartbeatFreeze(quint16 heartbeat);
 
     struct PendingWrite {
+        quint16 address = 0; // address of the original write request
         quint16 expected = 0;
         int retriesLeft = 0;
         quint64 requestId = 0; // id of the original write request

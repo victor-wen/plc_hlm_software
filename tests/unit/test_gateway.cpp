@@ -96,6 +96,8 @@ private slots:
     void duplicateWritesBothGetConfirmations();
     void sendFailureEmitsWriteCompletedFalse();
     void offlineClearEmitsWriteCompletedFalseForInFlightWrite();
+    void readbackSendFailureEmitsWriteCompletedFalse();
+    void offlineReportsPendingAndQueuedWrites();
 
 private:
     FakeTransport *m_transport = nullptr;
@@ -486,6 +488,65 @@ void GatewayTest::offlineClearEmitsWriteCompletedFalseForInFlightWrite()
     // A late transferFinished for the dropped write must not double-report.
     m_transport->completeOk({});
     QCOMPARE(m_writeResults.size(), 1);
+}
+
+void GatewayTest::readbackSendFailureEmitsWriteCompletedFalse()
+{
+    m_transport->completeOk(fastBlock(1));
+    QVERIFY(m_worker->isOnline());
+
+    // Write dispatched; the readback's send() will fail.
+    m_worker->submitWriteCoil(100, true, CommandPriority::Normal);
+    QCOMPARE(m_transport->sent.size(), 2);
+    QCOMPARE(m_transport->sent.last().kind, ModbusRequest::Kind::WriteCoil);
+
+    // Acknowledge the write; the readback is dispatched next and its send()
+    // returns false. The write must still report its result and the pending
+    // confirmation must be erased (no leak).
+    m_transport->m_sendFails = true;
+    m_transport->completeOk({}); // write acknowledged -> readback send fails
+    QCOMPARE(m_writeResults.size(), 1);
+    QCOMPARE(m_writeResults.first().first, quint16(100));
+    QCOMPARE(m_writeResults.first().second, false);
+
+    // 1st/2nd such failure must NOT take the link offline (3-failure rule).
+    QVERIFY(m_worker->isOnline());
+    QVERIFY(m_online);
+
+    // No pending confirmation may leak: a later poll at the same address is
+    // a normal poll, not a readback.
+    m_transport->m_sendFails = false;
+    m_now = 300;
+    m_worker->onPollTick();
+    m_transport->completeOk(fastBlock(2));
+    QCOMPARE(m_snapshots, 2);
+    QVERIFY(m_worker->isOnline());
+}
+
+void GatewayTest::offlineReportsPendingAndQueuedWrites()
+{
+    m_transport->completeOk(fastBlock(1));
+    QVERIFY(m_worker->isOnline());
+
+    // A write queued but not yet dispatched (a poll is in flight).
+    m_now = 300;
+    m_worker->onPollTick();
+    QCOMPARE(m_transport->sent.size(), 2);
+    m_worker->submitWriteCoil(200, true, CommandPriority::Normal);
+    QCOMPARE(m_transport->sent.size(), 2); // still only the poll in flight
+
+    // Heartbeat freeze (D140 unchanged 3 s) takes the link offline while the
+    // write is still queued. enterOffline() must report the queued write —
+    // never silently dropped.
+    m_now = 3200;
+    m_worker->onPollTick();
+    m_transport->completeOk(fastBlock(1)); // heartbeat still 1 -> freeze
+    QVERIFY(!m_worker->isOnline());
+    QVERIFY(!m_online);
+
+    QCOMPARE(m_writeResults.size(), 1);
+    QCOMPARE(m_writeResults.at(0).first, quint16(200));
+    QCOMPARE(m_writeResults.at(0).second, false);
 }
 
 QTEST_GUILESS_MAIN(GatewayTest)
