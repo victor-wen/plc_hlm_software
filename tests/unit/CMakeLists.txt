@@ -8,3 +8,11 @@ target_link_libraries(test_smoke PRIVATE
 )
 
 add_test(NAME smoke COMMAND test_smoke)
+
+add_executable(test_snapshot_decode test_snapshot_decode.cpp)
+target_link_libraries(test_snapshot_decode PRIVATE
+    hlm_core
+    Qt6::Test
+)
+
+add_test(NAME snapshot_decode COMMAND test_snapshot_decode)
