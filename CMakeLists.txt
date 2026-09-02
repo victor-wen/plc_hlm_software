@@ -59,10 +59,19 @@ target_link_libraries(hlm_core PUBLIC
 )
 target_compile_definitions(hlm_core PUBLIC HLM_VERSION_STRING="${PROJECT_VERSION}")
 
+# hlm_simulator: shared H3U simulation state model + injectable clock
+# (spec §14.1). Used by both the in-process SimulatedPlcGateway (Task 6) and
+# the standalone plc_simulator (Task 18). Qt Core only.
+add_library(hlm_simulator STATIC
+    src/adapters/simulator/simulation_clock.cpp
+    src/adapters/simulator/h3u_simulation_model.cpp
+)
+target_include_directories(hlm_simulator PUBLIC src)
+target_link_libraries(hlm_simulator PUBLIC Qt6::Core)
+
 # Planned targets added by later tasks (do not create empty targets now):
 #   hlm_modbus    -> Qt6::SerialBus Qt6::SerialPort
 #   hlm_sqlite    -> Qt6::Sql
-#   hlm_simulator -> Qt6::Core
 #   hlm_vision    -> OpenCV::core (guarded by HLM_ENABLE_VISION)
 #   hlm_ui        -> Qt6::Widgets
 #   hlm_app       -> all production modules above
