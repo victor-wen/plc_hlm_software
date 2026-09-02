@@ -240,7 +240,15 @@ ControlCoordinator::CommandResult ControlCoordinator::estopSet()
     }
     // M100=1 is idempotent and safe to retry; the UI shows 待确认 until the
     // snapshot shows M0=1 or M100=1 (spec §8.4).
+    // The newest command wins: a set supersedes any in-flight release, so the
+    // stale release pending state is cleared and its flow converges instead of
+    // hanging on 待确认 forever (spec §13: every flow converges to a result).
     m_estopSetPending = true;
+    if (m_estopReleasePending) {
+        m_estopReleasePending = false;
+        emit commandResult(Command::EstopRelease, false,
+                           QStringLiteral("已被新的急停置位取代"));
+    }
     emit commandAccepted(Command::EstopSet);
     beginWrite(Command::EstopSet, kM100, true, CommandPriority::Safety);
     return {true, QString()};
@@ -255,6 +263,11 @@ ControlCoordinator::CommandResult ControlCoordinator::estopRelease()
         return g;
     }
     m_estopReleasePending = true;
+    if (m_estopSetPending) {
+        m_estopSetPending = false;
+        emit commandResult(Command::EstopSet, false,
+                           QStringLiteral("已被新的急停解除取代"));
+    }
     emit commandAccepted(Command::EstopRelease);
     beginWrite(Command::EstopRelease, kM100, false, CommandPriority::Safety);
     return {true, QString()};

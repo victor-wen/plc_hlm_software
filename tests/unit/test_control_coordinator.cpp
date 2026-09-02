@@ -73,6 +73,7 @@ private slots:
     void estopSetByAnyUser();
     void estopReleaseAdminOnly();
     void estopNotAutoClearedOnLogout();
+    void estopSetDuringReleaseConverges();
 
     // --- manual / bypass -----------------------------------------------------
     void manualHoldWritesOnPressAndRelease();
@@ -742,6 +743,54 @@ void ControlCoordinatorTest::estopNotAutoClearedOnLogout()
     gw.tick();
     QVERIFY(gw.lastSnapshot().m100()); // M100 never auto-cleared
     QVERIFY(gw.lastSnapshot().m0());
+}
+
+// A release (M100=0) is in flight when a user issues an estop set (M100=1)
+// before the release snapshot confirms. The newest command (set) must win:
+// the stale release pending state is cleared so the release flow converges
+// (reports failure/cancelled) instead of hanging on 待确认 forever, and the
+// estop set still works. Spec §13: every flow converges to a defined result.
+void ControlCoordinatorTest::estopSetDuringReleaseConverges()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+
+    // Estop is set (M0=1, M100=1).
+    QVERIFY(c->estopSet().accepted);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m0());
+    QVERIFY(gw.lastSnapshot().m100());
+
+    // The release flow must converge (report a result) rather than hang.
+    bool releaseResult = false;
+    bool releaseReported = false;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &) {
+                if (cmd == Command::EstopRelease) {
+                    releaseResult = ok;
+                    releaseReported = true;
+                }
+            });
+
+    // Admin issues a release (M100=0 in flight, not yet snapshot-confirmed).
+    QVERIFY(c->estopRelease().accepted);
+
+    // Before the release snapshot confirms, a user issues an estop set. The
+    // newest command wins: the stale release pending state must be cleared.
+    QVERIFY(c->estopSet().accepted);
+
+    // The estop set still works: M100=1 and M0=1.
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m100());
+    QVERIFY(gw.lastSnapshot().m0());
+
+    // The release flow converged (superseded by the newer set), so no 待确认
+    // state persists.
+    QVERIFY(releaseReported);
+    QVERIFY(!releaseResult); // superseded: the release did not take effect
 }
 
 // --- manual / bypass --------------------------------------------------------
