@@ -87,6 +87,12 @@ private slots:
     void writeThenReadbackMismatchRetries();
     void readRetriesOnce();
     void reconnectRequiresFullSnapshotBeforeOnline();
+    void snapshotMetatypeRegistered();
+    void reconnectResetsFailureCounterAndBackoff();
+    void failedWriteEmitsWriteCompleted();
+    void failedReadbackEmitsWriteCompletedAndNoLeak();
+    void pollAtPendingWriteAddressNotConsumedAsReadback();
+    void duplicateWritesBothGetConfirmations();
 
 private:
     FakeTransport *m_transport = nullptr;
@@ -252,6 +258,161 @@ void GatewayTest::reconnectRequiresFullSnapshotBeforeOnline()
     m_transport->completeOk(fastBlock(3));
     QVERIFY(m_worker->isOnline());
     QVERIFY(m_online);
+}
+
+void GatewayTest::snapshotMetatypeRegistered()
+{
+    // The facade registers the DeviceSnapshot metatype in its constructor so
+    // queued worker->facade snapshot delivery works across threads.
+    QtModbusPlcGateway::Config cfg;
+    cfg.portName = QStringLiteral("fake");
+    QtModbusPlcGateway facade(cfg);
+    QVERIFY(QMetaType::fromType<hlm::DeviceSnapshot>().isRegistered());
+}
+
+void GatewayTest::reconnectResetsFailureCounterAndBackoff()
+{
+    m_transport->completeOk(fastBlock(1));
+    QVERIFY(m_worker->isOnline());
+
+    // Three consecutive transfer failures -> offline (each read retried once).
+    m_now = 300;
+    m_worker->onPollTick();
+    m_transport->completeFail();
+    m_transport->completeFail();
+    m_now = 600;
+    m_worker->onPollTick();
+    m_transport->completeFail();
+    m_transport->completeFail();
+    m_now = 900;
+    m_worker->onPollTick();
+    m_transport->completeFail();
+    m_transport->completeFail();
+    QVERIFY(!m_worker->isOnline());
+
+    // First reconnect attempt: backoff starts at 1 s.
+    m_worker->onReconnectTick();
+    QCOMPARE(m_worker->reconnectDelayMs(), 1000);
+    m_transport->completeOk(fastBlock(2)); // full snapshot -> online again
+    QVERIFY(m_worker->isOnline());
+
+    // A single subsequent transfer failure must NOT take the link offline:
+    // onReconnectSucceeded() reset the consecutive-failure counter.
+    m_now = 1200;
+    m_worker->onPollTick();
+    m_transport->completeFail(); // fast poll fails -> retry
+    m_transport->completeFail(); // retry fails -> failure #1 only
+    QVERIFY(m_worker->isOnline());
+
+    // And the backoff schedule restarted at 1 s for the next episode.
+    m_now = 1500;
+    m_worker->onPollTick();
+    m_transport->completeFail();
+    m_transport->completeFail();
+    m_now = 1800;
+    m_worker->onPollTick();
+    m_transport->completeFail();
+    m_transport->completeFail();
+    QVERIFY(!m_worker->isOnline());
+    m_worker->onReconnectTick();
+    QCOMPARE(m_worker->reconnectDelayMs(), 1000);
+}
+
+void GatewayTest::failedWriteEmitsWriteCompleted()
+{
+    m_transport->completeOk(fastBlock(1));
+    QVERIFY(m_worker->isOnline());
+
+    m_worker->submitWriteCoil(100, true, CommandPriority::Normal);
+    QCOMPARE(m_transport->sent.size(), 2);
+    m_transport->completeFail(); // write transfer fails
+
+    QCOMPARE(m_writeResults.size(), 1);
+    QCOMPARE(m_writeResults.first().second, false);
+}
+
+void GatewayTest::failedReadbackEmitsWriteCompletedAndNoLeak()
+{
+    m_transport->completeOk(fastBlock(1));
+    QVERIFY(m_worker->isOnline());
+
+    m_worker->submitWriteCoil(100, true, CommandPriority::Normal);
+    m_transport->completeOk({}); // write acknowledged
+    QCOMPARE(m_transport->sent.size(), 3);
+    m_transport->completeFail(); // readback transfer fails
+
+    QCOMPARE(m_writeResults.size(), 1);
+    QCOMPARE(m_writeResults.first().second, false);
+
+    // The pending confirmation must not leak: a later poll at the same
+    // address is a normal poll, not a readback.
+    m_now = 300;
+    m_worker->onPollTick();
+    m_transport->completeOk(fastBlock(2));
+    QCOMPARE(m_snapshots, 2);
+    QVERIFY(m_worker->isOnline());
+}
+
+void GatewayTest::pollAtPendingWriteAddressNotConsumedAsReadback()
+{
+    m_transport->completeOk(fastBlock(1));
+    QVERIFY(m_worker->isOnline());
+
+    // Write 200 in flight, then enqueue a fast poll (D100, address 100) so
+    // it sits in the queue. Four write cycles (200-203) dispatch while the
+    // fast poll waits, pushing its skip counter to 4 (anti-starvation).
+    m_worker->submitWriteCoil(200, true, CommandPriority::Normal);
+    m_now = 300;
+    m_worker->onPollTick(); // fast poll enqueued (write 200 in flight)
+    m_transport->completeOk({}); // write 200 ack -> readback 200 dispatched
+    m_worker->submitWriteCoil(201, true, CommandPriority::Normal);
+    m_transport->completeOk({0x0001}); // readback 200 confirms
+    m_transport->completeOk({}); // write 201 ack -> readback 201 dispatched
+    m_worker->submitWriteCoil(202, true, CommandPriority::Normal);
+    m_transport->completeOk({0x0001}); // readback 201 confirms
+    m_transport->completeOk({}); // write 202 ack -> readback 202 dispatched
+    m_worker->submitWriteCoil(203, true, CommandPriority::Normal);
+    m_transport->completeOk({0x0001}); // readback 202 confirms
+    m_transport->completeOk({}); // write 203 ack -> readback 203 dispatched
+    m_worker->submitWriteCoil(100, true, CommandPriority::Normal);
+    m_transport->completeOk({0x0001}); // readback 203 confirms
+    m_transport->completeOk({}); // write 100 ack -> readback 100 enqueued
+
+    // The fast poll (skip=4) is forced to the front and dispatches BEFORE
+    // the M100 readback, even though both target address 100.
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::FastPoll);
+
+    // The fast poll at address 100 must be handled as a poll, not consumed
+    // as the readback: its data is delivered as a snapshot.
+    m_transport->completeOk(fastBlock(2));
+    QCOMPARE(m_snapshots, 2);
+
+    // The M100 write is still pending; its own readback confirms it.
+    QCOMPARE(m_writeResults.size(), 4);
+    m_transport->completeOk({0x0001}); // readback 100 confirms
+    QCOMPARE(m_writeResults.size(), 5);
+    QCOMPARE(m_writeResults.last().second, true);
+    QCOMPARE(m_writeResults.last().first, quint16(100));
+}
+
+void GatewayTest::duplicateWritesBothGetConfirmations()
+{
+    m_transport->completeOk(fastBlock(1));
+    QVERIFY(m_worker->isOnline());
+
+    // Two writes to the same address; the second is queued behind the first
+    // write + its readback. Dispatch order: write #1, write #2, readback #1,
+    // readback #2 (both writes are level 4 and enqueued before the readbacks).
+    m_worker->submitWriteCoil(100, true, CommandPriority::Normal);
+    m_worker->submitWriteCoil(100, false, CommandPriority::Normal);
+    m_transport->completeOk({}); // write #1 acknowledged
+    m_transport->completeOk({}); // write #2 acknowledged
+    m_transport->completeOk({0x0001}); // readback #1 confirms (M100 = 1)
+    m_transport->completeOk({0x0000}); // readback #2 confirms (M100 = 0)
+
+    QCOMPARE(m_writeResults.size(), 2);
+    QCOMPARE(m_writeResults.at(0).second, true);
+    QCOMPARE(m_writeResults.at(1).second, true);
 }
 
 QTEST_GUILESS_MAIN(GatewayTest)

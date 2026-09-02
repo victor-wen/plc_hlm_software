@@ -122,6 +122,10 @@ QtModbusPlcGateway::QtModbusPlcGateway(const Config &cfg, QObject *parent)
     : IPlcGateway(parent)
     , m_cfg(cfg)
 {
+    // DeviceSnapshot crosses the worker->facade thread boundary via a queued
+    // connection; the metatype must be registered or Qt drops every snapshot.
+    qRegisterMetaType<hlm::DeviceSnapshot>();
+
     m_worker = new ModbusGatewayWorker(m_cfg, nullptr, nullptr);
     m_worker->moveToThread(&m_thread);
 
@@ -146,6 +150,10 @@ QtModbusPlcGateway::~QtModbusPlcGateway()
 
 void QtModbusPlcGateway::start()
 {
+    if (m_started)
+        return; // double start() would leak the old transport and
+                // double-connect transferFinished
+    m_started = true;
     m_thread.start();
     QMetaObject::invokeMethod(m_worker, "start", Qt::QueuedConnection);
 }
@@ -228,6 +236,9 @@ void ModbusGatewayWorker::setPollIntervals(int fastMs, int homeMs, int commandMs
 
 void ModbusGatewayWorker::start()
 {
+    if (m_started)
+        return; // double start() would leak the old transport
+    m_started = true;
     if (m_ownsTransport) {
         m_transport = new RtuTransport(m_cfg, this);
         connect(m_transport, &IModbusTransport::transferFinished, this,
@@ -423,6 +434,8 @@ void ModbusGatewayWorker::tryDispatch()
             enterOffline();
         return;
     }
+    if (req.cls == RequestClass::FastPoll)
+        m_fastDispatchedMs = m_nowMs(); // for dataAgeMs of the next snapshot
     m_inFlight = req;
     m_busy = true;
 }
@@ -446,6 +459,21 @@ void ModbusGatewayWorker::onTransferFinished(const TransferResult &res)
                     m_busy = true;
                     return;
                 }
+            }
+        }
+        if (req.kind == ModbusRequest::Kind::WriteCoil
+            || req.kind == ModbusRequest::Kind::WriteRegister) {
+            // A failed write must still report its result (spec §8.4,
+            // IPlcGateway contract: results arrive via writeCompleted()).
+            emit writeCompleted(req.address, false, res.error);
+        } else if (req.isReadback) {
+            // A failed readback can never confirm the write: fail it and
+            // drop the pending confirmation so it never leaks.
+            const auto it = m_pendingConfirmations.constFind(req.requestId);
+            if (it != m_pendingConfirmations.constEnd()) {
+                emit writeCompleted(req.address, false,
+                                    QStringLiteral("readback transfer failed"));
+                m_pendingConfirmations.erase(it);
             }
         }
         m_policy.onTransferFailure();
@@ -478,36 +506,40 @@ void ModbusGatewayWorker::onTransferFinished(const TransferResult &res)
 void ModbusGatewayWorker::handleReadResult(const ModbusRequest &req, const TransferResult &res)
 {
     // Readback of a previously written value (spec §8.4) takes precedence:
-    // a readback is a single-register/coil read that must be matched against
-    // the pending confirmation before any poll-class handling.
-    const auto it = m_pendingConfirmations.constFind(req.address);
-    if (it != m_pendingConfirmations.constEnd()) {
-        const PendingWrite pw = it.value();
-        m_pendingConfirmations.erase(it);
+    // a readback is a single-register/coil read matched by request identity
+    // (isReadback + requestId), never by address alone — a poll whose start
+    // address equals a pending write's address must not be consumed as the
+    // readback.
+    if (req.isReadback) {
+        const auto it = m_pendingConfirmations.constFind(req.requestId);
+        if (it != m_pendingConfirmations.constEnd()) {
+            const PendingWrite pw = it.value();
+            m_pendingConfirmations.erase(it);
 
-        bool confirmed = false;
-        if (req.kind == ModbusRequest::Kind::ReadCoils) {
-            // Single-coil readback: the coil at req.address is bit 0 of the
-            // first value.
-            const quint16 bits = res.values.isEmpty() ? 0 : res.values.first();
-            confirmed = ((bits & 0x0001) ? 1 : 0) == pw.expected;
-        } else {
-            confirmed = !res.values.isEmpty() && res.values.first() == pw.expected;
-        }
+            bool confirmed = false;
+            if (req.kind == ModbusRequest::Kind::ReadCoils) {
+                // Single-coil readback: the coil at req.address is bit 0 of
+                // the first value.
+                const quint16 bits = res.values.isEmpty() ? 0 : res.values.first();
+                confirmed = ((bits & 0x0001) ? 1 : 0) == pw.expected;
+            } else {
+                confirmed = !res.values.isEmpty() && res.values.first() == pw.expected;
+            }
 
-        if (confirmed) {
-            emit writeCompleted(req.address, true, QString());
-        } else if (pw.retriesLeft > 0) {
-            // Target not yet effective: retry per policy (spec §8.4).
-            PendingWrite next = pw;
-            --next.retriesLeft;
-            m_pendingConfirmations.insert(req.address, next);
-            ModbusRequest readback = req;
-            readback.retriesLeft = 0;
-            m_queue.enqueue(readback);
-        } else {
-            emit writeCompleted(req.address, false,
-                                QStringLiteral("write not confirmed by readback"));
+            if (confirmed) {
+                emit writeCompleted(req.address, true, QString());
+            } else if (pw.retriesLeft > 0) {
+                // Target not yet effective: retry per policy (spec §8.4).
+                PendingWrite next = pw;
+                --next.retriesLeft;
+                m_pendingConfirmations.insert(req.requestId, next);
+                ModbusRequest readback = req;
+                readback.retriesLeft = 0;
+                m_queue.enqueue(readback);
+            } else {
+                emit writeCompleted(req.address, false,
+                                    QStringLiteral("write not confirmed by readback"));
+            }
         }
         return;
     }
@@ -518,7 +550,8 @@ void ModbusGatewayWorker::handleReadResult(const ModbusRequest &req, const Trans
             for (int i = 0; i < kFastCount; ++i)
                 raw[i] = res.values.at(i);
             const QDateTime started = QDateTime::currentDateTime();
-            m_data = decodeFastBlock(raw, 0, true, 0, started, started,
+            const qint64 ageMs = qMax<qint64>(0, m_nowMs() - m_fastDispatchedMs);
+            m_data = decodeFastBlock(raw, 0, true, ageMs, started, started,
                                      DataQuality::Valid);
             checkHeartbeatFreeze(m_data.heartbeat);
             if (m_state != LinkState::Online)
@@ -526,8 +559,13 @@ void ModbusGatewayWorker::handleReadResult(const ModbusRequest &req, const Trans
             const bool wasOnline = m_hasValidSnapshot;
             m_hasValidSnapshot = true;
             publishSnapshot();
-            if (!wasOnline)
+            if (!wasOnline) {
+                // First full valid snapshot after (re)connect: the link is
+                // fully online again — reset the reconnect schedule and the
+                // consecutive-failure counter (spec §8.4).
+                m_policy.onReconnectSucceeded();
                 emit connectionStateChanged(true); // full snapshot acquired
+            }
         }
         return;
     }
@@ -565,7 +603,8 @@ void ModbusGatewayWorker::handleWriteResult(const ModbusRequest &req, const Tran
     PendingWrite pw;
     pw.expected = req.value;
     pw.retriesLeft = m_cfg.readRetries;
-    m_pendingConfirmations.insert(req.address, pw);
+    pw.requestId = req.id;
+    m_pendingConfirmations.insert(req.id, pw);
 
     ModbusRequest readback;
     readback.kind = (req.kind == ModbusRequest::Kind::WriteCoil)
@@ -573,7 +612,9 @@ void ModbusGatewayWorker::handleWriteResult(const ModbusRequest &req, const Tran
         : ModbusRequest::Kind::ReadRegisters;
     readback.address = req.address;
     readback.count = 1;
-    readback.cls = RequestClass::CommandPoll; // level 6: command bit readback
+    readback.cls = RequestClass::UserWrite; // level 4: write-then-readback (§8.3)
+    readback.isReadback = true;             // matched by request identity
+    readback.requestId = req.id;
     m_queue.enqueue(readback);
 }
 

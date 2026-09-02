@@ -32,6 +32,7 @@ struct ModbusRequest {
     quint16 value = 0;     // write value (coil: 0/1, register: raw)
     bool writeThenReadback = false; // spec §8.4: confirm writes by readback
     bool isReadback = false;        // this read confirms a previous write
+    quint64 requestId = 0;          // id of the write this readback confirms
     RequestClass cls = RequestClass::UserWrite;
     quint64 id = 0;        // monotonically increasing, for stable ordering
     int skipped = 0;      // anti-starvation: times a poll was passed over
@@ -55,8 +56,8 @@ public:
     // commands must not be queued for later replay, spec §8.4).
     bool enqueue(ModbusRequest req);
 
-    // Pop the highest-priority request. Poll requests are re-queued at the
-    // tail of their own level after being returned. Returns false when empty.
+    // Pop the highest-priority request. Polls are consumed; the gateway's
+    // poll timer re-enqueues them on the next tick. Returns false when empty.
     bool next(ModbusRequest &out);
 
     bool isEmpty() const { return m_requests.isEmpty(); }

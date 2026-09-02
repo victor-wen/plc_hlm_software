@@ -66,7 +66,6 @@ bool RequestQueue::next(ModbusRequest &out)
             m_requests.removeAt(best);
             return true;
         }
-        ++req.skipped;
         out = req;
         m_requests.removeAt(best); // consumed; the poll timer re-enqueues it
         return true;

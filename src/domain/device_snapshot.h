@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDateTime>
+#include <QMetaType>
 
 #include "domain/fault_code.h"
 #include "domain/quality.h"
@@ -281,3 +282,5 @@ private:
 };
 
 } // namespace hlm
+
+Q_DECLARE_METATYPE(hlm::DeviceSnapshot)

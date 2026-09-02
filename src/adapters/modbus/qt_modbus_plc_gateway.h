@@ -53,6 +53,7 @@ private:
     QThread m_thread;
     ModbusGatewayWorker *m_worker = nullptr;
     bool m_online = false; // mirrored from connectionStateChanged (UI thread)
+    bool m_started = false; // guards against double start()
 };
 
 // Worker: owns the transport, request queue, reconnect policy, polling timers
@@ -75,6 +76,7 @@ public:
     void setNowMs(std::function<qint64()> now);
     void setPollIntervals(int fastMs, int homeMs, int commandMs, int slowMs);
     bool isOnline() const;
+    int reconnectDelayMs() const { return m_reconnectTimer->interval(); }
 
 public slots:
     void start();
@@ -105,11 +107,13 @@ private:
     struct PendingWrite {
         quint16 expected = 0;
         int retriesLeft = 0;
+        quint64 requestId = 0; // id of the original write request
     };
 
     QtModbusPlcGateway::Config m_cfg;
     IModbusTransport *m_transport = nullptr; // owned (created here or injected)
     bool m_ownsTransport = false;
+    bool m_started = false; // guards against double start()
 
     RequestQueue m_queue;
     ReconnectPolicy m_policy;
@@ -128,6 +132,7 @@ private:
     qint64 m_lastHomeMs = 0;
     qint64 m_lastCommandMs = 0;
     qint64 m_lastSlowMs = 0;
+    qint64 m_fastDispatchedMs = 0; // clock time the in-flight fast poll was sent
 
     // D140 heartbeat freeze detection (spec §8.4).
     quint16 m_lastHeartbeat = 0;
@@ -136,7 +141,10 @@ private:
 
     // Accumulated snapshot data (fast block refreshed every 250 ms).
     DeviceSnapshotData m_data;
-    QHash<quint16, PendingWrite> m_pendingConfirmations;
+    // Pending write confirmations keyed by the id of the original write
+    // request, so duplicate writes to the same address each get their own
+    // confirmation (spec §8.4).
+    QHash<quint64, PendingWrite> m_pendingConfirmations;
 
     std::function<qint64()> m_nowMs;
     QTimer *m_pollTimer = nullptr;
