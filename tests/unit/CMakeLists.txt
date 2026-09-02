@@ -88,3 +88,61 @@ target_link_libraries(test_control_coordinator PRIVATE
 )
 
 add_test(NAME control_coordinator COMMAND test_control_coordinator)
+
+# --- Task 8: SQLite, auth, recipes, alarms, audit, rolling logger ------------
+
+add_executable(test_password_derivation test_password_derivation.cpp)
+target_link_libraries(test_password_derivation PRIVATE
+    hlm_core
+    Qt6::Test
+)
+
+add_test(NAME password_derivation COMMAND test_password_derivation)
+
+add_executable(test_migrations test_migrations.cpp)
+target_link_libraries(test_migrations PRIVATE
+    hlm_sqlite
+    Qt6::Test
+)
+
+add_test(NAME migrations COMMAND test_migrations)
+
+add_executable(test_auth_service test_auth_service.cpp)
+target_link_libraries(test_auth_service PRIVATE
+    hlm_sqlite
+    Qt6::Test
+)
+
+add_test(NAME auth_service COMMAND test_auth_service)
+
+add_executable(test_repositories test_repositories.cpp)
+target_link_libraries(test_repositories PRIVATE
+    hlm_sqlite
+    Qt6::Test
+)
+
+add_test(NAME repositories COMMAND test_repositories)
+
+add_executable(test_alarm_edge_detector test_alarm_edge_detector.cpp)
+target_link_libraries(test_alarm_edge_detector PRIVATE
+    hlm_sqlite
+    Qt6::Test
+)
+
+add_test(NAME alarm_edge_detector COMMAND test_alarm_edge_detector)
+
+add_executable(test_rolling_file_logger test_rolling_file_logger.cpp)
+target_link_libraries(test_rolling_file_logger PRIVATE
+    hlm_core
+    Qt6::Test
+)
+
+add_test(NAME rolling_file_logger COMMAND test_rolling_file_logger)
+
+add_executable(test_database_service test_database_service.cpp)
+target_link_libraries(test_database_service PRIVATE
+    hlm_sqlite
+    Qt6::Test
+)
+
+add_test(NAME database_service COMMAND test_database_service)

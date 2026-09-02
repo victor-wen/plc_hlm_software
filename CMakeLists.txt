@@ -30,7 +30,7 @@ option(HLM_ENABLE_VISION "Build the hlm_vision module (requires OpenCV 4.x)" ON)
 # Qt: >= 6.4 for local dev (Ubuntu 24.04 ships 6.4.2); CI pins 6.8.x via the
 # vcpkg manifest (vcpkg.json). Only components used by current targets are
 # requested; later tasks add Widgets/Sql as needed.
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core Test SerialBus SerialPort)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Core Test SerialBus SerialPort Sql)
 
 # OpenSSL 3.x Crypto: password derivation in hlm_core (spec §17).
 find_package(OpenSSL 3 REQUIRED)
@@ -48,12 +48,14 @@ endif()
 # services, port interfaces and password derivation. Qt Core + OpenSSL Crypto.
 add_library(hlm_core STATIC
     src/common/version.cpp
+    src/common/rolling_file_logger.cpp
     src/application/control_coordinator.cpp
     src/application/interlock_rules.cpp
     src/application/permission_policy.cpp
     src/domain/address_table.cpp
     src/domain/fault_code.cpp
     src/domain/device_snapshot.cpp
+    src/domain/password_derivation.cpp
     src/ports/iplc_gateway.cpp
 )
 target_include_directories(hlm_core PUBLIC src)
@@ -97,8 +99,24 @@ target_link_libraries(hlm_modbus PUBLIC
     Qt6::SerialPort
 )
 
+# hlm_sqlite: database worker thread, migrations and repository
+# implementations (spec §6, §7.3, §12). Qt Sql only; the worker thread owns
+# the single QSqlDatabase connection.
+add_library(hlm_sqlite STATIC
+    src/adapters/sqlite/migration_runner.cpp
+    src/adapters/sqlite/sqlite_repositories.cpp
+    src/adapters/sqlite/auth_service.cpp
+    src/adapters/sqlite/alarm_edge_detector.cpp
+    src/adapters/sqlite/database_service.cpp
+)
+target_include_directories(hlm_sqlite PUBLIC src)
+target_link_libraries(hlm_sqlite PUBLIC
+    hlm_core
+    Qt6::Core
+    Qt6::Sql
+)
+
 # Planned targets added by later tasks (do not create empty targets now):
-#   hlm_sqlite    -> Qt6::Sql
 #   hlm_vision    -> OpenCV::core (guarded by HLM_ENABLE_VISION)
 #   hlm_ui        -> Qt6::Widgets
 #   hlm_app       -> all production modules above

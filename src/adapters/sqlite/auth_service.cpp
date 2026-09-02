@@ -1,0 +1,160 @@
+#include "adapters/sqlite/auth_service.h"
+
+#include "domain/password_derivation.h"
+#include "ports/repositories.h"
+
+namespace hlm {
+
+namespace {
+
+// Builds a UserRecord with a freshly derived hash for `password`.
+UserRecord makeUserRecord(const QString &username, Role role, const QString &password)
+{
+    UserRecord u;
+    u.username = username;
+    u.role = role;
+    u.salt = generateSalt();
+    u.iterations = kDefaultPbkdf2Iterations;
+    u.passwordHash = passwordHashHex(derivePasswordKey(password, u.salt, u.iterations));
+    u.enabled = true;
+    return u;
+}
+
+void audit(AuditRepository *audit, const QString &username, Role role,
+           const QString &action, const QString &target, const QString &params,
+           AuditResult result, const QString &reason)
+{
+    if (!audit)
+        return;
+    AuditRecord a;
+    a.occurredAt = QDateTime::currentDateTimeUtc();
+    a.username = username;
+    a.role = role;
+    a.action = action;
+    a.target = target;
+    a.redactedParameters = params;
+    a.result = result;
+    a.reason = reason;
+    audit->append(a);
+}
+
+} // namespace
+
+AuthService::AuthService(UserRepository *users, AuditRepository *audit)
+    : m_users(users), m_audit(audit)
+{
+}
+
+bool AuthService::needsInitialAdmin() const
+{
+    return m_users->countUsers() == 0;
+}
+
+bool AuthService::createInitialAdmin(const QString &username, const QString &password,
+                                     QString *error)
+{
+    if (password.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("password must not be empty");
+        return false;
+    }
+    if (m_users->countUsers() > 0) {
+        if (error)
+            *error = QStringLiteral("users already exist");
+        return false;
+    }
+    UserRecord u = makeUserRecord(username, Role::Admin, password);
+    if (!m_users->createUser(u, error))
+        return false;
+    audit(m_audit, username, Role::Admin, QStringLiteral("user.create"),
+          QStringLiteral("admin"), QString(), AuditResult::Success, QString());
+    return true;
+}
+
+LoginResult AuthService::login(const QString &username, const QString &password)
+{
+    const auto user = m_users->findByName(username);
+    if (!user) {
+        // Do not reveal whether the account exists; still audit the attempt.
+        audit(m_audit, username, Role::Anonymous, QStringLiteral("auth.login"),
+              QStringLiteral("user"), QString(), AuditResult::Failure,
+              QStringLiteral("unknown user"));
+        return {false, QStringLiteral("unknown user"), std::nullopt};
+    }
+
+    LockState &st = m_lockState[username];
+    if (st.lockedUntil.isValid() && QDateTime::currentDateTimeUtc() < st.lockedUntil) {
+        audit(m_audit, username, user->role, QStringLiteral("auth.login"),
+              QStringLiteral("user"), QString(), AuditResult::Failure,
+              QStringLiteral("locked"));
+        return {false, QStringLiteral("locked"), std::nullopt};
+    }
+    // Lock window expired: reset the counter.
+    if (st.lockedUntil.isValid())
+        st = LockState{};
+
+    if (!user->enabled) {
+        audit(m_audit, username, user->role, QStringLiteral("auth.login"),
+              QStringLiteral("user"), QString(), AuditResult::Failure,
+              QStringLiteral("disabled"));
+        return {false, QStringLiteral("disabled"), std::nullopt};
+    }
+
+    const QByteArray derived = derivePasswordKey(password, user->salt, user->iterations);
+    const bool ok = !derived.isEmpty()
+        && constantTimeEquals(passwordHashHex(derived), user->passwordHash);
+    if (ok) {
+        st = LockState{};
+        audit(m_audit, username, user->role, QStringLiteral("auth.login"),
+              QStringLiteral("user"), QString(), AuditResult::Success, QString());
+        return {true, QString(), user};
+    }
+
+    ++st.failed;
+    if (st.failed >= kMaxFailedLogins) {
+        st.lockedUntil = QDateTime::currentDateTimeUtc().addSecs(m_lockoutSeconds);
+        audit(m_audit, username, user->role, QStringLiteral("auth.login"),
+              QStringLiteral("user"), QString(), AuditResult::Failure,
+              QStringLiteral("locked"));
+        return {false, QStringLiteral("locked"), std::nullopt};
+    }
+    audit(m_audit, username, user->role, QStringLiteral("auth.login"),
+          QStringLiteral("user"), QString(), AuditResult::Failure,
+          QStringLiteral("bad credentials"));
+    return {false, QStringLiteral("bad credentials"), std::nullopt};
+}
+
+bool AuthService::changePassword(qint64 userId, const QString &newPassword,
+                                 QString *error)
+{
+    if (newPassword.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("password must not be empty");
+        return false;
+    }
+    const QVector<UserRecord> users = m_users->allUsers();
+    for (const UserRecord &u : users) {
+        if (u.id == userId) {
+            UserRecord updated = u;
+            updated.salt = generateSalt();
+            updated.iterations = kDefaultPbkdf2Iterations;
+            updated.passwordHash =
+                passwordHashHex(derivePasswordKey(newPassword, updated.salt, updated.iterations));
+            if (!m_users->updateUser(updated, error))
+                return false;
+            audit(m_audit, u.username, u.role, QStringLiteral("user.password_change"),
+                  QStringLiteral("user"), QString(), AuditResult::Success, QString());
+            return true;
+        }
+    }
+    if (error)
+        *error = QStringLiteral("user not found");
+    return false;
+}
+
+void AuthService::clearFailedAttempts(const QString &username)
+{
+    m_lockState.remove(username);
+}
+
+} // namespace hlm
