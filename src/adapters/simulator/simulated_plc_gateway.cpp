@@ -185,6 +185,12 @@ void SimulatedPlcGateway::publishSnapshot()
         if (m_model.readCoil(bit))
             raw[0] |= quint16(1) << bit; // D100
     }
+    // M60/M61 (auto-ready / homed) are exposed via their D100-mapped bits
+    // M8/M9 (spec §8.2, address table).
+    if (m_model.readCoil(60))
+        raw[0] |= quint16(1) << 8; // M8 = M60
+    if (m_model.readCoil(61))
+        raw[0] |= quint16(1) << 9; // M9 = M61
     for (int bit = 0; bit <= 15; ++bit) {
         if (m_model.readCoil(30 + bit))
             raw[3] |= quint16(1) << bit; // D103

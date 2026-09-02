@@ -48,6 +48,9 @@ endif()
 # services, port interfaces and password derivation. Qt Core + OpenSSL Crypto.
 add_library(hlm_core STATIC
     src/common/version.cpp
+    src/application/control_coordinator.cpp
+    src/application/interlock_rules.cpp
+    src/application/permission_policy.cpp
     src/domain/address_table.cpp
     src/domain/fault_code.cpp
     src/domain/device_snapshot.cpp

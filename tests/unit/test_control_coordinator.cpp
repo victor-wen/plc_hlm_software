@@ -1,0 +1,720 @@
+// Task 7 integration-style tests: ControlCoordinator (spec §10, §11.4, §13).
+// Uses the deterministic SimulatedPlcGateway (Task 6): no serial, no sleeps.
+//
+// Coverage required by the task brief:
+// - Permission matrix full combination (see test_permission_policy.cpp).
+// - Each flow's preconditions, timeout and result convergence.
+// - Logout clears M42/M106-M111 (not M100).
+// - M100 is never auto-cleared.
+// - No optimistic success: only snapshot-confirmed results are reported.
+
+#include <QtTest>
+
+#include "adapters/simulator/simulated_plc_gateway.h"
+#include "application/control_coordinator.h"
+
+using namespace hlm;
+
+namespace {
+
+// Protocol addresses (0-based, matching AddressTable).
+constexpr quint16 kM42 = 42;
+constexpr quint16 kM100 = 100;
+constexpr quint16 kM101 = 101;
+constexpr quint16 kM102 = 102;
+constexpr quint16 kM103 = 103;
+constexpr quint16 kM104 = 104;
+constexpr quint16 kM105 = 105;
+constexpr quint16 kM106 = 106;
+constexpr quint16 kM107 = 107;
+constexpr quint16 kM108 = 108;
+constexpr quint16 kM109 = 109;
+constexpr quint16 kM110 = 110;
+constexpr quint16 kM111 = 111;
+constexpr quint16 kD128 = 128;
+
+} // namespace
+
+class ControlCoordinatorTest : public QObject
+{
+    Q_OBJECT
+
+private slots:
+    void init();
+    void cleanup();
+
+    // --- permission gating ---------------------------------------------------
+    void anonymousCannotStartOrReset();
+    void operatorCannotResetOrAdjust();
+    void adminCanResetAndAdjust();
+
+    // --- reset flow ----------------------------------------------------------
+    void resetFromAutoModeWritesM104ThenPulsesM103();
+    void resetWaitsForM61AndSucceeds();
+    void resetTimeoutKeepsActualState();
+    void resetRejectedWhenRunning();
+
+    // --- adjust width flow ---------------------------------------------------
+    void adjustWidthWritesD128ThenPulsesM43();
+    void adjustWidthSuccessConvergesOnM44();
+    void adjustWidthFailureConvergesOnM45();
+    void adjustWidthTargetEqualsCurrentSkipsM43();
+    void adjustWidthRejectedWhenAdjusting();
+
+    // --- start / stop --------------------------------------------------------
+    void startWaitsForM3();
+    void startRejectedWhenNotReady();
+    void stopWaitsForM3Clear();
+    void stopOfflineRejected();
+
+    // --- estop ---------------------------------------------------------------
+    void estopSetByAnyUser();
+    void estopReleaseAdminOnly();
+    void estopNotAutoClearedOnLogout();
+
+    // --- manual / bypass -----------------------------------------------------
+    void manualHoldWritesOnPressAndRelease();
+    void manualLatchWrites();
+    void bypassWrites();
+
+    // --- logout --------------------------------------------------------------
+    void logoutClearsM42AndM106ToM111NotM100();
+    void logoutClearDoesNotTouchM105();
+
+    // --- timeout convergence -------------------------------------------------
+    void adjustTimeoutConvergesToActualState();
+};
+
+void ControlCoordinatorTest::init()
+{
+}
+
+void ControlCoordinatorTest::cleanup()
+{
+}
+
+// --- helpers ----------------------------------------------------------------
+
+namespace {
+
+// Drive a reset+home-return to a ready manual state via the raw gateway.
+void homeReady(SimulatedPlcGateway &gw)
+{
+    gw.writeCoil(kM103, true);
+    gw.writeCoil(kM103, false);
+    gw.tick();
+    gw.tick(); // home return takes 2 s
+}
+
+// Build a coordinator wired to the simulated gateway. The pulse transport
+// routes pulses straight into the gateway (the real worker thread would route
+// them through the PulseStateMachine; the simulated gateway confirms writes by
+// readback, so the pulse semantics are equivalent for these tests).
+ControlCoordinator *makeCoordinator(SimulatedPlcGateway &gw, qint64 &now,
+                                    ControlCoordinator::Config cfg = {})
+{
+    ControlCoordinator::PulseTransport t;
+    t.startPulse = [&gw](quint16 a) {
+        gw.writeCoil(a, true);
+        gw.writeCoil(a, false);
+        return true;
+    };
+    t.writeHold = [&gw](quint16 a, bool v) {
+        gw.writeCoil(a, v);
+        return true;
+    };
+    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) {
+        gw.writeCoil(a, v);
+        return true;
+    };
+    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) {
+        gw.writeRegister(a, v);
+        return true;
+    };
+    auto *c = new ControlCoordinator(&gw, t, cfg, [&now]() { return now; });
+    // Wire the gateway feed: snapshots, connection state and write results.
+    QObject::connect(&gw, &SimulatedPlcGateway::snapshotReady, c,
+                     [c](const DeviceSnapshot &s) { c->onSnapshot(s); });
+    QObject::connect(&gw, &SimulatedPlcGateway::connectionStateChanged, c,
+                     [c](bool online) { c->onConnectionChanged(online); });
+    QObject::connect(&gw, &SimulatedPlcGateway::writeCompleted, c,
+                     [c](quint16 a, bool ok, const QString &) { c->onWriteCompleted(a, ok); });
+    // Feed the snapshot published before the coordinator existed.
+    if (gw.hasSnapshot())
+        c->onSnapshot(gw.lastSnapshot());
+    return c;
+}
+
+} // namespace
+
+// --- permission gating ------------------------------------------------------
+
+void ControlCoordinatorTest::anonymousCannotStartOrReset()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+
+    c->setRole(Role::Anonymous);
+    QVERIFY(!c->start().accepted);
+    QVERIFY(!c->reset().accepted);
+    QVERIFY(!c->setMode(true).accepted);
+    QVERIFY(!c->adjustWidth(300).accepted);
+    QVERIFY(!c->estopRelease().accepted);
+    QVERIFY(c->stop().accepted); // 未登录可停止
+    QVERIFY(c->estopSet().accepted); // 未登录可置急停
+}
+
+void ControlCoordinatorTest::operatorCannotResetOrAdjust()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    homeReady(gw);
+    gw.writeCoil(kM104, true);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m2());
+
+    c->setRole(Role::Operator);
+    QVERIFY(c->start().accepted);
+    QVERIFY(!c->reset().accepted);
+    QVERIFY(!c->adjustWidth(300).accepted);
+    QVERIFY(!c->setMode(true).accepted);
+    QVERIFY(!c->estopRelease().accepted);
+    QVERIFY(!c->manualHold(kM106, true).accepted);
+    QVERIFY(!c->bypass(kM110, true).accepted);
+}
+
+void ControlCoordinatorTest::adminCanResetAndAdjust()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    homeReady(gw);
+
+    c->setRole(Role::Admin);
+    QVERIFY(c->reset().accepted);
+    QVERIFY(c->setMode(true).accepted);
+    QVERIFY(c->manualHold(kM106, true).accepted);
+    QVERIFY(c->bypass(kM110, true).accepted);
+}
+
+// --- reset flow -------------------------------------------------------------
+
+void ControlCoordinatorTest::resetFromAutoModeWritesM104ThenPulsesM103()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+
+    // Put the machine into auto mode first.
+    gw.writeCoil(kM104, true);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m2());
+
+    QVERIFY(c->reset().accepted);
+    // M104=0 written (auto -> manual), then M103 pulse.
+    QVERIFY(!gw.model().readCoil(kM104));
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m1()); // manual mode
+    gw.tick(); // the M103 pulse fired during the previous snapshot's processing
+    QVERIFY(gw.lastSnapshot().m50()); // homing
+    QVERIFY(c->resetInProgress());
+}
+
+void ControlCoordinatorTest::resetWaitsForM61AndSucceeds()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+
+    bool result = false;
+    QString detail;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &d) {
+                if (cmd == Command::Reset) {
+                    result = ok;
+                    detail = d;
+                }
+            });
+
+    QVERIFY(c->reset().accepted);
+    gw.tick(); // homing in progress
+    QVERIFY(c->resetInProgress());
+    QVERIFY(!result); // no optimistic success
+
+    gw.tick(); // home return completes: M61=1, M50=0
+    QVERIFY(gw.lastSnapshot().m9()); // M61 via M9
+    QVERIFY(!gw.lastSnapshot().m50());
+    QVERIFY(result);
+    QVERIFY(!c->resetInProgress());
+}
+
+void ControlCoordinatorTest::resetTimeoutKeepsActualState()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    ControlCoordinator::Config cfg;
+    cfg.resetTimeoutSec = 30;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now, cfg));
+    c->setRole(Role::Admin);
+
+    bool result = true; // must flip to false
+    QString detail;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &d) {
+                if (cmd == Command::Reset) {
+                    result = ok;
+                    detail = d;
+                }
+            });
+
+    QVERIFY(c->reset().accepted);
+    gw.tick(); // homing in progress
+
+    // Advance the injected clock past the timeout without the PLC homing.
+    now += 31'000;
+    gw.tick();
+    QVERIFY(!result); // timeout: not optimistic success
+    QVERIFY(!c->resetInProgress());
+    QVERIFY(detail.contains(QStringLiteral("超时")));
+}
+
+void ControlCoordinatorTest::resetRejectedWhenRunning()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+
+    // Run the machine.
+    homeReady(gw);
+    gw.writeCoil(kM104, true);
+    gw.tick();
+    gw.writeCoil(kM101, true);
+    gw.writeCoil(kM101, false);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m3());
+
+    QVERIFY(!c->reset().accepted); // M3=1: 禁止复位
+}
+
+// --- adjust width flow ------------------------------------------------------
+
+void ControlCoordinatorTest::adjustWidthWritesD128ThenPulsesM43()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+    homeReady(gw);
+
+    QVERIFY(c->adjustWidth(300).accepted);
+    QCOMPARE(gw.model().readRegister(kD128), quint16(300)); // D128 written
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m34()); // adjusting
+    QVERIFY(c->adjustInProgress());
+    QCOMPARE(c->adjustTarget().value_or(0), quint16(300));
+    QCOMPARE(c->adjustStartWidth().value_or(0), quint16(200));
+    QCOMPARE(c->adjustSpeed().value_or(0), quint16(15));
+}
+
+void ControlCoordinatorTest::adjustWidthSuccessConvergesOnM44()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+    homeReady(gw);
+
+    bool result = false;
+    QString detail;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &d) {
+                if (cmd == Command::AdjustWidth) {
+                    result = ok;
+                    detail = d;
+                }
+            });
+
+    QVERIFY(c->adjustWidth(300).accepted);
+    gw.tick(); // M34=1
+    QVERIFY(!result); // no optimistic success
+
+    // ceil(100/15) = 7 s to complete.
+    for (int i = 0; i < 7; ++i)
+        gw.tick();
+    QVERIFY(gw.lastSnapshot().m44());
+    QVERIFY(!gw.lastSnapshot().m45());
+    QCOMPARE(gw.lastSnapshot().currentWidth(), quint16(300));
+    QVERIFY(result);
+    QVERIFY(!c->adjustInProgress());
+}
+
+void ControlCoordinatorTest::adjustWidthFailureConvergesOnM45()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+    homeReady(gw);
+
+    bool result = true;
+    QString detail;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &d) {
+                if (cmd == Command::AdjustWidth) {
+                    result = ok;
+                    detail = d;
+                }
+            });
+
+    // Stall the motor: positioning never completes -> M45 + fault 10.
+    gw.model().setPositioningStall(true);
+    QVERIFY(c->adjustWidth(300).accepted);
+    gw.tick();
+    QVERIFY(c->adjustInProgress());
+
+    // Timeout = ceil(100/15) + 5 = 12 s.
+    for (int i = 0; i < 12; ++i)
+        gw.tick();
+    QVERIFY(gw.lastSnapshot().m45());
+    QVERIFY(!gw.lastSnapshot().m44());
+    QVERIFY(!result); // failure reported, not optimistic
+    QVERIFY(!c->adjustInProgress());
+}
+
+void ControlCoordinatorTest::adjustWidthTargetEqualsCurrentSkipsM43()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+    homeReady(gw);
+
+    bool result = false;
+    QString detail;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &d) {
+                if (cmd == Command::AdjustWidth) {
+                    result = ok;
+                    detail = d;
+                }
+            });
+
+    // Target == current (200): no M43 pulse, immediate "已是目标宽度".
+    QVERIFY(c->adjustWidth(200).accepted);
+    QVERIFY(!gw.model().readCoil(43)); // no M43 write
+    QVERIFY(result);
+    QVERIFY(detail.contains(QStringLiteral("已是目标宽度")));
+    QVERIFY(!c->adjustInProgress());
+}
+
+void ControlCoordinatorTest::adjustWidthRejectedWhenAdjusting()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+    homeReady(gw);
+
+    QVERIFY(c->adjustWidth(300).accepted);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m34());
+
+    // M34=1: 禁止再次写 D128 或发送 M43 (spec §10.3 step 6).
+    QVERIFY(!c->adjustWidth(350).accepted);
+}
+
+// --- start / stop -----------------------------------------------------------
+
+void ControlCoordinatorTest::startWaitsForM3()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Operator);
+    homeReady(gw);
+    gw.writeCoil(kM104, true);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m2());
+
+    bool result = false;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &) {
+                if (cmd == Command::Start)
+                    result = ok;
+            });
+
+    QVERIFY(c->start().accepted);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m3()); // running
+    QVERIFY(result); // only after M3=1 observed
+    QVERIFY(!c->startInProgress());
+}
+
+void ControlCoordinatorTest::startRejectedWhenNotReady()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Operator);
+
+    // Not homed, not auto: start rejected with interlock reasons.
+    const ControlCoordinator::CommandResult r = c->start();
+    QVERIFY(!r.accepted);
+    QVERIFY(!r.reason.isEmpty());
+}
+
+void ControlCoordinatorTest::stopWaitsForM3Clear()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Anonymous);
+    homeReady(gw);
+    gw.writeCoil(kM104, true);
+    gw.tick();
+    gw.writeCoil(kM101, true);
+    gw.writeCoil(kM101, false);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m3());
+
+    bool result = false;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &) {
+                if (cmd == Command::Stop)
+                    result = ok;
+            });
+
+    QVERIFY(c->stop().accepted);
+    gw.tick();
+    QVERIFY(!gw.lastSnapshot().m3());
+    QVERIFY(result); // only after M3=0 observed
+    QVERIFY(!c->stopInProgress());
+}
+
+void ControlCoordinatorTest::stopOfflineRejected()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Anonymous);
+
+    gw.setLinkDown(true);
+    QVERIFY(!gw.isOnline());
+    const ControlCoordinator::CommandResult r = c->stop();
+    QVERIFY(!r.accepted);
+    QVERIFY(r.reason.contains(QStringLiteral("通讯中断")));
+}
+
+// --- estop ------------------------------------------------------------------
+
+void ControlCoordinatorTest::estopSetByAnyUser()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Anonymous);
+
+    QVERIFY(c->estopSet().accepted);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m0());
+    QVERIFY(gw.lastSnapshot().m100());
+}
+
+void ControlCoordinatorTest::estopReleaseAdminOnly()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Operator);
+
+    gw.writeCoil(kM100, true);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m0());
+
+    // Operator cannot release.
+    QVERIFY(!c->estopRelease().accepted);
+
+    // Admin can.
+    c->setRole(Role::Admin);
+    QVERIFY(c->estopRelease().accepted);
+    gw.tick();
+    QVERIFY(!gw.lastSnapshot().m0());
+    // 解除成功≠设备可运行: latched fault stays until reset.
+    QVERIFY(gw.lastSnapshot().m14());
+}
+
+void ControlCoordinatorTest::estopNotAutoClearedOnLogout()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+
+    QVERIFY(c->estopSet().accepted);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m100());
+
+    c->logoutClear();
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m100()); // M100 never auto-cleared
+    QVERIFY(gw.lastSnapshot().m0());
+}
+
+// --- manual / bypass --------------------------------------------------------
+
+void ControlCoordinatorTest::manualHoldWritesOnPressAndRelease()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+    homeReady(gw);
+
+    QVERIFY(c->manualHold(kM106, true).accepted);
+    QVERIFY(gw.model().readCoil(kM106));
+    QVERIFY(c->manualHold(kM106, false).accepted);
+    QVERIFY(!gw.model().readCoil(kM106));
+}
+
+void ControlCoordinatorTest::manualLatchWrites()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+    homeReady(gw);
+
+    QVERIFY(c->manualLatch(kM109, true).accepted);
+    QVERIFY(gw.model().readCoil(kM109));
+    QVERIFY(c->manualLatch(kM109, false).accepted);
+    QVERIFY(!gw.model().readCoil(kM109));
+}
+
+void ControlCoordinatorTest::bypassWrites()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+
+    QVERIFY(c->bypass(kM110, true).accepted);
+    QVERIFY(gw.model().readCoil(kM110));
+    QVERIFY(c->bypass(kM110, false).accepted);
+    QVERIFY(!gw.model().readCoil(kM110));
+}
+
+// --- logout --------------------------------------------------------------
+
+void ControlCoordinatorTest::logoutClearsM42AndM106ToM111NotM100()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+
+    // Set all the continuous/bypass bits.
+    gw.writeCoil(kM42, true);
+    for (quint16 a = kM106; a <= kM111; ++a)
+        gw.writeCoil(a, true);
+    gw.writeCoil(kM100, true); // estop: must survive logout
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m42());
+    QVERIFY(gw.lastSnapshot().m106());
+    QVERIFY(gw.lastSnapshot().m111());
+    QVERIFY(gw.lastSnapshot().m100());
+
+    c->logoutClear();
+    gw.tick();
+    QVERIFY(!gw.lastSnapshot().m42());
+    QVERIFY(!gw.lastSnapshot().m106());
+    QVERIFY(!gw.lastSnapshot().m107());
+    QVERIFY(!gw.lastSnapshot().m108());
+    QVERIFY(!gw.lastSnapshot().m109());
+    QVERIFY(!gw.lastSnapshot().m110());
+    QVERIFY(!gw.lastSnapshot().m111());
+    QVERIFY(gw.lastSnapshot().m100()); // M100 not touched
+}
+
+void ControlCoordinatorTest::logoutClearDoesNotTouchM105()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+
+    gw.writeCoil(kM105, true);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m105());
+
+    c->logoutClear();
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m105()); // M105 模式选择保持不变
+}
+
+// --- timeout convergence -----------------------------------------------------
+
+void ControlCoordinatorTest::adjustTimeoutConvergesToActualState()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+    homeReady(gw);
+
+    bool result = true;
+    QString detail;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &d) {
+                if (cmd == Command::AdjustWidth) {
+                    result = ok;
+                    detail = d;
+                }
+            });
+
+    // Stall: the PLC will time out on its own (12 s). The HMI defensive
+    // timeout (plc_timeout + 3 = 15 s) must not fire first, and the result
+    // must converge to the actual M45 state.
+    gw.model().setPositioningStall(true);
+    QVERIFY(c->adjustWidth(300).accepted);
+    gw.tick();
+    QVERIFY(c->adjustInProgress());
+
+    for (int i = 0; i < 12; ++i)
+        gw.tick();
+    QVERIFY(gw.lastSnapshot().m45());
+    QVERIFY(!result); // converged to failure
+    QVERIFY(!c->adjustInProgress());
+}
+
+QTEST_GUILESS_MAIN(ControlCoordinatorTest)
+#include "test_control_coordinator.moc"

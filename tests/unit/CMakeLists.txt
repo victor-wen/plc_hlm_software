@@ -64,3 +64,27 @@ target_link_libraries(test_watchdog_timer PRIVATE
 )
 
 add_test(NAME watchdog_timer COMMAND test_watchdog_timer)
+
+add_executable(test_permission_policy test_permission_policy.cpp)
+target_link_libraries(test_permission_policy PRIVATE
+    hlm_core
+    Qt6::Test
+)
+
+add_test(NAME permission_policy COMMAND test_permission_policy)
+
+add_executable(test_interlock_rules test_interlock_rules.cpp)
+target_link_libraries(test_interlock_rules PRIVATE
+    hlm_core
+    Qt6::Test
+)
+
+add_test(NAME interlock_rules COMMAND test_interlock_rules)
+
+add_executable(test_control_coordinator test_control_coordinator.cpp)
+target_link_libraries(test_control_coordinator PRIVATE
+    hlm_simulator
+    Qt6::Test
+)
+
+add_test(NAME control_coordinator COMMAND test_control_coordinator)
