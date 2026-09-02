@@ -32,3 +32,12 @@ CMakeUserPresets.json
 .env
 .env.*
 !.env.example
+
+# vcpkg manifest mode (in-tree installs and build trees)
+/vcpkg_installed/
+/vcpkg-manifest-install.log
+/buildtrees/
+/installed/
+/packages/
+/downloads/
+

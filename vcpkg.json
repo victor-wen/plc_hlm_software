@@ -1,0 +1,31 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "plc-hmi",
+  "version-string": "0.1.0",
+  "description": "Windows Qt/C++ HMI for Inovance H3U PLC over Modbus RTU",
+  "dependencies": [
+    {
+      "name": "qtbase",
+      "default-features": false,
+      "features": [
+        "concurrent",
+        "gui",
+        "network",
+        "sql",
+        "sql-sqlite",
+        "testlib",
+        "thread",
+        "widgets"
+      ]
+    },
+    "qtserialbus",
+    "qtserialport",
+    "openssl",
+    {
+      "name": "opencv4",
+      "default-features": false,
+      "features": [ "core" ]
+    }
+  ],
+  "builtin-baseline": "a9eee3b18df395dbb8be71a31bd78ea441056e42"
+}

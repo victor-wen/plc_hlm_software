@@ -1,0 +1,66 @@
+# Windows MSVC 2022 x64 Debug/Release build matrix (spec §15.1, §17).
+#
+# All third-party actions are pinned to reviewed commit SHAs (not tags or
+# branches). Verified 2026-09-02 via the GitHub API:
+#   actions/checkout      v7.0.1  -> 3d3c42e5aac5ba805825da76410c181273ba90b1
+#   ilammy/msvc-dev-cmd   v1.13.0 -> 0b201ec74fa43914dc39ae48a89fd1d8cb592756
+#   lukka/run-vcpkg       v11.6   -> b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
+#   actions/upload-artifact v7.0.1 -> 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+
+name: windows-build-test
+
+on:
+  push:
+    branches: [ main, plc-hmi-implementation ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: MSVC 2022 x64 ${{ matrix.config }}
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [ Debug, Release ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Enable MSVC 2022 x64 developer environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+
+      - name: Setup vcpkg (manifest mode, vcpkg.json)
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
+        with:
+          vcpkgJsonGlob: '**/vcpkg.json'
+          runVcpkgInstall: true
+
+      - name: Configure (HLM_ENABLE_VISION=ON)
+        run: |
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=${{ matrix.config }} `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DHLM_ENABLE_VISION=ON
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.config }}
+
+      - name: Test (ctest)
+        run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
+
+      - name: Upload build and test artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: plc-hmi-${{ matrix.config }}
+          path: |
+            build/
+            !build/vcpkg_installed/**
+          if-no-files-found: warn
+          retention-days: 7
