@@ -31,6 +31,7 @@ private slots:
     void linkDownFreezesD140AndRejectsWrites();
     void linkDownRecoveryResumes();
     void heartbeatFreezeGoesOfflineAndRecovers();
+    void freezeUnfreezeRefreezeResetsCounter();
     void writeThenReadbackConfirmed();
     void offlineRejectsWrites();
     void unconfirmedWriteReportsFailure();
@@ -304,6 +305,33 @@ void SimulatedGatewayFlowTest::heartbeatFreezeGoesOfflineAndRecovers()
     QVERIFY(m_gw->isOnline());
     QVERIFY(m_online);
     QVERIFY(m_gw->lastSnapshot().heartbeat() != hb); // D140 moving again
+}
+
+void SimulatedGatewayFlowTest::freezeUnfreezeRefreezeResetsCounter()
+{
+    m_gw->start();
+    m_gw->tick();
+    QVERIFY(m_gw->isOnline());
+
+    // Freeze for 2 ticks: still online (threshold is 3).
+    m_gw->setHeartbeatFrozen(true);
+    m_gw->tick();
+    m_gw->tick();
+    QVERIFY(m_gw->isOnline());
+
+    // Unfreeze before the threshold: the stale counter must be reset.
+    m_gw->setHeartbeatFrozen(false);
+    m_gw->tick();
+    QVERIFY(m_gw->isOnline());
+
+    // Re-freeze: must get a full 3 ticks before going offline, not 1.
+    m_gw->setHeartbeatFrozen(true);
+    m_gw->tick();
+    m_gw->tick();
+    QVERIFY(m_gw->isOnline());
+    m_gw->tick();
+    QVERIFY(!m_gw->isOnline());
+    QVERIFY(!m_online);
 }
 
 void SimulatedGatewayFlowTest::writeThenReadbackConfirmed()

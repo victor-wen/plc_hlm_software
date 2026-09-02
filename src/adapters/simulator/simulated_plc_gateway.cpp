@@ -164,8 +164,9 @@ void SimulatedPlcGateway::setLinkDown(bool down)
 void SimulatedPlcGateway::setHeartbeatFrozen(bool frozen)
 {
     m_heartbeatFrozen = frozen;
-    if (!frozen && m_offlineDueToFreeze) {
-        // Unfrozen: the next tick reconnects with a fresh snapshot.
+    if (!frozen) {
+        // Unfrozen: reset the freeze counter unconditionally so a later
+        // re-freeze starts from a clean slate (spec §8.4).
         m_freezeTicks = 0;
     }
 }
