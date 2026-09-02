@@ -1,6 +1,9 @@
 # Local brainstorming companion
 .superpowers/
 
+# Git worktrees
+.worktrees/
+
 # CMake build outputs
 /build/
 /out/
