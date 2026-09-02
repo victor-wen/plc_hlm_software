@@ -83,6 +83,13 @@ private slots:
 
     // --- timeout convergence -------------------------------------------------
     void adjustTimeoutConvergesToActualState();
+    void startTimeoutConvergesToFailure();
+    void stopTimeoutConvergesToFailure();
+    void modeSwitchConvergesOnM1M2();
+    void modeSwitchWriteFailureSurfaces();
+    void modeSwitchTimeoutConverges();
+    void estopReleaseConvergesViaM100ReadbackWhenM0Stuck();
+    void manualAndBypassRejectUnsupportedAddress();
 };
 
 void ControlCoordinatorTest::init()
@@ -105,6 +112,11 @@ void homeReady(SimulatedPlcGateway &gw)
     gw.tick();
     gw.tick(); // home return takes 2 s
 }
+
+// Forward declaration: see definition below (used by makeCoordinator).
+ControlCoordinator *makeCoordinatorWithCoil(SimulatedPlcGateway &gw, qint64 &now,
+                                            ControlCoordinator::PulseTransport t,
+                                            ControlCoordinator::Config cfg);
 
 // Build a coordinator wired to the simulated gateway. The pulse transport
 // routes pulses straight into the gateway (the real worker thread would route
@@ -131,6 +143,15 @@ ControlCoordinator *makeCoordinator(SimulatedPlcGateway &gw, qint64 &now,
         gw.writeRegister(a, v);
         return true;
     };
+    return makeCoordinatorWithCoil(gw, now, t, cfg);
+}
+
+// Like makeCoordinator but with a caller-supplied writeCoil transport (used to
+// force write failures or no-op mode-select writes).
+ControlCoordinator *makeCoordinatorWithCoil(
+    SimulatedPlcGateway &gw, qint64 &now, ControlCoordinator::PulseTransport t,
+    ControlCoordinator::Config cfg = {})
+{
     auto *c = new ControlCoordinator(&gw, t, cfg, [&now]() { return now; });
     // Wire the gateway feed: snapshots, connection state and write results.
     QObject::connect(&gw, &SimulatedPlcGateway::snapshotReady, c,
@@ -143,6 +164,28 @@ ControlCoordinator *makeCoordinator(SimulatedPlcGateway &gw, qint64 &now,
     if (gw.hasSnapshot())
         c->onSnapshot(gw.lastSnapshot());
     return c;
+}
+
+// Like makeCoordinator but the startPulse transport is a no-op: the pulse is
+// "sent" but the PLC never reacts (M3 never changes), for timeout tests.
+ControlCoordinator *makeCoordinatorNoPulse(SimulatedPlcGateway &gw, qint64 &now,
+                                           ControlCoordinator::Config cfg = {})
+{
+    ControlCoordinator::PulseTransport t;
+    t.startPulse = [](quint16) { return true; }; // no-op: M3 stays put
+    t.writeHold = [&gw](quint16 a, bool v) {
+        gw.writeCoil(a, v);
+        return true;
+    };
+    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) {
+        gw.writeCoil(a, v);
+        return true;
+    };
+    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) {
+        gw.writeRegister(a, v);
+        return true;
+    };
+    return makeCoordinatorWithCoil(gw, now, t, cfg);
 }
 
 } // namespace
@@ -714,6 +757,240 @@ void ControlCoordinatorTest::adjustTimeoutConvergesToActualState()
     QVERIFY(gw.lastSnapshot().m45());
     QVERIFY(!result); // converged to failure
     QVERIFY(!c->adjustInProgress());
+}
+
+// Start: M3 never becomes 1 -> HMI defensive timeout converges to failure,
+// never stuck in "pending".
+void ControlCoordinatorTest::startTimeoutConvergesToFailure()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinatorNoPulse(gw, now));
+    c->setRole(Role::Operator);
+    homeReady(gw);
+    gw.writeCoil(kM104, true);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m2());
+
+    bool result = true;
+    QString detail;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &d) {
+                if (cmd == Command::Start) {
+                    result = ok;
+                    detail = d;
+                }
+            });
+
+    QVERIFY(c->start().accepted);
+    gw.tick(); // M101 "sent" (no-op); the PLC never sets M3=1
+    QVERIFY(c->startInProgress());
+
+    // Advance the injected clock past kStartStopTimeoutMs (10 s).
+    now += 10'001;
+    gw.tick();
+    QVERIFY(!result); // timeout failure, not optimistic
+    QVERIFY(!c->startInProgress());
+    QVERIFY(detail.contains(QStringLiteral("超时")));
+}
+
+// Stop: M3 never becomes 0 -> HMI defensive timeout converges to failure.
+void ControlCoordinatorTest::stopTimeoutConvergesToFailure()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinatorNoPulse(gw, now));
+    c->setRole(Role::Anonymous);
+    homeReady(gw);
+    gw.writeCoil(kM104, true);
+    gw.tick();
+    gw.writeCoil(kM101, true);
+    gw.writeCoil(kM101, false);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m3());
+
+    bool result = true;
+    QString detail;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &d) {
+                if (cmd == Command::Stop) {
+                    result = ok;
+                    detail = d;
+                }
+            });
+
+    QVERIFY(c->stop().accepted);
+    gw.tick(); // M102 "sent" (no-op); the PLC never clears M3
+    QVERIFY(c->stopInProgress());
+
+    now += 10'001;
+    gw.tick();
+    QVERIFY(!result); // timeout failure, not optimistic
+    QVERIFY(!c->stopInProgress());
+    QVERIFY(detail.contains(QStringLiteral("超时")));
+}
+
+// Mode switch: M104 write succeeds, M1/M2 reflects -> converges to success.
+void ControlCoordinatorTest::modeSwitchConvergesOnM1M2()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+    homeReady(gw);
+
+    bool result = false;
+    QString detail;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &d) {
+                if (cmd == Command::ModeSwitch) {
+                    result = ok;
+                    detail = d;
+                }
+            });
+
+    QVERIFY(c->setMode(true).accepted); // -> auto (M2)
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m2());
+    QVERIFY(result);
+    QVERIFY(detail.contains(QStringLiteral("自动")));
+
+    result = false;
+    QVERIFY(c->setMode(false).accepted); // -> manual (M1)
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m1());
+    QVERIFY(result);
+    QVERIFY(detail.contains(QStringLiteral("手动")));
+}
+
+// Mode switch: a failed M104 write surfaces as a write failure (not timeout).
+void ControlCoordinatorTest::modeSwitchWriteFailureSurfaces()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    ControlCoordinator::PulseTransport t;
+    t.writeCoil = [](quint16, bool, CommandPriority) { return false; };
+    std::unique_ptr<ControlCoordinator> c(makeCoordinatorWithCoil(gw, now, t));
+    c->setRole(Role::Admin);
+    homeReady(gw);
+
+    bool result = true;
+    QString detail;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &d) {
+                if (cmd == Command::ModeSwitch) {
+                    result = ok;
+                    detail = d;
+                }
+            });
+
+    // The M104 write fails (writeCoil returns false).
+    QVERIFY(c->setMode(true).accepted);
+    QVERIFY(!result); // immediate write failure reported
+    QVERIFY(detail.contains(QStringLiteral("失败")));
+}
+
+// Mode switch: M104 write succeeds but M1/M2 never reflects -> timeout.
+void ControlCoordinatorTest::modeSwitchTimeoutConverges()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    ControlCoordinator::PulseTransport t;
+    t.startPulse = [&gw](quint16 a) {
+        gw.writeCoil(a, true);
+        gw.writeCoil(a, false);
+        return true;
+    };
+    t.writeHold = [&gw](quint16 a, bool v) {
+        gw.writeCoil(a, v);
+        return true;
+    };
+    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) {
+        gw.writeRegister(a, v);
+        return true;
+    };
+    t.writeCoil = [](quint16, bool, CommandPriority) { return true; }; // no-op select
+    std::unique_ptr<ControlCoordinator> c(makeCoordinatorWithCoil(gw, now, t));
+    c->setRole(Role::Admin);
+    homeReady(gw);
+
+    bool result = true;
+    QString detail;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &d) {
+                if (cmd == Command::ModeSwitch) {
+                    result = ok;
+                    detail = d;
+                }
+            });
+
+    QVERIFY(c->setMode(true).accepted); // write "succeeds" but M1/M2 never reflects
+    QVERIFY(!gw.lastSnapshot().m2());
+
+    now += 5'001; // past kModeTimeoutMs
+    gw.tick();
+    QVERIFY(!result); // timeout failure, not stuck
+    QVERIFY(detail.contains(QStringLiteral("超时")));
+}
+
+// Estop release with a physical estop stuck (M0=1): the M100 readback confirms
+// the release write took effect -> converges, does not hang on 待确认.
+void ControlCoordinatorTest::estopReleaseConvergesViaM100ReadbackWhenM0Stuck()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+
+    // Set the estop and inject a stuck physical estop that keeps M0=1 even
+    // after the HMI clears M100 (the M100 readback still confirms the write).
+    QVERIFY(c->estopSet().accepted);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m0());
+    gw.model().setEstopReleaseStuck(true);
+
+    bool result = false;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &) {
+                if (cmd == Command::EstopRelease)
+                    result = ok;
+            });
+
+    QVERIFY(c->estopRelease().accepted);
+    gw.tick();
+    // M0 still 1 (physical estop), but M100 readback shows the release write.
+    QVERIFY(gw.lastSnapshot().m0());
+    QVERIFY(!gw.lastSnapshot().m100());
+    QVERIFY(result); // converged via M100 readback, not hung
+}
+
+// manualHold / manualLatch / bypass reject addresses outside the spec whitelist.
+void ControlCoordinatorTest::manualAndBypassRejectUnsupportedAddress()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+    homeReady(gw);
+
+    // manualHold: only M106/M107/M108.
+    QVERIFY(!c->manualHold(kM109, true).accepted);
+    QVERIFY(!c->manualHold(0, true).accepted);
+    // manualLatch: only M109.
+    QVERIFY(!c->manualLatch(kM106, true).accepted);
+    // bypass: only M42/M105/M110/M111.
+    QVERIFY(!c->bypass(kM106, true).accepted);
+    QVERIFY(!c->bypass(kM100, true).accepted);
+    QVERIFY(!gw.model().readCoil(kM109)); // nothing was written
+    QVERIFY(!gw.model().readCoil(kM106));
+    QVERIFY(!gw.model().readCoil(kM100));
 }
 
 QTEST_GUILESS_MAIN(ControlCoordinatorTest)

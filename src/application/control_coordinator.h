@@ -147,7 +147,6 @@ private:
     void onAdjustSnapshot(const DeviceSnapshot &s);
     void onStartSnapshot(const DeviceSnapshot &s);
     void onStopSnapshot(const DeviceSnapshot &s);
-    void onWriteForCommand(quint16 address, bool ok);
 
     IPlcGateway *m_gateway = nullptr;
     PulseTransport m_transport;

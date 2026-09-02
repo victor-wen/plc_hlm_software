@@ -33,6 +33,9 @@ public:
     void setProductionCount(quint32 count);
     void setHomeReturnFault(int code); // 0 = none, 8/9 = home-return fault
     void setPositioningStall(bool stall); // motor never reaches position
+    // Physical estop stuck: M0 stays 1 even when the HMI clears M100 (simulates
+    // a physical estop holding M0 despite the M100=0 release write).
+    void setEstopReleaseStuck(bool stuck);
 
     // Advance simulated time by `seconds`, driving the D140 heartbeat,
     // positioning progress, dynamic timeout, home return and M112 watchdog.
@@ -74,6 +77,7 @@ private:
     // Home return: remaining seconds until completion.
     quint64 m_homeRemaining = 0;
     int m_homeFault = 0; // injected fault code (0 = none)
+    bool m_estopReleaseStuck = false; // physical estop holds M0 despite M100=0
 
     // M112 watchdog: seconds since the last M112 rising edge.
     quint64 m_watchdogElapsed = 0;

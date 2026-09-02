@@ -155,6 +155,14 @@ void H3uSimulationModel::setPositioningStall(bool stall)
     m_stall = stall;
 }
 
+void H3uSimulationModel::setEstopReleaseStuck(bool stuck)
+{
+    m_estopReleaseStuck = stuck;
+    // Re-assert M0 to reflect the physical estop keeping the machine stopped.
+    if (stuck)
+        m_coils[kM0] = true;
+}
+
 void H3uSimulationModel::advance(quint64 seconds)
 {
     m_clock.advance(seconds);
@@ -298,7 +306,9 @@ void H3uSimulationModel::onM100Write(bool value)
         }
     } else {
         // Release clears M0 only; the fault stays latched until M103.
-        m_coils[kM0] = false;
+        // A stuck physical estop keeps M0=1 despite the M100=0 release write.
+        if (!m_estopReleaseStuck)
+            m_coils[kM0] = false;
     }
 }
 

@@ -258,6 +258,11 @@ ControlCoordinator::CommandResult ControlCoordinator::manualHold(quint16 address
         emit commandRejected(Command::ManualCommand, g.reason);
         return g;
     }
+    // Hold commands are only M106/M107/M108 (spec §10.7); reject others.
+    if (address != kM106 && address != kM107 && address != kM108) {
+        emit commandRejected(Command::ManualCommand, QStringLiteral("不支持的手动命令地址"));
+        return {false, QStringLiteral("不支持的手动命令地址")};
+    }
     if (m_transport.writeHold && m_transport.writeHold(address, pressed)) {
         emit commandAccepted(Command::ManualCommand);
         emit commandResult(Command::ManualCommand, true, QString());
@@ -275,6 +280,11 @@ ControlCoordinator::CommandResult ControlCoordinator::manualLatch(quint16 addres
         emit commandRejected(Command::ManualCommand, g.reason);
         return g;
     }
+    // The latched manual command is M109 (stop gate) only (spec §10.7).
+    if (address != kM109) {
+        emit commandRejected(Command::ManualCommand, QStringLiteral("不支持的手动命令地址"));
+        return {false, QStringLiteral("不支持的手动命令地址")};
+    }
     if (m_transport.writeCoil && m_transport.writeCoil(address, value, CommandPriority::Normal)) {
         emit commandAccepted(Command::ManualCommand);
         emit commandResult(Command::ManualCommand, true, QString());
@@ -291,6 +301,11 @@ ControlCoordinator::CommandResult ControlCoordinator::bypass(quint16 address, bo
     if (!g.accepted) {
         emit commandRejected(Command::Bypass, g.reason);
         return g;
+    }
+    // 屏蔽 addresses are M105 (passthrough) and M42/M110/M111 (spec §10.8).
+    if (address != kM42 && address != kM105 && address != kM110 && address != kM111) {
+        emit commandRejected(Command::Bypass, QStringLiteral("不支持的屏蔽地址"));
+        return {false, QStringLiteral("不支持的屏蔽地址")};
     }
     if (m_transport.writeCoil && m_transport.writeCoil(address, value, CommandPriority::Normal)) {
         emit commandAccepted(Command::Bypass);
@@ -350,7 +365,12 @@ void ControlCoordinator::onSnapshot(const DeviceSnapshot &s)
         m_estopSetPending = false;
         emit commandResult(Command::EstopSet, true, QStringLiteral("急停已置位"));
     }
-    if (m_estopReleasePending && !s.m0()) {
+    // Estop release confirms when either the physical estop is released
+    // (M0=0) or the M100 readback shows the release write took effect
+    // (spec §8.4, §10.6: 解除请求成功 ≠ 设备可运行, which is decided later by
+    // M0/M14/M60). Without the M100 readback a stuck physical estop would hold
+    // M0=1 and the release would hang on 待确认 forever.
+    if (m_estopReleasePending && (!s.m0() || !s.m100())) {
         m_estopReleasePending = false;
         emit commandResult(Command::EstopRelease, true, QStringLiteral("急停已解除"));
     }
@@ -430,6 +450,14 @@ void ControlCoordinator::onWriteCompleted(quint16 address, bool ok)
             m_estopReleasePending = false;
             finishCommand(Command::EstopRelease, false, QStringLiteral("写 M100 失败"));
         }
+        break;
+    case Command::ModeSwitch:
+        if (!ok) {
+            // A failed M104 write surfaces as a write failure, not 模式切换超时.
+            m_modePending = false;
+            emit commandResult(Command::ModeSwitch, false, QStringLiteral("写 M104 失败"));
+        }
+        // ok: stay pending until the snapshot shows M1/M2 (spec §11.2).
         break;
     default:
         break;
