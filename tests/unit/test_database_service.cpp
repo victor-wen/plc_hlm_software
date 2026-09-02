@@ -1,11 +1,16 @@
-// Task 8 unit tests: DatabaseService restricted mode (spec §13).
-// A database that cannot be opened or migrated must put the service into
-// restricted mode; the application then keeps only online-stop and
-// software-estop (enforced by the application layer, spec §13).
+// Task 8 unit tests: DatabaseService async facade (spec §7.3, §13).
+//
+// The service owns a dedicated worker thread and is moved onto it; the single
+// QSqlDatabase connection is created and used only there. All operations run
+// on the worker thread via queued invocation, and results arrive as signals on
+// the caller's thread. These tests exercise that queued path end-to-end on a
+// healthy database, and the restricted-mode fallback for an unopenable one
+// (spec §13).
 
 #include <QtTest>
 
 #include <QFile>
+#include <QMetaObject>
 #include <QSignalSpy>
 #include <QSqlDatabase>
 #include <QTemporaryDir>
@@ -21,6 +26,7 @@ class DatabaseServiceTest : public QObject
 private slots:
     void initTestCase();
     void healthyDatabaseEmitsReady();
+    void healthyServiceRunsOperationsOnWorkerThread();
     void unopenableDatabaseEntersRestrictedMode();
     void restrictedServiceRejectsOperations();
 };
@@ -44,6 +50,56 @@ void DatabaseServiceTest::healthyDatabaseEmitsReady()
     QTRY_VERIFY_WITH_TIMEOUT(readySpy.size() > 0, 5000);
     QCOMPARE(restrictedSpy.size(), 0);
     QVERIFY(!service.isRestricted());
+    service.stop();
+}
+
+// Spec §7.3: the service lives on its worker thread (single-thread
+// single-connection). Drive admin creation and login through the queued
+// invocation path so the production contract is exercised, not bypassed.
+void DatabaseServiceTest::healthyServiceRunsOperationsOnWorkerThread()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    DatabaseService service(dir.filePath(QStringLiteral("app.db")));
+    QSignalSpy readySpy(&service, &DatabaseService::ready);
+    service.start();
+    QTRY_VERIFY_WITH_TIMEOUT(readySpy.size() > 0, 5000);
+    QVERIFY(!service.isRestricted());
+
+    // The service object's thread affinity is the worker thread, which must
+    // differ from the test thread (§7.3).
+    QVERIFY(service.thread() != QThread::currentThread());
+
+    // createInitialAdmin + login via Qt::QueuedConnection: queued to the
+    // worker thread's event loop (the production path).
+    QSignalSpy adminSpy(&service, &DatabaseService::initialAdminCreated);
+    const bool adminQueued = QMetaObject::invokeMethod(
+        &service, "createInitialAdmin", Qt::QueuedConnection,
+        Q_ARG(QString, QStringLiteral("admin")),
+        Q_ARG(QString, QStringLiteral("s3cret!")));
+    QVERIFY(adminQueued);
+    QTRY_VERIFY_WITH_TIMEOUT(adminSpy.size() > 0, 5000);
+    QCOMPARE(adminSpy[0][0].toBool(), true);
+
+    QSignalSpy loginSpy(&service, &DatabaseService::loginResult);
+    const bool loginQueued = QMetaObject::invokeMethod(
+        &service, "login", Qt::QueuedConnection,
+        Q_ARG(QString, QStringLiteral("admin")),
+        Q_ARG(QString, QStringLiteral("s3cret!")));
+    QVERIFY(loginQueued);
+    QTRY_VERIFY_WITH_TIMEOUT(loginSpy.size() > 0, 5000);
+    QVERIFY(loginSpy[0][0].value<LoginResult>().ok);
+
+    // A wrong password still returns a clean failure through the same path.
+    QSignalSpy badLoginSpy(&service, &DatabaseService::loginResult);
+    const bool badQueued = QMetaObject::invokeMethod(
+        &service, "login", Qt::QueuedConnection,
+        Q_ARG(QString, QStringLiteral("admin")),
+        Q_ARG(QString, QStringLiteral("wrong")));
+    QVERIFY(badQueued);
+    QTRY_VERIFY_WITH_TIMEOUT(badLoginSpy.size() > 0, 5000);
+    QCOMPARE(badLoginSpy[0][0].value<LoginResult>().ok, false);
+
     service.stop();
 }
 

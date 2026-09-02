@@ -5,7 +5,8 @@
 // Each migration runs inside its own transaction; a failure rolls the
 // transaction back and leaves the database untouched. The runner records the
 // applied version and a checksum of the migration SQL in schema_migrations so
-// a tampered or reordered migration is detected on the next start.
+// a tampered migration is detected on the next start (the checksum is stored
+// per applied version, so reordering is not detected).
 
 #include <QString>
 #include <QVector>

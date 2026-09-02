@@ -34,9 +34,9 @@ public:
     // True when no user exists yet (first start, spec §11.5).
     bool needsInitialAdmin() const;
 
-    // Creates the initial admin account. `password` must be non-empty.
-    // Returns false (with error) if a user already exists or the password is
-    // empty.
+    // Creates the initial admin account. `username` must be non-blank and
+    // `password` must be non-empty. Returns false (with error) if a user
+    // already exists, either input is empty, or key derivation fails.
     bool createInitialAdmin(const QString &username, const QString &password,
                             QString *error = nullptr);
 
@@ -50,9 +50,6 @@ public:
     // not exist.
     bool changePassword(qint64 userId, const QString &newPassword,
                         QString *error = nullptr);
-
-    // Resets the failed-attempt counter (e.g. after a successful login).
-    void clearFailedAttempts(const QString &username);
 
     // Overrides the lockout window (seconds). Test hook; default 30 (spec §11.5).
     void setLockoutSeconds(int seconds) { m_lockoutSeconds = seconds; }

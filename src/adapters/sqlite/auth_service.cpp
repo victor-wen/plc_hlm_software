@@ -1,5 +1,7 @@
 #include "adapters/sqlite/auth_service.h"
 
+#include <optional>
+
 #include "domain/password_derivation.h"
 #include "ports/repositories.h"
 
@@ -7,15 +9,24 @@ namespace hlm {
 
 namespace {
 
-// Builds a UserRecord with a freshly derived hash for `password`.
-UserRecord makeUserRecord(const QString &username, Role role, const QString &password)
+// Builds a UserRecord with a freshly derived hash for `password`. Returns
+// std::nullopt if the random salt or key derivation fails (e.g. OpenSSL
+// RAND_bytes failure), so the caller can abort rather than store an empty hash.
+std::optional<UserRecord> makeUserRecord(const QString &username, Role role,
+                                         const QString &password)
 {
+    const QByteArray salt = generateSalt();
+    if (salt.isEmpty())
+        return std::nullopt;
+    const QByteArray derived = derivePasswordKey(password, salt, kDefaultPbkdf2Iterations);
+    if (derived.isEmpty())
+        return std::nullopt;
     UserRecord u;
     u.username = username;
     u.role = role;
-    u.salt = generateSalt();
+    u.salt = salt;
     u.iterations = kDefaultPbkdf2Iterations;
-    u.passwordHash = passwordHashHex(derivePasswordKey(password, u.salt, u.iterations));
+    u.passwordHash = passwordHashHex(derived);
     u.enabled = true;
     return u;
 }
@@ -53,6 +64,11 @@ bool AuthService::needsInitialAdmin() const
 bool AuthService::createInitialAdmin(const QString &username, const QString &password,
                                      QString *error)
 {
+    if (username.trimmed().isEmpty()) {
+        if (error)
+            *error = QStringLiteral("username must not be empty");
+        return false;
+    }
     if (password.isEmpty()) {
         if (error)
             *error = QStringLiteral("password must not be empty");
@@ -63,8 +79,13 @@ bool AuthService::createInitialAdmin(const QString &username, const QString &pas
             *error = QStringLiteral("users already exist");
         return false;
     }
-    UserRecord u = makeUserRecord(username, Role::Admin, password);
-    if (!m_users->createUser(u, error))
+    const auto u = makeUserRecord(username, Role::Admin, password);
+    if (!u) {
+        if (error)
+            *error = QStringLiteral("failed to derive password hash");
+        return false;
+    }
+    if (!m_users->createUser(*u, error))
         return false;
     audit(m_audit, username, Role::Admin, QStringLiteral("user.create"),
           QStringLiteral("admin"), QString(), AuditResult::Success, QString());
@@ -150,11 +171,6 @@ bool AuthService::changePassword(qint64 userId, const QString &newPassword,
     if (error)
         *error = QStringLiteral("user not found");
     return false;
-}
-
-void AuthService::clearFailedAttempts(const QString &username)
-{
-    m_lockState.remove(username);
 }
 
 } // namespace hlm

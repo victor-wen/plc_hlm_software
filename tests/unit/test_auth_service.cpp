@@ -25,6 +25,7 @@ private slots:
     void initTestCase();
     void cleanup();
     void firstStartRequiresAdminCreation();
+    void emptyOrBlankUsernameRejected();
     void noDefaultPasswordAndNoPlaintext();
     void correctPasswordLogsIn();
     void wrongPasswordFails();
@@ -69,6 +70,26 @@ void AuthServiceTest::firstStartRequiresAdminCreation()
         // A second admin cannot be created while users exist.
         QVERIFY(!auth.createInitialAdmin(QStringLiteral("root"), QStringLiteral("x"), &error));
         QCOMPARE(users.countUsers(), qint64(1));
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("auth_test"));
+}
+
+void AuthServiceTest::emptyOrBlankUsernameRejected()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    {
+        QSqlDatabase db = hlm_test::createMigratedDb(dir, QStringLiteral("auth_test"));
+        QVERIFY(db.isOpen());
+        SqliteUserRepository users(db);
+        SqliteAuditRepository audit(db);
+        AuthService auth(&users, &audit);
+
+        QString error;
+        QVERIFY(!auth.createInitialAdmin(QString(), QStringLiteral("s3cret!"), &error));
+        QVERIFY(!auth.createInitialAdmin(QStringLiteral("   "), QStringLiteral("s3cret!"), &error));
+        QVERIFY(auth.needsInitialAdmin());
+        QCOMPARE(users.countUsers(), qint64(0));
     }
     QSqlDatabase::removeDatabase(QStringLiteral("auth_test"));
 }

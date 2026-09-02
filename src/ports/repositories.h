@@ -38,7 +38,8 @@ struct UserRecord {
 
 // Result of an authentication attempt (spec §11.5). `user` is set only on
 // success. `reason` is one of: "unknown user", "disabled", "locked",
-// "bad credentials".
+// "bad credentials", or "database restricted" (the SQLite facade is in
+// restricted mode, spec §13).
 struct LoginResult {
     bool ok = false;
     QString reason;

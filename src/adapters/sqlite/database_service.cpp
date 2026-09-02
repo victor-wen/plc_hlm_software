@@ -1,5 +1,6 @@
 #include "adapters/sqlite/database_service.h"
 
+#include <QDebug>
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
@@ -288,8 +289,16 @@ void DatabaseService::runRetentionCleanup()
     const QDateTime cutoff = QDateTime::currentDateTimeUtc().addDays(-kRetentionDays);
     qint64 removedAlarms = 0;
     qint64 removedAudit = 0;
-    m_alarms->purgeEndedBefore(cutoff, &removedAlarms);
-    m_audit->purgeBefore(cutoff, &removedAudit);
+    QString alarmError;
+    QString auditError;
+    const bool alarmsOk = m_alarms->purgeEndedBefore(cutoff, &removedAlarms, &alarmError);
+    const bool auditOk = m_audit->purgeBefore(cutoff, &removedAudit, &auditError);
+    if (!alarmsOk)
+        qWarning("DatabaseService: alarm retention purge failed: %s",
+                 qPrintable(alarmError));
+    if (!auditOk)
+        qWarning("DatabaseService: audit retention purge failed: %s",
+                 qPrintable(auditError));
     emit retentionCleanupDone(removedAlarms, removedAudit);
 }
 
