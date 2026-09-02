@@ -98,6 +98,7 @@ private slots:
     void offlineClearEmitsWriteCompletedFalseForInFlightWrite();
     void readbackSendFailureEmitsWriteCompletedFalse();
     void offlineReportsPendingAndQueuedWrites();
+    void stopReportsPendingAndQueuedWrites();
 
 private:
     FakeTransport *m_transport = nullptr;
@@ -547,6 +548,33 @@ void GatewayTest::offlineReportsPendingAndQueuedWrites()
     QCOMPARE(m_writeResults.size(), 1);
     QCOMPARE(m_writeResults.at(0).first, quint16(200));
     QCOMPARE(m_writeResults.at(0).second, false);
+}
+
+void GatewayTest::stopReportsPendingAndQueuedWrites()
+{
+    m_transport->completeOk(fastBlock(1)); // first fast poll
+    QVERIFY(m_worker->isOnline());
+
+    // Write #1 dispatched and acknowledged; its readback is pending.
+    m_worker->submitWriteCoil(100, true, CommandPriority::Normal);
+    QCOMPARE(m_transport->sent.size(), 2);
+    QCOMPARE(m_transport->sent.last().kind, ModbusRequest::Kind::WriteCoil);
+    m_transport->completeOk({}); // write #1 acknowledged -> readback pending
+
+    // Write #2 submitted while the readback is in flight: stays queued.
+    m_worker->submitWriteCoil(200, true, CommandPriority::Normal);
+    QCOMPARE(m_transport->sent.size(), 3);
+    QCOMPARE(m_transport->sent.last().kind, ModbusRequest::Kind::ReadCoils);
+
+    // stop() must report BOTH the pending-confirmation write and the queued
+    // write as failed — never silently dropped.
+    m_worker->stop();
+
+    QCOMPARE(m_writeResults.size(), 2);
+    QCOMPARE(m_writeResults.at(0).first, quint16(100));
+    QCOMPARE(m_writeResults.at(0).second, false);
+    QCOMPARE(m_writeResults.at(1).first, quint16(200));
+    QCOMPARE(m_writeResults.at(1).second, false);
 }
 
 QTEST_GUILESS_MAIN(GatewayTest)

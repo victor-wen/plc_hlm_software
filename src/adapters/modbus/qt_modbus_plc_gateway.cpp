@@ -270,6 +270,11 @@ void ModbusGatewayWorker::stop()
         m_transport->close();
     m_state = LinkState::Disconnected;
     m_queue.close();
+    // Report any in-flight write, ack'd-but-unconfirmed write, and queued
+    // write as failed — never silently dropped (IPlcGateway contract: results
+    // arrive via writeCompleted()). stop() is BlockingQueued, so a stop->start
+    // reconfiguration must not leave the UI waiting forever.
+    reportDroppedWrites(QStringLiteral("gateway stopped"));
     m_queue.clear();
     m_inFlight = std::nullopt;
 }
@@ -409,32 +414,39 @@ void ModbusGatewayWorker::enterOffline()
     m_queue.close();
     m_hasValidSnapshot = false;
     m_busy = false;
+    // Report any in-flight write, ack'd-but-unconfirmed write, and queued
+    // write as failed — never silently dropped (IPlcGateway contract: results
+    // arrive via writeCompleted()).
+    reportDroppedWrites(QStringLiteral("offline"));
+    m_queue.clear();
+    emit connectionStateChanged(false);
+    scheduleReconnect();
+}
+
+void ModbusGatewayWorker::reportDroppedWrites(const QString &reason)
+{
     // An in-flight write must still report its result (IPlcGateway contract:
     // results arrive via writeCompleted()); otherwise the UI waits forever.
     if (m_inFlight
         && (m_inFlight->kind == ModbusRequest::Kind::WriteCoil
             || m_inFlight->kind == ModbusRequest::Kind::WriteRegister)) {
-        emit writeCompleted(m_inFlight->address, false,
-                            QStringLiteral("link went offline"));
+        emit writeCompleted(m_inFlight->address, false, reason);
     }
     m_inFlight = std::nullopt;
     // A write ack'd but not yet confirmed by readback, and a write queued but
     // not yet dispatched, must both report failure — never silently dropped.
     for (auto it = m_pendingConfirmations.constBegin();
          it != m_pendingConfirmations.constEnd(); ++it) {
-        emit writeCompleted(it->address, false, QStringLiteral("offline"));
+        emit writeCompleted(it->address, false, reason);
     }
     m_pendingConfirmations.clear();
     ModbusRequest queued;
     while (m_queue.next(queued)) {
         if (queued.kind == ModbusRequest::Kind::WriteCoil
             || queued.kind == ModbusRequest::Kind::WriteRegister) {
-            emit writeCompleted(queued.address, false, QStringLiteral("offline"));
+            emit writeCompleted(queued.address, false, reason);
         }
     }
-    m_queue.clear();
-    emit connectionStateChanged(false);
-    scheduleReconnect();
 }
 
 void ModbusGatewayWorker::scheduleReconnect()

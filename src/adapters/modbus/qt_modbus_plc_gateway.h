@@ -97,6 +97,7 @@ private:
 
     void openLink();
     void enterOffline();
+    void reportDroppedWrites(const QString &reason);
     void scheduleReconnect();
     void tryDispatch();
     void handleReadResult(const ModbusRequest &req, const TransferResult &res);
