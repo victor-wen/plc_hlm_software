@@ -10,7 +10,10 @@
       "features": [
         "concurrent",
         "gui",
+        "harfbuzz",
+        "jpeg",
         "network",
+        "png",
         "sql",
         "sql-sqlite",
         "testlib",
