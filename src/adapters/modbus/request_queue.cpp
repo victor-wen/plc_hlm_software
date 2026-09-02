@@ -39,6 +39,13 @@ bool RequestQueue::enqueue(ModbusRequest req)
     return true;
 }
 
+bool RequestQueue::enqueuePoll(ModbusRequest req)
+{
+    req.id = m_nextId++;
+    m_requests.append(req);
+    return true;
+}
+
 bool RequestQueue::next(ModbusRequest &out)
 {
     if (m_requests.isEmpty())

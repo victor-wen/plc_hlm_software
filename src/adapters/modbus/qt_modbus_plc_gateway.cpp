@@ -165,6 +165,14 @@ void QtModbusPlcGateway::stop()
 {
     if (m_thread.isRunning())
         QMetaObject::invokeMethod(m_worker, "stop", Qt::BlockingQueuedConnection);
+    // Mirror the offline state so isOnline()/connectionStateChanged() do not
+    // stay stale after stop (the worker emits nothing on stop).
+    if (m_online) {
+        m_online = false;
+        emit connectionStateChanged(false);
+    }
+    // Reset the start guard so a stop->start restart actually runs again.
+    m_started = false;
 }
 
 bool QtModbusPlcGateway::isOnline() const
@@ -247,7 +255,6 @@ void ModbusGatewayWorker::start()
         connect(m_transport, &IModbusTransport::transferFinished, this,
                 &ModbusGatewayWorker::onTransferFinished);
     }
-    m_queue.reopen();
     m_policy = ReconnectPolicy();
     m_state = LinkState::Disconnected;
     m_busy = false;
@@ -277,6 +284,13 @@ void ModbusGatewayWorker::stop()
     reportDroppedWrites(QStringLiteral("gateway stopped"));
     m_queue.clear();
     m_inFlight = std::nullopt;
+    // Reset the start guard and busy flag so a stop->start restart actually
+    // re-creates/reopens the transport and runs again.
+    m_started = false;
+    m_busy = false;
+    // Mirror the offline state so isOnline()/connectionStateChanged() do not
+    // stay stale after stop (same signal enterOffline() emits).
+    emit connectionStateChanged(false);
 }
 
 void ModbusGatewayWorker::submitWriteCoil(quint16 address, bool value, CommandPriority priority)
@@ -330,7 +344,7 @@ void ModbusGatewayWorker::onPollTick()
         req.count = kFastCount;
         req.cls = RequestClass::FastPoll;
         req.retriesLeft = m_cfg.readRetries;
-        m_queue.enqueue(req);
+        m_queue.enqueuePoll(req);
     }
     if (now - m_lastHomeMs >= m_homeMs) {
         m_lastHomeMs = now;
@@ -340,7 +354,7 @@ void ModbusGatewayWorker::onPollTick()
         req.count = kHomeCount;
         req.cls = RequestClass::HomePoll;
         req.retriesLeft = m_cfg.readRetries;
-        m_queue.enqueue(req);
+        m_queue.enqueuePoll(req);
     }
     if (now - m_lastCommandMs >= m_commandMs) {
         m_lastCommandMs = now;
@@ -350,7 +364,7 @@ void ModbusGatewayWorker::onPollTick()
         req.count = kCommandCount;
         req.cls = RequestClass::CommandPoll;
         req.retriesLeft = m_cfg.readRetries;
-        m_queue.enqueue(req);
+        m_queue.enqueuePoll(req);
     }
     if (now - m_lastSlowMs >= m_slowMs) {
         m_lastSlowMs = now;
@@ -360,7 +374,7 @@ void ModbusGatewayWorker::onPollTick()
         req.count = kSlowCount;
         req.cls = RequestClass::SlowPoll;
         req.retriesLeft = m_cfg.readRetries;
-        m_queue.enqueue(req);
+        m_queue.enqueuePoll(req);
     }
 
     tryDispatch();
@@ -384,7 +398,10 @@ void ModbusGatewayWorker::openLink()
         return;
     }
     m_state = LinkState::Online;
-    m_queue.reopen();
+    // Keep the queue closed until the first full valid snapshot arrives after
+    // (re)connect: non-safety control must not resume before a full snapshot
+    // (spec §8.4). Writes submitted in this window are rejected, not queued.
+    m_queue.close();
     m_queue.clear(); // no replay of anything queued while offline (spec §8.4)
     m_hasValidSnapshot = false;
     m_haveHeartbeat = false;
@@ -396,14 +413,15 @@ void ModbusGatewayWorker::openLink()
     emit connectionStateChanged(false); // not fully online until first snapshot
 
     // Fetch a full fast block immediately so the first snapshot arrives
-    // promptly after (re)connect (spec §8.4).
+    // promptly after (re)connect (spec §8.4). Polls are allowed even while
+    // the queue is closed (writes are not).
     ModbusRequest fast;
     fast.kind = ModbusRequest::Kind::ReadRegisters;
     fast.address = kFastStart;
     fast.count = kFastCount;
     fast.cls = RequestClass::FastPoll;
     fast.retriesLeft = m_cfg.readRetries;
-    m_queue.enqueue(fast);
+    m_queue.enqueuePoll(fast);
 
     tryDispatch();
 }
@@ -624,6 +642,9 @@ void ModbusGatewayWorker::handleReadResult(const ModbusRequest &req, const Trans
                 // fully online again — reset the reconnect schedule and the
                 // consecutive-failure counter (spec §8.4).
                 m_policy.onReconnectSucceeded();
+                // Reopen the queue: non-safety control may resume now that a
+                // full valid snapshot is in hand (spec §8.4).
+                m_queue.reopen();
                 emit connectionStateChanged(true); // full snapshot acquired
             }
         }

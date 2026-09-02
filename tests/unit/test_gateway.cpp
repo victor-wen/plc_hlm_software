@@ -99,6 +99,9 @@ private slots:
     void readbackSendFailureEmitsWriteCompletedFalse();
     void offlineReportsPendingAndQueuedWrites();
     void stopReportsPendingAndQueuedWrites();
+    void stopEmitsConnectionStateChangedFalse();
+    void restartAfterStopWorks();
+    void writeRejectedUntilFirstSnapshotAfterReconnect();
 
 private:
     FakeTransport *m_transport = nullptr;
@@ -575,6 +578,94 @@ void GatewayTest::stopReportsPendingAndQueuedWrites()
     QCOMPARE(m_writeResults.at(0).second, false);
     QCOMPARE(m_writeResults.at(1).first, quint16(200));
     QCOMPARE(m_writeResults.at(1).second, false);
+}
+
+void GatewayTest::stopEmitsConnectionStateChangedFalse()
+{
+    m_transport->completeOk(fastBlock(1)); // first fast poll
+    QVERIFY(m_worker->isOnline());
+    QVERIFY(m_online);
+
+    m_worker->stop();
+
+    // The worker's stop() must not leave the online mirror stale.
+    QVERIFY(!m_worker->isOnline());
+    QVERIFY(!m_online);
+}
+
+void GatewayTest::restartAfterStopWorks()
+{
+    m_transport->completeOk(fastBlock(1)); // first fast poll
+    QVERIFY(m_worker->isOnline());
+
+    m_worker->stop();
+    QVERIFY(!m_worker->isOnline());
+
+    // A stop->start restart must re-run: reopen the link, dispatch a fresh
+    // poll, and publish a snapshot again.
+    m_worker->start();
+    QVERIFY(m_transport->m_open);
+    QCOMPARE(m_transport->sent.size(), 2); // fresh fast poll dispatched
+    m_transport->completeOk(fastBlock(2));
+    QVERIFY(m_worker->isOnline());
+    QCOMPARE(m_snapshots, 2);
+}
+
+void GatewayTest::writeRejectedUntilFirstSnapshotAfterReconnect()
+{
+    m_transport->completeOk(fastBlock(1)); // first fast poll
+    QVERIFY(m_worker->isOnline());
+
+    // Drive the link offline via 3 consecutive transfer failures (each read
+    // retried once: fail + fail per cycle).
+    m_now = 300;
+    m_worker->onPollTick();
+    m_transport->completeFail();
+    m_transport->completeFail();
+    m_now = 600;
+    m_worker->onPollTick();
+    m_transport->completeFail();
+    m_transport->completeFail();
+    m_now = 900;
+    m_worker->onPollTick();
+    m_transport->completeFail();
+    m_transport->completeFail();
+    QVERIFY(!m_worker->isOnline());
+
+    // Reconnect attempt: the link opens and a fresh fast poll is dispatched,
+    // but the immediate fast poll FAILS (no full snapshot yet).
+    m_worker->onReconnectTick();
+    QVERIFY(m_transport->m_open);
+    QVERIFY(!m_worker->isOnline());
+    m_transport->completeFail(); // immediate fast poll fails -> retry
+    m_transport->completeFail(); // retry fails -> still no snapshot
+
+    // A write submitted in the reconnect window must be rejected, not
+    // dispatched (spec §8.4: no control before a full valid snapshot).
+    const int sentBeforeWrite = m_transport->sent.size();
+    m_worker->submitWriteCoil(100, true, CommandPriority::Normal);
+    QCOMPARE(m_writeResults.size(), 1);
+    QCOMPARE(m_writeResults.first().first, quint16(100));
+    QCOMPARE(m_writeResults.first().second, false); // rejected
+    QCOMPARE(m_transport->sent.size(), sentBeforeWrite); // no new request sent
+
+    // A successful fast poll arrives: the first full snapshot reopens the
+    // queue and control resumes. (The failed immediate poll re-entered
+    // offline, so trigger the next reconnect attempt first.)
+    m_worker->onReconnectTick();
+    m_transport->completeOk(fastBlock(2));
+    QVERIFY(m_worker->isOnline());
+    QVERIFY(m_online);
+
+    // A subsequent write IS accepted and dispatched.
+    const int sentBeforeWrite2 = m_transport->sent.size();
+    m_worker->submitWriteCoil(100, true, CommandPriority::Normal);
+    QCOMPARE(m_transport->sent.size(), sentBeforeWrite2 + 1);
+    QCOMPARE(m_transport->sent.last().kind, ModbusRequest::Kind::WriteCoil);
+    m_transport->completeOk({}); // write acknowledged
+    m_transport->completeOk({0x0001}); // readback confirms
+    QCOMPARE(m_writeResults.size(), 2);
+    QCOMPARE(m_writeResults.last().second, true);
 }
 
 QTEST_GUILESS_MAIN(GatewayTest)

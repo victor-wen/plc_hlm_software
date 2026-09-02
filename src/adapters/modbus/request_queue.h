@@ -56,6 +56,11 @@ public:
     // commands must not be queued for later replay, spec §8.4).
     bool enqueue(ModbusRequest req);
 
+    // Enqueue a poll even when the queue is closed. Polls are always allowed:
+    // the gateway must be able to fetch a full snapshot during the reconnect
+    // window even though writes are rejected (spec §8.4).
+    bool enqueuePoll(ModbusRequest req);
+
     // Pop the highest-priority request. Polls are consumed; the gateway's
     // poll timer re-enqueues them on the next tick. Returns false when empty.
     bool next(ModbusRequest &out);
