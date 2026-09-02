@@ -125,6 +125,9 @@ QtModbusPlcGateway::QtModbusPlcGateway(const Config &cfg, QObject *parent)
     // DeviceSnapshot crosses the worker->facade thread boundary via a queued
     // connection; the metatype must be registered or Qt drops every snapshot.
     qRegisterMetaType<hlm::DeviceSnapshot>();
+    // CommandPriority is marshalled via Q_ARG in queued invokeMethod calls
+    // (writeCoil/writeRegister); register it so the queued call is not dropped.
+    qRegisterMetaType<hlm::CommandPriority>();
 
     m_worker = new ModbusGatewayWorker(m_cfg, nullptr, nullptr);
     m_worker->moveToThread(&m_thread);
@@ -407,6 +410,14 @@ void ModbusGatewayWorker::enterOffline()
     m_queue.clear();
     m_hasValidSnapshot = false;
     m_busy = false;
+    // An in-flight write must still report its result (IPlcGateway contract:
+    // results arrive via writeCompleted()); otherwise the UI waits forever.
+    if (m_inFlight
+        && (m_inFlight->kind == ModbusRequest::Kind::WriteCoil
+            || m_inFlight->kind == ModbusRequest::Kind::WriteRegister)) {
+        emit writeCompleted(m_inFlight->address, false,
+                            QStringLiteral("link went offline"));
+    }
     m_inFlight = std::nullopt;
     m_pendingConfirmations.clear();
     emit connectionStateChanged(false);
@@ -427,17 +438,32 @@ void ModbusGatewayWorker::tryDispatch()
     if (!m_queue.next(req))
         return;
 
+    m_inFlight = req;
+    m_busy = true;
+
     if (!m_transport->send(req)) {
         // Link dropped mid-flight; treat as a transfer failure.
         m_policy.onTransferFailure();
-        if (m_policy.isOffline())
+        if (m_policy.isOffline()) {
+            // enterOffline() reports any in-flight write so it is not
+            // silently dropped (IPlcGateway contract: results arrive via
+            // writeCompleted()).
             enterOffline();
+            return;
+        }
+        // Not yet offline (1st/2nd failure): report the write directly so it
+        // is not silently dropped.
+        if (req.kind == ModbusRequest::Kind::WriteCoil
+            || req.kind == ModbusRequest::Kind::WriteRegister) {
+            emit writeCompleted(req.address, false,
+                                QStringLiteral("send failed"));
+        }
+        m_inFlight = std::nullopt;
+        m_busy = false;
         return;
     }
     if (req.cls == RequestClass::FastPoll)
         m_fastDispatchedMs = m_nowMs(); // for dataAgeMs of the next snapshot
-    m_inFlight = req;
-    m_busy = true;
 }
 
 void ModbusGatewayWorker::onTransferFinished(const TransferResult &res)

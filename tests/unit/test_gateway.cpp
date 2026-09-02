@@ -41,7 +41,7 @@ public:
     bool send(const ModbusRequest &req) override
     {
         sent.append(req);
-        return true;
+        return !m_sendFails;
     }
 
     // Complete the most recent request with a scripted result.
@@ -62,6 +62,7 @@ public:
     }
 
     bool m_open = false;
+    bool m_sendFails = false;
     QList<ModbusRequest> sent;
 };
 
@@ -93,6 +94,8 @@ private slots:
     void failedReadbackEmitsWriteCompletedAndNoLeak();
     void pollAtPendingWriteAddressNotConsumedAsReadback();
     void duplicateWritesBothGetConfirmations();
+    void sendFailureEmitsWriteCompletedFalse();
+    void offlineClearEmitsWriteCompletedFalseForInFlightWrite();
 
 private:
     FakeTransport *m_transport = nullptr;
@@ -413,6 +416,76 @@ void GatewayTest::duplicateWritesBothGetConfirmations()
     QCOMPARE(m_writeResults.size(), 2);
     QCOMPARE(m_writeResults.at(0).second, true);
     QCOMPARE(m_writeResults.at(1).second, true);
+}
+
+void GatewayTest::sendFailureEmitsWriteCompletedFalse()
+{
+    m_transport->completeOk(fastBlock(1));
+    QVERIFY(m_worker->isOnline());
+
+    // send() returns false immediately (link dropped mid-flight). The write
+    // must still report its result, not be silently dropped.
+    m_transport->m_sendFails = true;
+    m_worker->submitWriteCoil(100, true, CommandPriority::Normal);
+
+    QCOMPARE(m_writeResults.size(), 1);
+    QCOMPARE(m_writeResults.first().first, quint16(100));
+    QCOMPARE(m_writeResults.first().second, false);
+
+    // 1st/2nd such failure must NOT take the link offline (3-failure rule).
+    QVERIFY(m_worker->isOnline());
+    QVERIFY(m_online);
+
+    m_worker->submitWriteCoil(101, true, CommandPriority::Normal);
+    QCOMPARE(m_writeResults.size(), 2);
+    QCOMPARE(m_writeResults.last().second, false);
+    QVERIFY(m_worker->isOnline());
+
+    // 3rd consecutive failure -> offline.
+    m_worker->submitWriteCoil(102, true, CommandPriority::Normal);
+    QCOMPARE(m_writeResults.size(), 3);
+    QCOMPARE(m_writeResults.last().second, false);
+    QVERIFY(!m_worker->isOnline());
+    QVERIFY(!m_online);
+}
+
+void GatewayTest::offlineClearEmitsWriteCompletedFalseForInFlightWrite()
+{
+    m_transport->completeOk(fastBlock(1));
+    QVERIFY(m_worker->isOnline());
+
+    // Put a write in flight, then drive the link offline via 3 consecutive
+    // transfer failures. The in-flight write must be reported as failed.
+    m_worker->submitWriteCoil(100, true, CommandPriority::Normal);
+    QCOMPARE(m_transport->sent.size(), 2);
+    QCOMPARE(m_transport->sent.last().kind, ModbusRequest::Kind::WriteCoil);
+
+    // Three consecutive transfer failures -> offline. Each read is retried
+    // once, so a full failure cycle is: fail (retry dispatched) + fail.
+    m_now = 300;
+    m_worker->onPollTick();
+    m_transport->completeFail(); // fast poll fails -> retry
+    m_transport->completeFail(); // retry fails -> failure #1
+    m_now = 600;
+    m_worker->onPollTick();
+    m_transport->completeFail(); // fast poll fails -> retry
+    m_transport->completeFail(); // retry fails -> failure #2
+    m_now = 900;
+    m_worker->onPollTick();
+    m_transport->completeFail(); // fast poll fails -> retry
+    m_transport->completeFail(); // retry fails -> failure #3 -> offline
+
+    QVERIFY(!m_worker->isOnline());
+    QVERIFY(!m_online);
+
+    // The in-flight write was cleared by enterOffline() and reported once.
+    QCOMPARE(m_writeResults.size(), 1);
+    QCOMPARE(m_writeResults.first().first, quint16(100));
+    QCOMPARE(m_writeResults.first().second, false);
+
+    // A late transferFinished for the dropped write must not double-report.
+    m_transport->completeOk({});
+    QCOMPARE(m_writeResults.size(), 1);
 }
 
 QTEST_GUILESS_MAIN(GatewayTest)
