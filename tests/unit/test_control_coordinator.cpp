@@ -54,6 +54,7 @@ private slots:
     void resetTimeoutKeepsActualState();
     void resetRejectedWhenRunning();
     void resetDoesNotReportSuccessWithoutHomingStarted();
+    void resetDoesNotReportFaultOnStalePrePulseSnapshot();
 
     // --- adjust width flow ---------------------------------------------------
     void adjustWidthWritesD128ThenPulsesM43();
@@ -388,14 +389,78 @@ void ControlCoordinatorTest::resetDoesNotReportSuccessWithoutHomingStarted()
 
     QVERIFY(c->reset().accepted);
     gw.tick(); // M103 lost: M50 never rises, M61 stays 1, M14 stays 1
+    // Still pending: the fault check is gated on observing M50=1, so the
+    // latched fault alone must not prematurely abort the reset.
+    QVERIFY(c->resetInProgress());
+
+    // Advance the injected clock past the timeout: M50 never rises and the
+    // fault stays latched, so the flow converges to the defensive timeout.
+    now += 31'000;
+    gw.tick();
 
     // The flow must NOT report success: the reset never executed and the
-    // fault was never cleared. It converges to failure (fault check) rather
-    // than an optimistic "回原点完成".
+    // fault was never cleared. It converges to failure (defensive timeout)
+    // rather than an optimistic "回原点完成".
     QVERIFY(!result);
     QVERIFY(!c->resetInProgress());
-    QVERIFY(detail.contains(QStringLiteral("故障")));
+    QVERIFY(detail.contains(QStringLiteral("超时")));
     QVERIFY(gw.lastSnapshot().m14()); // fault not reported cleared
+}
+
+void ControlCoordinatorTest::resetDoesNotReportFaultOnStalePrePulseSnapshot()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    ControlCoordinator::Config cfg;
+    cfg.resetTimeoutSec = 30;
+    // No-op startPulse: the M103 pulse is "sent" but the PLC has not yet
+    // processed it, so the pre-pulse state (M14=1, M50=0) persists. This
+    // simulates the async-pulse window the synchronous SimulatedPlcGateway
+    // cannot reproduce: a snapshot read before the PLC sees the M103 rising
+    // edge still shows the latched fault.
+    std::unique_ptr<ControlCoordinator> c(makeCoordinatorNoPulse(gw, now, cfg));
+    c->setRole(Role::Admin);
+
+    // Machine already homed (M61=1) with a latched fault (M14=1).
+    homeReady(gw);
+    gw.writeCoil(kM100, true); // estop latches M14=1, D110=1
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m9()); // M61 via M9
+    QVERIFY(gw.lastSnapshot().m14());
+
+    bool result = true; // must not be a premature fault result
+    QString detail;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &d) {
+                if (cmd == Command::Reset) {
+                    result = ok;
+                    detail = d;
+                }
+            });
+
+    QVERIFY(c->reset().accepted);
+
+    // Inject a stale pre-pulse snapshot that still shows the latched fault,
+    // as if read while the M103 pulse is in flight. The flow must NOT report
+    // "回原点故障" prematurely: the fault check is only meaningful once the
+    // home return has actually started (M50=1 observed).
+    DeviceSnapshotData prePulse;
+    prePulse.connected = true;
+    prePulse.statusWord1 = (1u << 1) | (1u << 9) | (1u << 14); // M1, M61, M14
+    prePulse.homeBits = 0; // M50=0: not yet homing
+    c->onSnapshot(DeviceSnapshot(prePulse));
+    QVERIFY(c->resetInProgress()); // still waiting for M50=1
+    QVERIFY(result); // no premature fault result
+    QVERIFY(!detail.contains(QStringLiteral("故障")));
+
+    // The pulse never takes effect (M50 never rises) and the fault stays
+    // latched; the flow must converge to the defensive timeout, not a fault.
+    now += 31'000;
+    c->onSnapshot(DeviceSnapshot(prePulse));
+    QVERIFY(!c->resetInProgress());
+    QVERIFY(!result); // timeout: not optimistic success
+    QVERIFY(detail.contains(QStringLiteral("超时")));
 }
 
 // --- adjust width flow ------------------------------------------------------

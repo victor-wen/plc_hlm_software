@@ -564,25 +564,34 @@ void ControlCoordinator::onResetSnapshot(const DeviceSnapshot &s)
         return;
     }
     if (m_resetPhase == ResetPhase::Homing) {
-        // Fault check takes precedence over success (spec §10.2 step 6): a
-        // latched fault (M14) or fault code must never be reported as cleared.
-        if (s.m14() || s.faultCode() != 0) {
-            // PLC fault: keep the actual state, no optimistic success, no
-            // fabricated fault code (spec §10.2 step 6).
-            finishCommand(Command::Reset, false, QStringLiteral("回原点故障"));
-            return;
-        }
-        // First observe M50=1 (home return actually started) before accepting
-        // success (spec §10.2 step 3 "监视 M50"). If the M103 pulse was lost
-        // and the machine was already homed, M50 never rises and the flow
-        // converges to the defensive timeout instead of a false success
-        // (spec §13: 不显示乐观成功).
+        // The flow enters Homing the moment the M103 pulse is sent, while the
+        // pulse is still in flight. A snapshot read before the PLC processes
+        // the rising edge still shows the pre-pulse state (spec §10.2 step 2).
+        // Because reset does not require M14=0, a latched fault (the primary
+        // use case) appears in that stale snapshot and must not be judged.
+        // Only judge faults (or success) after M50=1 has been observed, i.e.
+        // the home return actually started (spec §10.2 step 3 "监视 M50").
         if (s.m50())
             m_resetHomingStarted = true;
-        // Success: home return started, then M61=1 and M50=0 (spec §10.2 step 4).
-        if (m_resetHomingStarted && s.m9() && !s.m50()) {
-            finishCommand(Command::Reset, true, QStringLiteral("回原点完成"));
+        if (m_resetHomingStarted) {
+            // Fault check takes precedence over success (spec §10.2 step 6): a
+            // latched fault (M14) or fault code must never be reported cleared.
+            if (s.m14() || s.faultCode() != 0) {
+                // PLC fault: keep the actual state, no optimistic success, no
+                // fabricated fault code (spec §10.2 step 6).
+                finishCommand(Command::Reset, false, QStringLiteral("回原点故障"));
+                return;
+            }
+            // Success: home return started, then M61=1 and M50=0 (spec §10.2
+            // step 4).
+            if (s.m9() && !s.m50()) {
+                finishCommand(Command::Reset, true, QStringLiteral("回原点完成"));
+            }
         }
+        // Before M50=1: keep waiting. If the M103 pulse was lost the machine
+        // was already homed, M50 never rises and the flow converges to the
+        // defensive timeout instead of a false success or premature fault
+        // (spec §13: 不显示乐观成功, 每阶段收敛).
     }
 }
 
