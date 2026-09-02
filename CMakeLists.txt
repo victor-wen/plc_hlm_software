@@ -61,14 +61,19 @@ target_link_libraries(hlm_core PUBLIC
 target_compile_definitions(hlm_core PUBLIC HLM_VERSION_STRING="${PROJECT_VERSION}")
 
 # hlm_simulator: shared H3U simulation state model + injectable clock
-# (spec §14.1). Used by both the in-process SimulatedPlcGateway (Task 6) and
-# the standalone plc_simulator (Task 18). Qt Core only.
+# (spec §14.1) and the in-process SimulatedPlcGateway (spec §14.2). Used by
+# the standalone plc_simulator (Task 18) and by application/UI integration
+# tests. Qt Core only.
 add_library(hlm_simulator STATIC
     src/adapters/simulator/simulation_clock.cpp
     src/adapters/simulator/h3u_simulation_model.cpp
+    src/adapters/simulator/simulated_plc_gateway.cpp
 )
 target_include_directories(hlm_simulator PUBLIC src)
-target_link_libraries(hlm_simulator PUBLIC Qt6::Core)
+target_link_libraries(hlm_simulator PUBLIC
+    hlm_core
+    Qt6::Core
+)
 
 # hlm_modbus: real PLC gateway over Modbus RTU (spec §6, §7.2, §8). The
 # worker thread owns a QModbusRtuSerialClient; the request queue and reconnect
@@ -99,3 +104,4 @@ target_link_libraries(hlm_modbus PUBLIC
 # --- Tests ------------------------------------------------------------------
 enable_testing()
 add_subdirectory(tests/unit)
+add_subdirectory(tests/integration)
