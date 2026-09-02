@@ -49,7 +49,10 @@ public:
     // Config (spec §10.2: HMI defensive reset timeout, admin-configurable).
     struct Config {
         Config() : resetTimeoutSec(120) {}
-        explicit Config(int resetTimeout) : resetTimeoutSec(resetTimeout) {}
+        explicit Config(int resetTimeout)
+            : resetTimeoutSec(qBound(30, resetTimeout, 600)) // clamp 30-600 (spec §10.2)
+        {
+        }
         int resetTimeoutSec; // 30-600 (spec §10.2)
     };
 
@@ -61,7 +64,7 @@ public:
 
     // `nowMs` is injected for deterministic timeout tests (same pattern as
     // PulseStateMachine / WatchdogTimer). Defaults to wall clock.
-    explicit ControlCoordinator(IPlcGateway *gateway, PulseTransport transport,
+    explicit ControlCoordinator(PulseTransport transport,
                                 Config config = Config(),
                                 std::function<qint64()> nowMs = nullptr,
                                 QObject *parent = nullptr);

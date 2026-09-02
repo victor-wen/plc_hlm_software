@@ -61,6 +61,7 @@ private slots:
     void adjustWidthFailureConvergesOnM45();
     void adjustWidthTargetEqualsCurrentSkipsM43();
     void adjustWidthRejectedWhenAdjusting();
+    void adjustWidthConcurrentEstopNeverHangs();
 
     // --- start / stop --------------------------------------------------------
     void startWaitsForM3();
@@ -155,7 +156,7 @@ ControlCoordinator *makeCoordinatorWithCoil(
     SimulatedPlcGateway &gw, qint64 &now, ControlCoordinator::PulseTransport t,
     ControlCoordinator::Config cfg = {})
 {
-    auto *c = new ControlCoordinator(&gw, t, cfg, [&now]() { return now; });
+    auto *c = new ControlCoordinator(t, cfg, [&now]() { return now; });
     // Wire the gateway feed: snapshots, connection state and write results.
     QObject::connect(&gw, &SimulatedPlcGateway::snapshotReady, c,
                      [c](const DeviceSnapshot &s) { c->onSnapshot(s); });
@@ -525,6 +526,77 @@ void ControlCoordinatorTest::adjustWidthRejectedWhenAdjusting()
 
     // M34=1: 禁止再次写 D128 或发送 M43 (spec §10.3 step 6).
     QVERIFY(!c->adjustWidth(350).accepted);
+}
+
+// A concurrent safety command (estop) must never leave the adjust flow hung in
+// WaitTargetWrite: even though the D128 writeCompleted is dropped (its address
+// no longer matches the overwritten pending write), the defensive write timeout
+// converges the flow to a defined failure (spec §13: every phase converges).
+void ControlCoordinatorTest::adjustWidthConcurrentEstopNeverHangs()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+
+    ControlCoordinator::PulseTransport t;
+    t.startPulse = [&gw](quint16 a) {
+        gw.writeCoil(a, true);
+        gw.writeCoil(a, false);
+        return true;
+    };
+    t.writeHold = [&gw](quint16 a, bool v) {
+        gw.writeCoil(a, v);
+        return true;
+    };
+    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) {
+        gw.writeCoil(a, v);
+        return true;
+    };
+    // D128 write stays "in flight": it is not routed to the gateway, so no
+    // writeCompleted is produced until the test chooses. This reproduces the
+    // race where the pending write is overwritten before completion.
+    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) {
+        if (a == kD128)
+            return true; // deferred: never completes via the transport
+        gw.writeRegister(a, v);
+        return true;
+    };
+
+    std::unique_ptr<ControlCoordinator> c(makeCoordinatorWithCoil(gw, now, t));
+    c->setRole(Role::Admin);
+    homeReady(gw);
+
+    bool adjustReported = false;
+    bool writeResult = true;
+    QString detail;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &d) {
+                if (cmd == Command::AdjustWidth) {
+                    adjustReported = true;
+                    writeResult = ok;
+                    detail = d;
+                }
+            });
+
+    // D128 write accepted and in flight: the flow sits in WaitTargetWrite.
+    QVERIFY(c->adjustWidth(300).accepted);
+    QVERIFY(c->adjustInProgress());
+
+    // Concurrent estop overwrites the single-slot pending write.
+    QVERIFY(c->estopSet().accepted);
+    gw.tick(); // estop confirmed via M0/M100 readback
+    QVERIFY(gw.lastSnapshot().m0());
+    QVERIFY(gw.lastSnapshot().m100());
+    QVERIFY(!adjustReported); // adjust not yet reported
+
+    // The D128 writeCompleted is dropped; the M43 pulse never fires. The flow
+    // must converge to a timeout failure (kAdjustWriteTimeoutMs = 5 s).
+    now += 5'001;
+    gw.tick();
+    QVERIFY(!c->adjustInProgress());
+    QVERIFY(adjustReported);
+    QVERIFY(!writeResult);
+    QVERIFY(detail.contains(QStringLiteral("超时")));
 }
 
 // --- start / stop -----------------------------------------------------------

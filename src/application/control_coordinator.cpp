@@ -32,10 +32,14 @@ constexpr quint16 kD128 = 128; // target width
 constexpr qint64 kStartStopTimeoutMs = 10'000;
 // Mode switch wait (spec §11.2: 模式切换等待 M1/M2).
 constexpr qint64 kModeTimeoutMs = 5'000;
+// D128 target-width write wait (spec §13: the adjust flow must never hang —
+// even if a concurrent safety write overwrites the pending write and the D128
+// writeCompleted is dropped, the flow still converges to a defined failure).
+constexpr qint64 kAdjustWriteTimeoutMs = 5'000;
 
 } // namespace
 
-ControlCoordinator::ControlCoordinator(IPlcGateway *gateway, PulseTransport transport,
+ControlCoordinator::ControlCoordinator(PulseTransport transport,
                                        Config config, std::function<qint64()> nowMs,
                                        QObject *parent)
     : QObject(parent)
@@ -150,6 +154,12 @@ ControlCoordinator::CommandResult ControlCoordinator::adjustWidth(quint16 target
     m_adjustSpeed = s.fieldValid(SnapshotField::WidthSpeed) ? s.widthSpeed() : 0;
 
     m_adjustPhase = AdjustPhase::WaitTargetWrite;
+    // Arm a defensive timeout for the D128 write (spec §13): if a concurrent
+    // safety command overwrites m_pendingWriteCmd and this writeCompleted is
+    // dropped, the flow still converges to a defined failure instead of
+    // hanging forever. The result timeout replaces this once M43 is pulsed.
+    m_adjustDeadlineMs = m_nowMs() + kAdjustWriteTimeoutMs;
+    m_adjustTimeoutArmed = true;
     emit commandAccepted(Command::AdjustWidth);
     beginWriteReg(Command::AdjustWidth, kD128, targetWidth, CommandPriority::Normal);
     return {true, QString()};
@@ -422,13 +432,16 @@ void ControlCoordinator::onWriteCompleted(quint16 address, bool ok)
 
     switch (cmd) {
     case Command::Reset:
-        if (!ok) {
+        // A late async write failure only matters while the reset flow is
+        // still waiting on that write; otherwise the flow has already
+        // converged (spec §13: never double-report after convergence).
+        if (!ok && m_resetPhase != ResetPhase::Idle) {
             finishCommand(Command::Reset, false, QStringLiteral("写 M104 失败"));
         }
         // ok: stay in WaitManual until the snapshot shows M1=1.
         break;
     case Command::AdjustWidth:
-        if (!ok) {
+        if (!ok && m_adjustPhase != AdjustPhase::Idle) {
             finishCommand(Command::AdjustWidth, false, QStringLiteral("写 D128 失败"));
             break;
         }
@@ -492,6 +505,9 @@ void ControlCoordinator::onConnectionChanged(bool online)
     if (m_adjustPhase != AdjustPhase::Idle) {
         m_adjustPhase = AdjustPhase::Idle;
         m_adjustTimeoutArmed = false;
+        m_adjustTarget.reset();
+        m_adjustStartWidth.reset();
+        m_adjustSpeed.reset();
         emit commandResult(Command::AdjustWidth, false, QStringLiteral("通讯中断"));
     }
     if (m_startPhase != StartPhase::Idle) {
