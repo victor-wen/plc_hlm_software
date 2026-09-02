@@ -79,6 +79,7 @@ private slots:
     void manualLatchWrites();
     void bypassWrites();
     void manualHoldReleaseBypassesInterlocks();
+    void manualHoldReleaseRequiresPermission();
     void estopSetSyncFailureDoesNotEmitSecondSuccess();
 
     // --- logout --------------------------------------------------------------
@@ -813,6 +814,42 @@ void ControlCoordinatorTest::manualHoldReleaseBypassesInterlocks()
     QVERIFY(!c->manualHold(kM106, true).accepted); // press now rejected
 
     // Release must still be sent (write 0), not rejected by the interlocks.
+    QVERIFY(c->manualHold(kM106, false).accepted);
+    QVERIFY(!gw.model().readCoil(kM106));
+}
+
+// The release (write 0) must bypass machine-state interlocks but NOT the
+// permission check: an anonymous/operator user must not be able to clear a
+// held M106/M107/M108 (spec §10.7 只允许管理员, §11.4 所有写命令统一校验).
+void ControlCoordinatorTest::manualHoldReleaseRequiresPermission()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+    homeReady(gw);
+
+    // Admin presses and holds M106.
+    QVERIFY(c->manualHold(kM106, true).accepted);
+    QVERIFY(gw.model().readCoil(kM106));
+
+    // Log out: the anonymous user attempts to release the held M106.
+    c->setRole(Role::Anonymous);
+    QVERIFY(!c->manualHold(kM106, false).accepted);
+    QVERIFY(gw.model().readCoil(kM106)); // write 0 NOT sent
+
+    // Operator also cannot release.
+    c->setRole(Role::Operator);
+    QVERIFY(!c->manualHold(kM106, false).accepted);
+    QVERIFY(gw.model().readCoil(kM106)); // write 0 NOT sent
+
+    // Admin release still works even with a latched fault (round-3 behavior).
+    c->setRole(Role::Admin);
+    gw.writeCoil(kM100, true);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m0());
+    QVERIFY(gw.lastSnapshot().m14());
     QVERIFY(c->manualHold(kM106, false).accepted);
     QVERIFY(!gw.model().readCoil(kM106));
 }

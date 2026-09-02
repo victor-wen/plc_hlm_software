@@ -267,11 +267,17 @@ ControlCoordinator::CommandResult ControlCoordinator::manualHold(quint16 address
         emit commandRejected(Command::ManualCommand, QStringLiteral("不支持的手动命令地址"));
         return {false, QStringLiteral("不支持的手动命令地址")};
     }
-    // Release (write 0) is always safe and must not be blocked by machine-state
-    // interlocks: if a fault/estop latches while the button is held, the release
-    // must still be sent so the continuous command clears immediately (spec
-    // §10.7 松开写 0, §13 立即请求清零). Only the press is gated.
+    // Release (write 0) must bypass machine-state interlocks: if a fault/estop
+    // latches while the button is held, the release must still be sent so the
+    // continuous command clears immediately (spec §10.7 松开写 0, §13 立即请求
+    // 清零). It must NOT bypass the permission check: 手动命令仅管理员 (spec
+    // §10.7, §11.4 所有写命令统一校验).
     if (!pressed) {
+        const PermissionResult p = permission(Command::ManualCommand);
+        if (!p.allowed) {
+            emit commandRejected(Command::ManualCommand, p.reason);
+            return {false, p.reason};
+        }
         if (m_transport.writeHold && m_transport.writeHold(address, false)) {
             emit commandAccepted(Command::ManualCommand);
             emit commandResult(Command::ManualCommand, true, QString());
