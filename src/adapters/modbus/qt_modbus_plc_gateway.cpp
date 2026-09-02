@@ -302,6 +302,7 @@ void ModbusGatewayWorker::submitWriteCoil(quint16 address, bool value, CommandPr
     req.writeThenReadback = true; // spec §8.4: confirm writes by readback
     req.cls = (priority == CommandPriority::Safety) ? RequestClass::SafetyWrite
              : (priority == CommandPriority::PulseClear) ? RequestClass::PulseClear
+             : (priority == CommandPriority::Heartbeat) ? RequestClass::Heartbeat
                                                         : RequestClass::UserWrite;
     if (!m_queue.enqueue(req)) {
         emit writeCompleted(address, false,
@@ -321,6 +322,7 @@ void ModbusGatewayWorker::submitWriteRegister(quint16 address, quint16 value,
     req.writeThenReadback = true;
     req.cls = (priority == CommandPriority::Safety) ? RequestClass::SafetyWrite
              : (priority == CommandPriority::PulseClear) ? RequestClass::PulseClear
+             : (priority == CommandPriority::Heartbeat) ? RequestClass::Heartbeat
                                                         : RequestClass::UserWrite;
     if (!m_queue.enqueue(req)) {
         emit writeCompleted(address, false,

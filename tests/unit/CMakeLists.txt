@@ -48,3 +48,19 @@ target_link_libraries(test_gateway PRIVATE
 )
 
 add_test(NAME gateway COMMAND test_gateway)
+
+add_executable(test_pulse_state_machine test_pulse_state_machine.cpp)
+target_link_libraries(test_pulse_state_machine PRIVATE
+    hlm_modbus
+    Qt6::Test
+)
+
+add_test(NAME pulse_state_machine COMMAND test_pulse_state_machine)
+
+add_executable(test_watchdog_timer test_watchdog_timer.cpp)
+target_link_libraries(test_watchdog_timer PRIVATE
+    hlm_modbus
+    Qt6::Test
+)
+
+add_test(NAME watchdog_timer COMMAND test_watchdog_timer)

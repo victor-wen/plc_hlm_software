@@ -9,12 +9,14 @@
 namespace hlm {
 
 // Command priority hint (spec §8.3). Maps onto the request queue's internal
-// priority levels. PulseClear is reserved for Task 5's pulse state machine;
-// the gateway only needs to route it to the top of the queue.
+// priority levels. PulseClear and Heartbeat are reserved for Task 5's pulse
+// state machine and M112 watchdog; the gateway only needs to route them to
+// the right queue level.
 enum class CommandPriority {
     Normal = 0,     // user writes (queue level 4: other user writes)
     Safety = 1,     // online stop / estop set / continuous-motion clear (level 2)
     PulseClear = 2, // pulse clear requests (level 1) - used by Task 5
+    Heartbeat = 3,  // M112 heartbeat flip (level 3) - used by Task 5
 };
 
 // Port interface for the PLC gateway (spec §7.2, §8). Implemented by the real

@@ -75,8 +75,10 @@ target_link_libraries(hlm_simulator PUBLIC Qt6::Core)
 # policy are the unit-testable core.
 add_library(hlm_modbus STATIC
     src/adapters/modbus/modbus_transport.cpp
+    src/adapters/modbus/pulse_state_machine.cpp
     src/adapters/modbus/request_queue.cpp
     src/adapters/modbus/reconnect_policy.cpp
+    src/adapters/modbus/watchdog_timer.cpp
     src/adapters/modbus/qt_modbus_plc_gateway.cpp
 )
 target_include_directories(hlm_modbus PUBLIC src)
