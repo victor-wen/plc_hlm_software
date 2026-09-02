@@ -148,7 +148,6 @@ private:
     void onStartSnapshot(const DeviceSnapshot &s);
     void onStopSnapshot(const DeviceSnapshot &s);
 
-    IPlcGateway *m_gateway = nullptr;
     PulseTransport m_transport;
     Config m_cfg;
     std::function<qint64()> m_nowMs;

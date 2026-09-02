@@ -39,7 +39,6 @@ ControlCoordinator::ControlCoordinator(IPlcGateway *gateway, PulseTransport tran
                                        Config config, std::function<qint64()> nowMs,
                                        QObject *parent)
     : QObject(parent)
-    , m_gateway(gateway)
     , m_transport(std::move(transport))
     , m_cfg(config)
     , m_nowMs(nowMs ? std::move(nowMs)
@@ -253,18 +252,31 @@ ControlCoordinator::CommandResult ControlCoordinator::estopRelease()
 
 ControlCoordinator::CommandResult ControlCoordinator::manualHold(quint16 address, bool pressed)
 {
+    // Hold commands are only M106/M107/M108 (spec §10.7); reject others.
+    if (address != kM106 && address != kM107 && address != kM108) {
+        emit commandRejected(Command::ManualCommand, QStringLiteral("不支持的手动命令地址"));
+        return {false, QStringLiteral("不支持的手动命令地址")};
+    }
+    // Release (write 0) is always safe and must not be blocked by machine-state
+    // interlocks: if a fault/estop latches while the button is held, the release
+    // must still be sent so the continuous command clears immediately (spec
+    // §10.7 松开写 0, §13 立即请求清零). Only the press is gated.
+    if (!pressed) {
+        if (m_transport.writeHold && m_transport.writeHold(address, false)) {
+            emit commandAccepted(Command::ManualCommand);
+            emit commandResult(Command::ManualCommand, true, QString());
+            return {true, QString()};
+        }
+        emit commandRejected(Command::ManualCommand, QStringLiteral("命令发送失败"));
+        return {false, QStringLiteral("命令发送失败")};
+    }
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
     CommandResult g = gate(Command::ManualCommand, s);
     if (!g.accepted) {
         emit commandRejected(Command::ManualCommand, g.reason);
         return g;
     }
-    // Hold commands are only M106/M107/M108 (spec §10.7); reject others.
-    if (address != kM106 && address != kM107 && address != kM108) {
-        emit commandRejected(Command::ManualCommand, QStringLiteral("不支持的手动命令地址"));
-        return {false, QStringLiteral("不支持的手动命令地址")};
-    }
-    if (m_transport.writeHold && m_transport.writeHold(address, pressed)) {
+    if (m_transport.writeHold && m_transport.writeHold(address, true)) {
         emit commandAccepted(Command::ManualCommand);
         emit commandResult(Command::ManualCommand, true, QString());
         return {true, QString()};
@@ -440,20 +452,20 @@ void ControlCoordinator::onWriteCompleted(quint16 address, bool ok)
         }
         break;
     case Command::EstopSet:
-        if (!ok) {
+        if (!ok && m_estopSetPending) {
             m_estopSetPending = false;
             finishCommand(Command::EstopSet, false, QStringLiteral("写 M100 失败"));
         }
         // ok: the snapshot still decides (spec §8.4).
         break;
     case Command::EstopRelease:
-        if (!ok) {
+        if (!ok && m_estopReleasePending) {
             m_estopReleasePending = false;
             finishCommand(Command::EstopRelease, false, QStringLiteral("写 M100 失败"));
         }
         break;
     case Command::ModeSwitch:
-        if (!ok) {
+        if (!ok && m_modePending) {
             // A failed M104 write surfaces as a write failure, not 模式切换超时.
             m_modePending = false;
             emit commandResult(Command::ModeSwitch, false, QStringLiteral("写 M104 失败"));
@@ -493,7 +505,10 @@ void ControlCoordinator::onConnectionChanged(bool online)
         emit commandResult(Command::Stop, false, QStringLiteral("通讯中断"));
     }
     m_pendingWriteCmd.reset();
-    m_modePending = false;
+    if (m_modePending) {
+        m_modePending = false;
+        emit commandResult(Command::ModeSwitch, false, QStringLiteral("通讯中断"));
+    }
     // Estop set/release stay pending: M100 is idempotent and confirmed by the
     // next snapshot after reconnect (spec §8.4, §10.6).
 }
@@ -614,6 +629,15 @@ void ControlCoordinator::finishCommand(Command cmd, bool ok, const QString &deta
     case Command::Stop:
         m_stopPhase = StopPhase::Idle;
         m_stopTimeoutArmed = false;
+        break;
+    case Command::EstopSet:
+        m_estopSetPending = false;
+        break;
+    case Command::EstopRelease:
+        m_estopReleasePending = false;
+        break;
+    case Command::ModeSwitch:
+        m_modePending = false;
         break;
     default:
         break;

@@ -77,6 +77,8 @@ private slots:
     void manualHoldWritesOnPressAndRelease();
     void manualLatchWrites();
     void bypassWrites();
+    void manualHoldReleaseBypassesInterlocks();
+    void estopSetSyncFailureDoesNotEmitSecondSuccess();
 
     // --- logout --------------------------------------------------------------
     void logoutClearsM42AndM106ToM111NotM100();
@@ -713,6 +715,71 @@ void ControlCoordinatorTest::bypassWrites()
     QVERIFY(gw.model().readCoil(kM110));
     QVERIFY(c->bypass(kM110, false).accepted);
     QVERIFY(!gw.model().readCoil(kM110));
+}
+
+// Release (write 0) must bypass machine-state interlocks: if a fault/estop
+// latches while the button is held, the release is still sent so the
+// continuous command clears immediately (spec §10.7 松开写 0, §13).
+void ControlCoordinatorTest::manualHoldReleaseBypassesInterlocks()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    c->setRole(Role::Admin);
+    homeReady(gw);
+
+    // Press M106 (gated, accepted).
+    QVERIFY(c->manualHold(kM106, true).accepted);
+    QVERIFY(gw.model().readCoil(kM106));
+
+    // Latch an estop: M0=1, M14=1 -> the manual interlock now rejects a press.
+    gw.writeCoil(kM100, true);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m0());
+    QVERIFY(gw.lastSnapshot().m14());
+    QVERIFY(!c->manualHold(kM106, true).accepted); // press now rejected
+
+    // Release must still be sent (write 0), not rejected by the interlocks.
+    QVERIFY(c->manualHold(kM106, false).accepted);
+    QVERIFY(!gw.model().readCoil(kM106));
+}
+
+// A synchronous estop-set write failure must clear the pending flag so a later
+// snapshot (M0=1) cannot emit a second, contradictory success (spec §13).
+void ControlCoordinatorTest::estopSetSyncFailureDoesNotEmitSecondSuccess()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    ControlCoordinator::PulseTransport t;
+    t.writeCoil = [](quint16, bool, CommandPriority) { return false; };
+    std::unique_ptr<ControlCoordinator> c(makeCoordinatorWithCoil(gw, now, t));
+    c->setRole(Role::Admin);
+
+    int successCount = 0;
+    int failureCount = 0;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &) {
+                if (cmd == Command::EstopSet) {
+                    if (ok)
+                        ++successCount;
+                    else
+                        ++failureCount;
+                }
+            });
+
+    // The M100 write fails synchronously -> immediate failure, no pending.
+    QVERIFY(c->estopSet().accepted);
+    QCOMPARE(failureCount, 1);
+    QCOMPARE(successCount, 0);
+
+    // A later snapshot with M0=1 (physical estop) must NOT emit a second success.
+    gw.writeCoil(kM100, true);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m0());
+    QCOMPARE(successCount, 0);
+    QCOMPARE(failureCount, 1);
 }
 
 // --- logout --------------------------------------------------------------
