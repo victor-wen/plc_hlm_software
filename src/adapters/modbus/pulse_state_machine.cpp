@@ -33,11 +33,15 @@ void PulseStateMachine::onTick()
     for (auto it = m_pulses.begin(); it != m_pulses.end();) {
         Pulse &p = it.value();
         if (p.phase == Phase::Holding && now - p.holdStartMs >= kMinHoldMs) {
-            enqueueClear(it.key());
-            if (p.phase == Phase::Idle) {
-                it = m_pulses.erase(it); // aborted by enqueueClear
+            // enqueueClear returns false when the clear was rejected (offline):
+            // it aborts the pulse and removes its entry from m_pulses, which
+            // invalidates `it` and `p`. We must not touch either afterwards, so
+            // we restart the iteration from the beginning (the entry is gone).
+            if (!enqueueClear(it.key())) {
+                it = m_pulses.begin();
                 continue;
             }
+            // Clear accepted: the pulse is now ClearInFlight; keep iterating.
         }
         ++it;
     }
@@ -127,16 +131,17 @@ void PulseStateMachine::abortPulse(quint16 address, bool ok)
         m_cb.finished(address, ok);
 }
 
-void PulseStateMachine::enqueueClear(quint16 address)
+bool PulseStateMachine::enqueueClear(quint16 address)
 {
     // Clear goes to the queue's highest priority (level 1, spec §8.3).
     if (!m_cb.writeCoil || !m_cb.writeCoil(address, false, CommandPriority::PulseClear)) {
         abortPulse(address, false); // offline: abort, never queue
-        return;
+        return false;
     }
     auto it = m_pulses.find(address);
     if (it != m_pulses.end())
         it.value().phase = Phase::ClearInFlight;
+    return true;
 }
 
 void PulseStateMachine::requestReadback(quint16 address)

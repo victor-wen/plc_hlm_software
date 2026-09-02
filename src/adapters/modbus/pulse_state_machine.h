@@ -80,7 +80,9 @@ private:
     };
 
     void abortPulse(quint16 address, bool ok);
-    void enqueueClear(quint16 address);
+    // Returns false when the clear was rejected (offline): the pulse is
+    // aborted and its entry removed from m_pulses.
+    bool enqueueClear(quint16 address);
     void requestReadback(quint16 address);
 
     Callbacks m_cb;

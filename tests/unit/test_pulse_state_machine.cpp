@@ -74,6 +74,7 @@ private slots:
     void clearFailureReadbackZeroCompletes();
     void offlineRejectsPulse();
     void offlineMidPulseAborts();
+    void offlineClearDuringTickConvergesSafely();
     void clearBeforeSetPriority();
     void resetAbortsActivePulses();
     void lateTickExtendsHold();
@@ -247,6 +248,36 @@ void PulseStateMachineTest::offlineMidPulseAborts()
     sm.onTick();
     QCOMPARE(h.finished.size(), 1);
     QCOMPARE(h.finished.first(), pw(101, false));
+    QVERIFY(!sm.isActive(101));
+}
+
+void PulseStateMachineTest::offlineClearDuringTickConvergesSafely()
+{
+    // Regression: the exact UB path in onTick. A pulse in Holding whose clear
+    // enqueue is rejected (offline) aborts and removes its entry from m_pulses
+    // while onTick is iterating. The machine must converge safely: finished
+    // (false), no crash, and no resurrection on subsequent ticks.
+    PulseHarness h;
+    PulseStateMachine sm(h.callbacks(), [&h]() { return h.now; });
+
+    QVERIFY(sm.startPulse(101));
+    sm.onWriteCompleted(101, true); // holding
+
+    // Link drops while holding: the clear write is rejected -> abort.
+    h.rejectWrites = true;
+    h.now = 100;
+    sm.onTick();
+    QCOMPARE(h.finished.size(), 1);
+    QCOMPARE(h.finished.first(), pw(101, false));
+    QVERIFY(!sm.isActive(101));
+
+    // Subsequent ticks must not resurrect the aborted pulse.
+    h.now = 200;
+    sm.onTick();
+    h.now = 300;
+    sm.onTick();
+    QCOMPARE(h.finished.size(), 1);
+    QCOMPARE(h.writes.size(), 1); // only the original write-1
     QVERIFY(!sm.isActive(101));
 }
 
