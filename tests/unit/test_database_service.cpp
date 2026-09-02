@@ -81,8 +81,8 @@ void DatabaseServiceTest::healthyDatabaseUsesWalJournalMode()
     }
     QSqlDatabase::removeDatabase(QStringLiteral("wal_check"));
 }
-// single-connection). Drive admin creation and login through the queued
-// invocation path so the production contract is exercised, not bypassed.
+// Drive admin creation and login through the queued invocation path so the
+// production contract is exercised, not bypassed.
 void DatabaseServiceTest::healthyServiceRunsOperationsOnWorkerThread()
 {
     QTemporaryDir dir;

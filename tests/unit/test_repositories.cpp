@@ -145,6 +145,10 @@ void RepositoryTest::recipeUpdateAndDelete()
         ghost.id = 999999;
         QVERIFY(!repo.saveRecipe(ghost, &error));
         QVERIFY(error.contains(QStringLiteral("not found")));
+
+        // Deleting a non-existent id must fail rather than silently no-op.
+        QVERIFY(!repo.deleteRecipe(ghost.id, &error));
+        QVERIFY(error.contains(QStringLiteral("not found")));
     }
     QSqlDatabase::removeDatabase(QStringLiteral("repo_test"));
 }

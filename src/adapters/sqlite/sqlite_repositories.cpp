@@ -227,6 +227,11 @@ bool SqliteRecipeRepository::deleteRecipe(qint64 id, QString *error)
     q.addBindValue(id);
     if (!q.exec())
         return setError(error, q);
+    if (q.numRowsAffected() == 0) {
+        if (error)
+            *error = QStringLiteral("recipe not found");
+        return false;
+    }
     return true;
 }
 

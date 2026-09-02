@@ -22,13 +22,16 @@ private slots:
     void redactsPasswordDigest();
     void rotationCapsFileCount();
     void rotationKeepsNewestContent();
+    void restartAppendsToNewestAndSurvivesRotation();
     void defaultLimitsAre10x10MiB();
 };
 
 void RollingFileLoggerTest::redactsPasswordsAndTokens()
 {
     QCOMPARE(redactSensitive(QStringLiteral("login password=hunter2 ok")),
-             QStringLiteral("login password=[REDACTED] ok"));
+             QStringLiteral("login password=[REDACTED]"));
+    QCOMPARE(redactSensitive(QStringLiteral("password=my pass")),
+             QStringLiteral("password=[REDACTED]"));
     QCOMPARE(redactSensitive(QStringLiteral("password: hunter2")),
              QStringLiteral("password: [REDACTED]"));
     QCOMPARE(redactSensitive(QStringLiteral("token=abc123def")),
@@ -88,6 +91,63 @@ void RollingFileLoggerTest::rotationKeepsNewestContent()
         QVERIFY(f.open(QIODevice::ReadOnly));
         const QByteArray content = f.readAll();
         QVERIFY(!content.isEmpty());
+    }
+}
+
+void RollingFileLoggerTest::restartAppendsToNewestAndSurvivesRotation()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const int maxFiles = 2;
+    const qint64 maxBytes = 1024;
+    const QString marker = QStringLiteral("after-restart-marker");
+    const QString line(200, QLatin1Char('x'));
+    {
+        RollingFileLogger logger(dir.path(), maxFiles, maxBytes);
+        // Force at least one rotation so both log.1 and log.2 exist before
+        // the restart (the buggy resume-at-highest-index path only diverges
+        // when multiple files are present).
+        for (int i = 0; i < 30; ++i)
+            logger.write(line);
+    }
+    QVERIFY(QFileInfo::exists(dir.filePath(QStringLiteral("log.1"))));
+    QVERIFY(QFileInfo::exists(dir.filePath(QStringLiteral("log.2"))));
+    // Simulate a restart where the newest content lives in log.2 and it is
+    // near-full (e.g. the previous session's current file). The buggy
+    // resume-at-highest-index path appends the marker to log.2, and the next
+    // write triggers a rotation that deletes log.2 (the oldest) — losing the
+    // marker. The fixed path resumes at log.1, so the marker survives.
+    {
+        QFile f(dir.filePath(QStringLiteral("log.2")));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.resize(0);
+        f.write(QByteArray(900, 'z'));
+    }
+    // Recreate the logger on the same directory (simulated restart). It must
+    // resume at log.1 (newest), not the highest index (log.2, the oldest).
+    {
+        RollingFileLogger logger(dir.path(), maxFiles, maxBytes);
+        logger.write(marker);
+        // Force a rotation. The marker (written after restart) must survive
+        // the rotation, not be deleted as the "oldest" file.
+        for (int i = 0; i < 3; ++i)
+            logger.write(line);
+        // The marker must still exist somewhere in the log set.
+        bool found = false;
+        const QStringList files = QDir(dir.path()).entryList({QStringLiteral("log.*")},
+                                                              QDir::Files);
+        for (const QString &name : files) {
+            QFile f(dir.filePath(name));
+            if (f.open(QIODevice::ReadOnly) && f.readAll().contains(marker.toUtf8())) {
+                found = true;
+                break;
+            }
+        }
+        QVERIFY2(found, "content written after restart was lost on rotation");
+        // log.1 must hold the newest content (non-empty after the rotation).
+        QFile f(dir.filePath(QStringLiteral("log.1")));
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QVERIFY(!f.readAll().isEmpty());
     }
 }
 

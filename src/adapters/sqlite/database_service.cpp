@@ -100,10 +100,18 @@ void DatabaseService::openDatabase()
         // not silently degrade to rollback journal / no FK enforcement, so any
         // failed PRAGMA closes the connection and enters restricted mode.
         QSqlQuery q(db);
-        if (!q.exec(QStringLiteral("PRAGMA journal_mode=WAL"))
+        // PRAGMA journal_mode=WAL returns the resulting mode as a result row;
+        // exec() succeeds even when WAL cannot be enabled (silent fallback to
+        // rollback journal). Read the returned value and require "wal".
+        bool walOk = false;
+        if (q.exec(QStringLiteral("PRAGMA journal_mode=WAL")) && q.next())
+            walOk = q.value(0).toString().toLower() == QStringLiteral("wal");
+        if (!walOk
             || !q.exec(QStringLiteral("PRAGMA foreign_keys=ON"))
             || !q.exec(QStringLiteral("PRAGMA busy_timeout=5000"))) {
             error = q.lastError().text();
+            if (error.isEmpty())
+                error = QStringLiteral("WAL journal mode could not be enabled");
             db.close();
         } else if (!runMigrations(db, schemaMigrations(), &error)) {
             db.close();

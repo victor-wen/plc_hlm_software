@@ -24,7 +24,8 @@ QString redactSensitive(const QString &text)
     // token values are never logged (spec §17).
     static const QRegularExpression fieldRe(
         QStringLiteral("(?i)(password|passwd|pwd|password_hash|passwordhash|"
-                       "token|session_token|sessiontoken)\\s*([=:])(\\s*)[^\\s,;]+"));
+                       "token|session_token|sessiontoken)\\s*([=:])(\\s*)"
+                       "([^\\s,;]+(?:\\s+(?!\\w+[=:])[^\\s,;]+)*)"));
     QString out = text;
     out.replace(fieldRe, QStringLiteral("\\1\\2\\3[REDACTED]"));
     // Bare "password=..." style already covered; also catch a trailing
@@ -37,14 +38,11 @@ RollingFileLogger::RollingFileLogger(QString dir, int maxFiles, qint64 maxFileBy
       m_maxFileBytes(qMax<qint64>(1, maxFileBytes))
 {
     QDir().mkpath(m_dir);
-    // Resume at the highest existing index so a restart does not overwrite
-    // the newest file.
-    for (int i = m_maxFiles; i >= 1; --i) {
-        if (QFileInfo::exists(m_dir + QLatin1Char('/') + fileNameFor(i))) {
-            m_index = i;
-            break;
-        }
-    }
+    // Always resume at log.1 (newest). Append mode never overwrites existing
+    // content, and rotation renames log.1 -> log.2 -> ... -> log.N, so the
+    // newest entries always live in log.1. Resuming at the highest index
+    // would append to the oldest file, which the next rotation deletes.
+    m_index = 1;
     openCurrentLocked();
 }
 
