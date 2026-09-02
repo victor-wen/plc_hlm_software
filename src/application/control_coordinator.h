@@ -169,6 +169,10 @@ private:
     qint64 m_startDeadlineMs = 0;
     qint64 m_stopDeadlineMs = 0;
     bool m_resetTimeoutArmed = false;
+    // True once the Homing phase has observed M50=1 (home return actually
+    // started). Success is only accepted after this, so a lost M103 pulse can
+    // never report a false "回原点完成" (spec §10.2 step 3, §13).
+    bool m_resetHomingStarted = false;
     bool m_adjustTimeoutArmed = false;
     bool m_startTimeoutArmed = false;
     bool m_stopTimeoutArmed = false;

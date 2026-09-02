@@ -106,6 +106,7 @@ ControlCoordinator::CommandResult ControlCoordinator::reset()
         return {false, QStringLiteral("复位已在进行中")};
 
     m_resetPhase = ResetPhase::WaitManual;
+    m_resetHomingStarted = false;
     m_resetDeadlineMs = m_nowMs() + qint64(m_cfg.resetTimeoutSec) * 1000;
     m_resetTimeoutArmed = true;
     emit commandAccepted(Command::Reset);
@@ -473,6 +474,7 @@ void ControlCoordinator::onConnectionChanged(bool online)
     if (m_resetPhase != ResetPhase::Idle) {
         m_resetPhase = ResetPhase::Idle;
         m_resetTimeoutArmed = false;
+        m_resetHomingStarted = false;
         emit commandResult(Command::Reset, false, QStringLiteral("通讯中断"));
     }
     if (m_adjustPhase != AdjustPhase::Idle) {
@@ -512,13 +514,24 @@ void ControlCoordinator::onResetSnapshot(const DeviceSnapshot &s)
         return;
     }
     if (m_resetPhase == ResetPhase::Homing) {
-        // Success: M61=1 and M50=0 (spec §10.2 step 4).
-        if (s.m9() && !s.m50()) {
-            finishCommand(Command::Reset, true, QStringLiteral("回原点完成"));
-        } else if (s.m14() || s.faultCode() != 0) {
+        // Fault check takes precedence over success (spec §10.2 step 6): a
+        // latched fault (M14) or fault code must never be reported as cleared.
+        if (s.m14() || s.faultCode() != 0) {
             // PLC fault: keep the actual state, no optimistic success, no
             // fabricated fault code (spec §10.2 step 6).
             finishCommand(Command::Reset, false, QStringLiteral("回原点故障"));
+            return;
+        }
+        // First observe M50=1 (home return actually started) before accepting
+        // success (spec §10.2 step 3 "监视 M50"). If the M103 pulse was lost
+        // and the machine was already homed, M50 never rises and the flow
+        // converges to the defensive timeout instead of a false success
+        // (spec §13: 不显示乐观成功).
+        if (s.m50())
+            m_resetHomingStarted = true;
+        // Success: home return started, then M61=1 and M50=0 (spec §10.2 step 4).
+        if (m_resetHomingStarted && s.m9() && !s.m50()) {
+            finishCommand(Command::Reset, true, QStringLiteral("回原点完成"));
         }
     }
 }
@@ -585,6 +598,7 @@ void ControlCoordinator::finishCommand(Command cmd, bool ok, const QString &deta
     case Command::Reset:
         m_resetPhase = ResetPhase::Idle;
         m_resetTimeoutArmed = false;
+        m_resetHomingStarted = false;
         break;
     case Command::AdjustWidth:
         m_adjustPhase = AdjustPhase::Idle;

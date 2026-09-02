@@ -53,6 +53,7 @@ private slots:
     void resetWaitsForM61AndSucceeds();
     void resetTimeoutKeepsActualState();
     void resetRejectedWhenRunning();
+    void resetDoesNotReportSuccessWithoutHomingStarted();
 
     // --- adjust width flow ---------------------------------------------------
     void adjustWidthWritesD128ThenPulsesM43();
@@ -349,6 +350,47 @@ void ControlCoordinatorTest::resetRejectedWhenRunning()
     QVERIFY(gw.lastSnapshot().m3());
 
     QVERIFY(!c->reset().accepted); // M3=1: 禁止复位
+}
+
+void ControlCoordinatorTest::resetDoesNotReportSuccessWithoutHomingStarted()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    ControlCoordinator::Config cfg;
+    cfg.resetTimeoutSec = 30;
+    // No-op startPulse: the M103 pulse is "sent" but never delivered to the
+    // PLC, so M50 never rises (lost-pulse scenario).
+    std::unique_ptr<ControlCoordinator> c(makeCoordinatorNoPulse(gw, now, cfg));
+    c->setRole(Role::Admin);
+
+    // Machine already homed (M61=1) with a latched fault (M14=1).
+    homeReady(gw);
+    gw.writeCoil(kM100, true); // estop latches M14=1, D110=1
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m9()); // M61 via M9
+    QVERIFY(gw.lastSnapshot().m14());
+
+    bool result = true; // must not stay true
+    QString detail;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &d) {
+                if (cmd == Command::Reset) {
+                    result = ok;
+                    detail = d;
+                }
+            });
+
+    QVERIFY(c->reset().accepted);
+    gw.tick(); // M103 lost: M50 never rises, M61 stays 1, M14 stays 1
+
+    // The flow must NOT report success: the reset never executed and the
+    // fault was never cleared. It converges to failure (fault check) rather
+    // than an optimistic "回原点完成".
+    QVERIFY(!result);
+    QVERIFY(!c->resetInProgress());
+    QVERIFY(detail.contains(QStringLiteral("故障")));
+    QVERIFY(gw.lastSnapshot().m14()); // fault not reported cleared
 }
 
 // --- adjust width flow ------------------------------------------------------
