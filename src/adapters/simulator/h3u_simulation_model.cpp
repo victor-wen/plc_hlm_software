@@ -286,6 +286,16 @@ void H3uSimulationModel::onM100Write(bool value)
         m_coils[kM14] = true;
         m_regs[kD110] = 1;
         m_coils[kM3] = false;
+        // Interlock M49 dropped: abort any in-flight positioning run without
+        // overwriting the fault code just latched above (spec §10.3.1).
+        if (m_positioning) {
+            m_coils[kM34] = false;
+            m_coils[kM44] = false;
+            m_coils[kM45] = true;
+            m_t6Elapsed = 0;
+            m_positioning = false;
+            m_remaining = 0;
+        }
     } else {
         // Release clears M0 only; the fault stays latched until M103.
         m_coils[kM0] = false;
@@ -306,6 +316,8 @@ void H3uSimulationModel::onM112Write(bool value)
 
 void H3uSimulationModel::updateM49()
 {
+    // X10/X12 are physical inputs not modeled in the simulator (accepted
+    // design decision): M49 = M1 ∧ M61 ∧ ¬M3 ∧ ¬M0 ∧ ¬M14 ∧ ¬M50.
     m_m49 = m_coils[kM1] && m_coils[kM61] && !m_coils[kM3] && !m_coils[kM0]
         && !m_coils[kM14] && !m_coils[kM50];
 }
@@ -359,25 +371,36 @@ void H3uSimulationModel::tick(quint64 seconds)
 
     // Width adjustment progress and dynamic timeout (T6, 100 ms units).
     if (m_positioning) {
+        // Continuous safety interlock: recomputed every scan (spec §10.3.1).
+        updateM49();
         m_t6Elapsed += seconds * 10;
-        const bool timedOut = m_t6Elapsed >= quint64(m_regs[kD222]);
-        if (timedOut) {
+        if (!m_m49) {
+            // Interlock lost while positioning: abort the run. The existing
+            // PLC fault code (e.g. estop = 1) must not be overwritten.
+            m_coils[kM34] = false;
+            m_coils[kM44] = false;
+            m_coils[kM45] = true;
+            m_t6Elapsed = 0;
+            m_positioning = false;
+            m_remaining = 0;
+        } else if (!m_stall && seconds >= m_remaining) {
+            // Normal completion (spec §10.3.1): D130 = latched target.
+            // Checked before the timeout so completion wins in the same scan.
+            m_coils[kM34] = false;
+            m_regs[kD130] = m_regs[kD212];
+            updateD210(); // D210 = D128 - D130
+            m_coils[kM45] = false;
+            m_coils[kM44] = true;
+            m_positioning = false;
+            m_remaining = 0;
+            m_t6Elapsed = 0;
+        } else if (m_t6Elapsed >= quint64(m_regs[kD222])) {
             // Dynamic timeout (spec §10.3.1): M45, M14, D110 = 10.
             m_coils[kM34] = false;
             m_coils[kM44] = false;
             m_coils[kM45] = true;
             m_coils[kM14] = true;
             m_regs[kD110] = 10;
-            m_positioning = false;
-            m_remaining = 0;
-            m_t6Elapsed = 0;
-        } else if (!m_stall && seconds >= m_remaining) {
-            // Normal completion (spec §10.3.1): D130 = latched target.
-            m_coils[kM34] = false;
-            m_regs[kD130] = m_regs[kD212];
-            updateD210(); // D210 = D128 - D130
-            m_coils[kM45] = false;
-            m_coils[kM44] = true;
             m_positioning = false;
             m_remaining = 0;
             m_t6Elapsed = 0;

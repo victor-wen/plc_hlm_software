@@ -52,6 +52,8 @@ private slots:
     void homeReturnFault8();
     void homeReturnFault9();
     void widthAdjustTimeoutFault10();
+    void interlockLossAbortsRunWithoutOverwritingFault();
+    void completionBeatsTimeoutInSameTick();
     void m112WatchdogClearsBits();
     void modeSwitchRejectedWhileRunning();
     void softwareEstopLatchesFault();
@@ -279,6 +281,54 @@ void H3uSimulationModelTest::widthAdjustTimeoutFault10()
     QVERIFY(m.readCoil(45));
     QVERIFY(m.readCoil(14));
     QCOMPARE(m.readRegister(110), quint16(10));
+}
+
+void H3uSimulationModelTest::interlockLossAbortsRunWithoutOverwritingFault()
+{
+    SimulationClock clock;
+    H3uSimulationModel m(clock);
+    homeReady(m);
+    m.writeRegister(220, 15);
+    m.writeRegister(128, 300);
+    m.writeCoil(43, true);
+    m.writeCoil(43, false);
+    QVERIFY(m.readCoil(34)); // adjusting
+
+    // Estop during positioning: M49 drops (M0=1, M14=1) -> abort the run.
+    m.writeCoil(100, true);
+    QVERIFY(!m.readCoil(34));
+    QVERIFY(!m.readCoil(44));
+    QVERIFY(m.readCoil(45));
+    QVERIFY(m.readCoil(0));
+    QVERIFY(m.readCoil(14));
+    QCOMPARE(m.readRegister(110), quint16(1)); // estop fault preserved
+
+    // Well past the original completion time: no late success, no timeout
+    // overwriting the existing fault code.
+    m.advance(20);
+    QVERIFY(!m.readCoil(44));
+    QCOMPARE(m.readRegister(110), quint16(1));
+}
+
+void H3uSimulationModelTest::completionBeatsTimeoutInSameTick()
+{
+    SimulationClock clock;
+    H3uSimulationModel m(clock);
+    homeReady(m);
+    m.writeRegister(220, 15);
+    m.writeRegister(128, 300); // 7 s run, 12 s timeout
+    m.writeCoil(43, true);
+    m.writeCoil(43, false);
+    QVERIFY(m.readCoil(34));
+
+    // One advance spanning both completion (7 s) and timeout (12 s): the
+    // normal completion must win (spec §10.3.1).
+    m.advance(20);
+    QVERIFY(m.readCoil(44));
+    QVERIFY(!m.readCoil(45));
+    QVERIFY(!m.readCoil(14));
+    QCOMPARE(m.readRegister(110), quint16(0));
+    QCOMPARE(m.readRegister(130), quint16(300));
 }
 
 void H3uSimulationModelTest::m112WatchdogClearsBits()
