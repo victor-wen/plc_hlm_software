@@ -1,0 +1,31 @@
+# Local brainstorming companion
+.superpowers/
+
+# CMake build outputs
+/build/
+/out/
+/cmake-build-*/
+CMakeUserPresets.json
+
+# IDE and user-local settings
+.idea/
+.vscode/
+.vs/
+*.suo
+*.user
+*.user.*
+*.VC.db
+
+# Compiler and generated artifacts
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.lib
+
+# Local environment files
+.env
+.env.*
+!.env.example
