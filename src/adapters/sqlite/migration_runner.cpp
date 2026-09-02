@@ -128,7 +128,7 @@ bool runMigrations(QSqlDatabase &db, const QVector<Migration> &migrations,
     for (const Migration &m : migrations) {
         if (appliedVersions.contains(m.version)) {
             // Verify the checksum of already-applied migrations so a tampered
-            // or reordered migration is detected (spec §12 schema_migrations).
+            // migration is detected (spec §12 schema_migrations).
             if (appliedChecksums.value(m.version) != checksumOf(m.sql)) {
                 if (error)
                     *error = QStringLiteral("migration %1 checksum mismatch").arg(m.version);

@@ -212,6 +212,11 @@ bool SqliteRecipeRepository::saveRecipe(const RecipeRecord &r, QString *error)
     q.addBindValue(r.id);
     if (!q.exec())
         return setError(error, q);
+    if (q.numRowsAffected() == 0) {
+        if (error)
+            *error = QStringLiteral("recipe not found");
+        return false;
+    }
     return true;
 }
 

@@ -1,6 +1,7 @@
 #include "common/rolling_file_logger.h"
 
 #include <QDateTime>
+#include <QDebug>
 #include <QDir>
 #include <QFileInfo>
 #include <QRegularExpression>
@@ -83,12 +84,15 @@ void RollingFileLogger::rotateLocked()
     m_file.close();
     // Delete the oldest file, then shift the rest up by one.
     const QString oldest = m_dir + QLatin1Char('/') + fileNameFor(m_maxFiles);
-    QFile::remove(oldest);
+    if (QFileInfo::exists(oldest) && !QFile::remove(oldest))
+        qWarning("RollingFileLogger: failed to remove oldest log file %s",
+                 qPrintable(oldest));
     for (int i = m_maxFiles - 1; i >= 1; --i) {
         const QString from = m_dir + QLatin1Char('/') + fileNameFor(i);
         const QString to = m_dir + QLatin1Char('/') + fileNameFor(i + 1);
-        if (QFileInfo::exists(from))
-            QFile::rename(from, to);
+        if (QFileInfo::exists(from) && !QFile::rename(from, to))
+            qWarning("RollingFileLogger: failed to rename %s to %s",
+                     qPrintable(from), qPrintable(to));
     }
     m_index = 1;
     openCurrentLocked();

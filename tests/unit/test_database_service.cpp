@@ -13,6 +13,7 @@
 #include <QMetaObject>
 #include <QSignalSpy>
 #include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 
 #include "adapters/sqlite/database_service.h"
@@ -26,6 +27,7 @@ class DatabaseServiceTest : public QObject
 private slots:
     void initTestCase();
     void healthyDatabaseEmitsReady();
+    void healthyDatabaseUsesWalJournalMode();
     void healthyServiceRunsOperationsOnWorkerThread();
     void unopenableDatabaseEntersRestrictedMode();
     void restrictedServiceRejectsOperations();
@@ -53,7 +55,32 @@ void DatabaseServiceTest::healthyDatabaseEmitsReady()
     service.stop();
 }
 
-// Spec §7.3: the service lives on its worker thread (single-thread
+// Spec §7.3 / WAL acceptance criterion: a healthy temp-file database must
+// actually run in WAL journal mode, not silently fall back to rollback.
+void DatabaseServiceTest::healthyDatabaseUsesWalJournalMode()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    DatabaseService service(dir.filePath(QStringLiteral("app.db")));
+    QSignalSpy readySpy(&service, &DatabaseService::ready);
+    service.start();
+    QTRY_VERIFY_WITH_TIMEOUT(readySpy.size() > 0, 5000);
+    QVERIFY(!service.isRestricted());
+    service.stop();
+
+    // Re-open the file directly and confirm the persisted journal mode is WAL.
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                    QStringLiteral("wal_check"));
+        db.setDatabaseName(dir.filePath(QStringLiteral("app.db")));
+        QVERIFY(db.open());
+        QSqlQuery q(db);
+        QVERIFY(q.exec(QStringLiteral("PRAGMA journal_mode")));
+        QVERIFY(q.next());
+        QCOMPARE(q.value(0).toString().toLower(), QStringLiteral("wal"));
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("wal_check"));
+}
 // single-connection). Drive admin creation and login through the queued
 // invocation path so the production contract is exercised, not bypassed.
 void DatabaseServiceTest::healthyServiceRunsOperationsOnWorkerThread()

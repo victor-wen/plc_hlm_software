@@ -96,12 +96,16 @@ void DatabaseService::openDatabase()
     if (!db.open()) {
         error = db.lastError().text();
     } else {
-        // WAL, foreign keys and busy timeout (spec §7.3).
+        // WAL, foreign keys and busy timeout (spec §7.3). A failure here must
+        // not silently degrade to rollback journal / no FK enforcement, so any
+        // failed PRAGMA closes the connection and enters restricted mode.
         QSqlQuery q(db);
-        q.exec(QStringLiteral("PRAGMA journal_mode=WAL"));
-        q.exec(QStringLiteral("PRAGMA foreign_keys=ON"));
-        q.exec(QStringLiteral("PRAGMA busy_timeout=5000"));
-        if (!runMigrations(db, schemaMigrations(), &error)) {
+        if (!q.exec(QStringLiteral("PRAGMA journal_mode=WAL"))
+            || !q.exec(QStringLiteral("PRAGMA foreign_keys=ON"))
+            || !q.exec(QStringLiteral("PRAGMA busy_timeout=5000"))) {
+            error = q.lastError().text();
+            db.close();
+        } else if (!runMigrations(db, schemaMigrations(), &error)) {
             db.close();
         } else {
             m_users = new SqliteUserRepository(db);

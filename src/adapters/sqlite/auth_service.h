@@ -12,10 +12,12 @@
 //
 // The service is a plain class used on the SQLite worker thread (spec §7.3).
 
+#include <QByteArray>
 #include <QDateTime>
 #include <QHash>
 #include <QString>
 
+#include "domain/password_derivation.h"
 #include "ports/repositories.h"
 
 namespace hlm {
@@ -26,10 +28,19 @@ inline constexpr int kLockoutSeconds = 30;
 class UserRepository;
 class AuditRepository;
 
+// Injectable key-derivation hooks (test seams). Default to the real
+// implementations; tests substitute failing versions to exercise the
+// "derivation failed" path without corrupting the account.
+using SaltGeneratorFn = QByteArray (*)();
+using DeriveKeyFn = QByteArray (*)(const QString &password, const QByteArray &salt,
+                                   int iterations);
+
 class AuthService
 {
 public:
-    AuthService(UserRepository *users, AuditRepository *audit);
+    AuthService(UserRepository *users, AuditRepository *audit,
+                SaltGeneratorFn saltGen = generateSalt,
+                DeriveKeyFn derive = derivePasswordKey);
 
     // True when no user exists yet (first start, spec §11.5).
     bool needsInitialAdmin() const;
@@ -63,6 +74,8 @@ private:
     UserRepository *m_users;
     AuditRepository *m_audit;
     int m_lockoutSeconds = kLockoutSeconds;
+    SaltGeneratorFn m_saltGen;
+    DeriveKeyFn m_derive;
     QHash<QString, LockState> m_lockState; // in-memory, per-process
 };
 

@@ -51,8 +51,9 @@ void audit(AuditRepository *audit, const QString &username, Role role,
 
 } // namespace
 
-AuthService::AuthService(UserRepository *users, AuditRepository *audit)
-    : m_users(users), m_audit(audit)
+AuthService::AuthService(UserRepository *users, AuditRepository *audit,
+                         SaltGeneratorFn saltGen, DeriveKeyFn derive)
+    : m_users(users), m_audit(audit), m_saltGen(saltGen), m_derive(derive)
 {
 }
 
@@ -157,10 +158,21 @@ bool AuthService::changePassword(qint64 userId, const QString &newPassword,
     for (const UserRecord &u : users) {
         if (u.id == userId) {
             UserRecord updated = u;
-            updated.salt = generateSalt();
+            updated.salt = m_saltGen();
+            if (updated.salt.isEmpty()) {
+                if (error)
+                    *error = QStringLiteral("failed to generate salt");
+                return false;
+            }
             updated.iterations = kDefaultPbkdf2Iterations;
-            updated.passwordHash =
-                passwordHashHex(derivePasswordKey(newPassword, updated.salt, updated.iterations));
+            const QByteArray derived =
+                m_derive(newPassword, updated.salt, updated.iterations);
+            if (derived.isEmpty()) {
+                if (error)
+                    *error = QStringLiteral("failed to derive password hash");
+                return false;
+            }
+            updated.passwordHash = passwordHashHex(derived);
             if (!m_users->updateUser(updated, error))
                 return false;
             audit(m_audit, u.username, u.role, QStringLiteral("user.password_change"),

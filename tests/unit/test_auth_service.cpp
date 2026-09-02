@@ -34,7 +34,22 @@ private slots:
     void disabledUserCannotLogin();
     void failedLoginAuditedWithoutPassword();
     void changePasswordInvalidatesOld();
+    void changePasswordDerivationFailureLeavesHashUnchanged();
 };
+
+namespace {
+
+QByteArray failingSalt()
+{
+    return QByteArray();
+}
+
+QByteArray failingDerive(const QString &, const QByteArray &, int)
+{
+    return QByteArray();
+}
+
+} // namespace
 
 void AuthServiceTest::initTestCase()
 {
@@ -302,6 +317,47 @@ void AuthServiceTest::changePasswordInvalidatesOld()
                  qPrintable(error));
         QVERIFY(!auth.login(QStringLiteral("admin"), QStringLiteral("hunter2")).ok);
         QVERIFY(auth.login(QStringLiteral("admin"), QStringLiteral("new-pass")).ok);
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("auth_test"));
+}
+
+void AuthServiceTest::changePasswordDerivationFailureLeavesHashUnchanged()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    {
+        QSqlDatabase db = hlm_test::createMigratedDb(dir, QStringLiteral("auth_test"));
+        QVERIFY(db.isOpen());
+        SqliteUserRepository users(db);
+        SqliteAuditRepository audit(db);
+        AuthService auth(&users, &audit);
+        QString error;
+        QVERIFY(auth.createInitialAdmin(QStringLiteral("admin"), QStringLiteral("hunter2"), &error));
+
+        const auto before = users.findByName(QStringLiteral("admin"));
+        QVERIFY(before.has_value());
+
+        // A failing salt generator must abort the change and leave the stored
+        // hash untouched (spec §11.5: never store an empty hash).
+        AuthService badSalt(&users, &audit, failingSalt, derivePasswordKey);
+        QVERIFY(!badSalt.changePassword(before->id, QStringLiteral("new-pass"), &error));
+        QVERIFY(!error.isEmpty());
+        const auto afterSalt = users.findByName(QStringLiteral("admin"));
+        QVERIFY(afterSalt.has_value());
+        QCOMPARE(afterSalt->passwordHash, before->passwordHash);
+        QCOMPARE(afterSalt->salt, before->salt);
+
+        // A failing key derivation must likewise abort without corrupting.
+        AuthService badDerive(&users, &audit, generateSalt, failingDerive);
+        QVERIFY(!badDerive.changePassword(before->id, QStringLiteral("new-pass"), &error));
+        QVERIFY(!error.isEmpty());
+        const auto afterDerive = users.findByName(QStringLiteral("admin"));
+        QVERIFY(afterDerive.has_value());
+        QCOMPARE(afterDerive->passwordHash, before->passwordHash);
+        QCOMPARE(afterDerive->salt, before->salt);
+
+        // The original password still works after both failed attempts.
+        QVERIFY(auth.login(QStringLiteral("admin"), QStringLiteral("hunter2")).ok);
     }
     QSqlDatabase::removeDatabase(QStringLiteral("auth_test"));
 }
