@@ -29,8 +29,8 @@ option(HLM_ENABLE_VISION "Build the hlm_vision module (requires OpenCV 4.x)" ON)
 # --- Dependencies -----------------------------------------------------------
 # Qt: >= 6.4 for local dev (Ubuntu 24.04 ships 6.4.2); CI pins 6.8.x via the
 # vcpkg manifest (vcpkg.json). Only components used by current targets are
-# requested; later tasks add Widgets/SerialBus/SerialPort/Sql as needed.
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core Test)
+# requested; later tasks add Widgets/Sql as needed.
+find_package(Qt6 6.4 REQUIRED COMPONENTS Core Test SerialBus SerialPort)
 
 # OpenSSL 3.x Crypto: password derivation in hlm_core (spec §17).
 find_package(OpenSSL 3 REQUIRED)
@@ -51,6 +51,7 @@ add_library(hlm_core STATIC
     src/domain/address_table.cpp
     src/domain/fault_code.cpp
     src/domain/device_snapshot.cpp
+    src/ports/iplc_gateway.cpp
 )
 target_include_directories(hlm_core PUBLIC src)
 target_link_libraries(hlm_core PUBLIC
@@ -69,8 +70,24 @@ add_library(hlm_simulator STATIC
 target_include_directories(hlm_simulator PUBLIC src)
 target_link_libraries(hlm_simulator PUBLIC Qt6::Core)
 
+# hlm_modbus: real PLC gateway over Modbus RTU (spec §6, §7.2, §8). The
+# worker thread owns a QModbusRtuSerialClient; the request queue and reconnect
+# policy are the unit-testable core.
+add_library(hlm_modbus STATIC
+    src/adapters/modbus/modbus_transport.cpp
+    src/adapters/modbus/request_queue.cpp
+    src/adapters/modbus/reconnect_policy.cpp
+    src/adapters/modbus/qt_modbus_plc_gateway.cpp
+)
+target_include_directories(hlm_modbus PUBLIC src)
+target_link_libraries(hlm_modbus PUBLIC
+    hlm_core
+    Qt6::Core
+    Qt6::SerialBus
+    Qt6::SerialPort
+)
+
 # Planned targets added by later tasks (do not create empty targets now):
-#   hlm_modbus    -> Qt6::SerialBus Qt6::SerialPort
 #   hlm_sqlite    -> Qt6::Sql
 #   hlm_vision    -> OpenCV::core (guarded by HLM_ENABLE_VISION)
 #   hlm_ui        -> Qt6::Widgets
