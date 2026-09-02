@@ -257,6 +257,14 @@ void SnapshotDecodeTest::unknownFaultCodeDoesNotCrash()
     QCOMPARE(table.info(99).code, quint16(99)); // unknown code preserved
     QVERIFY(table.info(99).isLatched);
 
+    // info() returns a copy: a later query for a different unknown code must
+    // not overwrite a previously returned value (thread-safety guarantee).
+    const FaultInfo first = table.info(0x1111);
+    const FaultInfo second = table.info(0x2222);
+    QCOMPARE(first.code, quint16(0x1111));
+    QCOMPARE(second.code, quint16(0x2222));
+    QVERIFY(first.isLatched && second.isLatched);
+
     // Snapshot with an unknown fault code must not crash.
     DeviceSnapshotData d;
     d.faultCode = 99;

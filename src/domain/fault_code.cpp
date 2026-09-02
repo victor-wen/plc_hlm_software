@@ -17,8 +17,6 @@ FaultCodeTable::FaultCodeTable()
     m_entries.push_back({8, QStringLiteral("回原点反转超时"), true});
     m_entries.push_back({9, QStringLiteral("回原点正转超时"), true});
     m_entries.push_back({10, QStringLiteral("调宽定位超时"), true});
-
-    m_unknown = {0, QStringLiteral("未知锁存故障"), true};
 }
 
 const FaultCodeTable &FaultCodeTable::instance()
@@ -27,15 +25,16 @@ const FaultCodeTable &FaultCodeTable::instance()
     return table;
 }
 
-const FaultInfo &FaultCodeTable::info(quint16 code) const
+FaultInfo FaultCodeTable::info(quint16 code) const
 {
     for (const FaultInfo &f : m_entries) {
         if (f.code == code)
             return f;
     }
     // Unknown non-zero code: report as unknown latched fault, never crash.
-    m_unknown.code = code;
-    return m_unknown;
+    // Returned by value so concurrent queries from different threads cannot
+    // race on shared mutable state.
+    return {code, QStringLiteral("未知锁存故障"), true};
 }
 
 } // namespace hlm

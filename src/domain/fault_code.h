@@ -20,16 +20,17 @@ class FaultCodeTable
 public:
     static const FaultCodeTable &instance();
 
-    // Returns the info for `code`. Unknown non-zero codes map to an
+    // Returns the info for `code` by value. Unknown non-zero codes map to an
     // "unknown latched fault" entry (code preserved, isLatched = true).
-    const FaultInfo &info(quint16 code) const;
+    // Returning by value keeps the table immutable and thread-safe: callers
+    // never hold a reference that a later query could overwrite.
+    FaultInfo info(quint16 code) const;
 
     const QVector<FaultInfo> &all() const { return m_entries; }
 
 private:
     FaultCodeTable();
     QVector<FaultInfo> m_entries;
-    mutable FaultInfo m_unknown; // fallback entry for unknown codes
 };
 
 } // namespace hlm
