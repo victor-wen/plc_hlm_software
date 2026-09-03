@@ -202,6 +202,16 @@ target_link_libraries(test_recipe_width_page PRIVATE
 
 add_test(NAME recipe_width_page COMMAND test_recipe_width_page)
 
-set_tests_properties(widgets shell overview_page recipe_width_page PROPERTIES
+# --- Task 13: 手动控制 page (spec §10.7-§10.8, §11.3, §11.4) ------------------------
+
+add_executable(test_manual_control_page test_manual_control_page.cpp)
+target_link_libraries(test_manual_control_page PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+
+add_test(NAME manual_control_page COMMAND test_manual_control_page)
+
+set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )
