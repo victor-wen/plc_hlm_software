@@ -2,6 +2,7 @@
 
 #include <QWidget>
 #include <QHash>
+#include <QPointer>
 #include <QVector>
 
 #include "ui/pages/users_settings_model.h"
@@ -18,7 +19,6 @@ namespace hlm {
 
 class ShellModel;
 class ValueDisplay;
-class PermissionButton;
 class LoginDialog;
 class AdminPasswordDialog;
 
@@ -54,6 +54,18 @@ public:
     QListWidget *userList() const { return m_userList; }
     QLineEdit *comPortEdit() const { return m_comPort; }
     QSpinBox *stationSpin() const { return m_station; }
+    QComboBox *baudRateCombo() const { return m_baudRate; }
+    QComboBox *stopBitsCombo() const { return m_stopBits; }
+    QComboBox *parityCombo() const { return m_parity; }
+    QSpinBox *timeoutSpin() const { return m_timeout; }
+    QSpinBox *readRetriesSpin() const { return m_readRetries; }
+    QLabel *serialStatusLabel() const { return m_serialStatus; }
+    QLabel *loginStatusLabel() const { return m_loginStatusLabel; }
+    QLineEdit *changePasswordUserEdit() const { return m_changePasswordUser; }
+    QLineEdit *changePasswordNewEdit() const { return m_changePasswordNew; }
+    QLineEdit *changePasswordConfirmEdit() const { return m_changePasswordConfirm; }
+    QPushButton *changePasswordButton() const { return m_changePassword; }
+    QLabel *changePasswordStatusLabel() const { return m_changePasswordStatus; }
     QSpinBox *d122Spin() const { return m_d122Spin; }
     QSpinBox *d204Spin() const { return m_d204Spin; }
     QSpinBox *d220Spin() const { return m_d220Spin; }
@@ -75,6 +87,8 @@ public:
     void setSessionRemainingSec(int seconds);
     void setUsers(const QVector<UserRecord> &users);
     void setParameterWriteResult(bool ok, const QString &detail);
+    // 回显实际存储的串口配置 (Task 20 接线 DatabaseService::getSetting).
+    void setSerialConfig(const SerialConfig &config);
 
 public slots:
     // Re-renders every widget from the model's current state.
@@ -84,6 +98,8 @@ signals:
     // Request intents for the app shell (Task 20). Never emitted optimistically.
     void createInitialAdminRequested(const QString &username, const QString &password);
     void loginRequested(const QString &username, const QString &password);
+    // 登录结果文本 (空 = 成功), 供登录对话框显示失败原因或关闭 (spec §11.5).
+    void loginResultShown(const QString &text);
     void logoutRequested();
     // 注销触发 M42、M106-M111 清零流程 (spec §11.5).
     void logoutClearRequested();
@@ -91,10 +107,10 @@ signals:
     void changePasswordRequested(qint64 userId, const QString &newPassword);
     void deleteUserRequested(qint64 userId);
     void saveSerialConfigRequested(const SerialConfig &config);
-    // D122/D220 参数写请求 (D204 走 d204WriteRequested, 需二次验证).
-    void writeParameterRequested(quint16 address);
-    // D204 写请求, 仅在管理员密码二次验证通过后发出 (spec §11.3).
-    void d204WriteRequested(quint16 value);
+    // D122/D220 参数写请求, 携带目标值 (D204 走 d204WriteRequested, 需二次验证).
+    void writeParameterRequested(quint16 address, quint16 value);
+    // D204 写请求, 携带管理员密码供 Task 20 二次验证 (spec §11.3).
+    void d204WriteRequested(quint16 value, const QString &adminPassword);
 
 private:
     void buildLayout();
@@ -114,6 +130,7 @@ private:
     void onD204PasswordEntered(const QString &password);
     void onAddUserClicked();
     void onDeleteUserClicked();
+    void onChangePasswordClicked();
     void onSaveSerialClicked();
 
     ShellModel &m_model;
@@ -140,6 +157,11 @@ private:
     QLineEdit *m_newUserPassword = nullptr;
     QPushButton *m_addUser = nullptr;
     QPushButton *m_deleteUser = nullptr;
+    QLineEdit *m_changePasswordUser = nullptr;
+    QLineEdit *m_changePasswordNew = nullptr;
+    QLineEdit *m_changePasswordConfirm = nullptr;
+    QPushButton *m_changePassword = nullptr;
+    QLabel *m_changePasswordStatus = nullptr;
     QLineEdit *m_comPort = nullptr;
     QSpinBox *m_station = nullptr;
     QComboBox *m_baudRate = nullptr;
@@ -161,7 +183,7 @@ private:
     QHash<QString, ValueDisplay *> m_paramDisplays;
 
     bool m_sessionExpiredEmitted = false;
-    AdminPasswordDialog *m_d204Dialog = nullptr;
+    QPointer<AdminPasswordDialog> m_d204Dialog;
 };
 
 } // namespace hlm

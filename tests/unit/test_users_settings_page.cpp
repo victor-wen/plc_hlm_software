@@ -109,6 +109,23 @@ private slots:
     void d204RequiresReauthDialog();
     void d204CancelDoesNotWrite();
 
+    // --- page: login failure visible on locked panel (spec §11.5) -------------
+    void loginFailureShownOnLockedPanel();
+    void loginDialogStaysOpenOnFailure();
+
+    // --- page: session expiry re-arms after re-login (spec §11.5) -------------
+    void sessionExpiryReArmsAfterPositiveTick();
+
+    // --- page: serial config feed (spec §8.1) ---------------------------------
+    void serialConfigFeedEchoesStoredValues();
+
+    // --- page: change password UI (brief: 用户增删改密) ------------------------
+    void changePasswordEmitsRequestWithUserId();
+    void changePasswordRejectsMismatchAndUnknownUser();
+
+    // --- page: user list row height >= 48 px (spec §11.1) ---------------------
+    void userListRowHeightMeetsTouchTarget();
+
     // --- page: logout clear intent (spec §11.5) -------------------------------
     void logoutButtonEmitsClearRequest();
 
@@ -390,11 +407,17 @@ void UsersSettingsPageTest::d204RequiresReauthDialog()
     QVERIFY(dialog->isVisible());
     QCOMPARE(spy.count(), 0); // nothing written before verification
 
-    // Enter the admin password and confirm.
+    // 空密码: 不发写请求.
+    clickAt(dialog->okButton());
+    QCOMPARE(spy.count(), 0);
+
+    // 输入管理员密码并确认: 写请求携带密码供 Task 20 二次验证.
     dialog->passwordEdit()->setText(QStringLiteral("admin-secret"));
     clickAt(dialog->okButton());
     QCOMPARE(spy.count(), 1);
-    QCOMPARE(spy.takeFirst().at(0).toUInt(), quint16(2560));
+    const QList<QVariant> args = spy.takeFirst();
+    QCOMPARE(args.at(0).toUInt(), quint16(2560));
+    QCOMPARE(args.at(1).toString(), QStringLiteral("admin-secret"));
 }
 
 void UsersSettingsPageTest::d204CancelDoesNotWrite()
@@ -413,6 +436,191 @@ void UsersSettingsPageTest::d204CancelDoesNotWrite()
     // Cancelling the re-auth dialog aborts the write (spec §11.3).
     clickAt(dialog->cancelButton());
     QCOMPARE(spy.count(), 0);
+}
+
+// --- page: login failure visible on locked panel -----------------------------------------
+
+void UsersSettingsPageTest::loginFailureShownOnLockedPanel()
+{
+    ShellModel model;
+    UsersSettingsPage page(model);
+    QApplication::processEvents();
+
+    // 未登录: 锁定面板可见, 登录状态标签位于锁定面板上 (spec §11.5).
+    QCOMPARE(page.currentPanel(), page.lockedPanel());
+    QVERIFY(page.loginStatusLabel() != nullptr);
+    QVERIFY(page.loginStatusLabel()->parentWidget() == page.lockedPanel());
+
+    // 锁定 30 秒提示必须显示在锁定面板上, 用户始终可见.
+    LoginResult locked;
+    locked.ok = false;
+    locked.reason = QStringLiteral("locked");
+    page.setLoginResult(locked);
+    QApplication::processEvents();
+    QVERIFY(page.loginStatusLabel()->text().contains(QStringLiteral("锁定")));
+
+    // 密码错误提示同样可见.
+    LoginResult bad;
+    bad.ok = false;
+    bad.reason = QStringLiteral("bad credentials");
+    page.setLoginResult(bad);
+    QApplication::processEvents();
+    QVERIFY(page.loginStatusLabel()->text().contains(
+        QStringLiteral("用户名或密码错误")));
+}
+
+void UsersSettingsPageTest::loginDialogStaysOpenOnFailure()
+{
+    ShellModel model;
+    UsersSettingsPage page(model);
+    QApplication::processEvents();
+
+    // 打开登录对话框, 输入凭据.
+    clickAt(page.lockedPanel()->findChild<QPushButton *>(
+        QStringLiteral("usersLoginButton")));
+    auto *dialog = page.findChild<LoginDialog *>();
+    QVERIFY(dialog != nullptr);
+    QVERIFY(dialog->isVisible());
+    dialog->usernameEdit()->setText(QStringLiteral("admin"));
+    dialog->passwordEdit()->setText(QStringLiteral("wrong"));
+    clickAt(dialog->okButton());
+
+    // 失败结果: 对话框不关闭, 显示错误原因, 可重试 (spec §11.5).
+    LoginResult bad;
+    bad.ok = false;
+    bad.reason = QStringLiteral("bad credentials");
+    page.setLoginResult(bad);
+    QApplication::processEvents();
+    QVERIFY(dialog->isVisible());
+    QVERIFY(dialog->statusLabel()->text().contains(
+        QStringLiteral("用户名或密码错误")));
+
+    // 成功结果: 对话框关闭.
+    LoginResult ok;
+    ok.ok = true;
+    ok.user = user(1, QStringLiteral("admin"), Role::Admin);
+    page.setLoginResult(ok);
+    QApplication::processEvents();
+    QVERIFY(!dialog->isVisible());
+}
+
+// --- page: session expiry re-arms after re-login ------------------------------------------
+
+void UsersSettingsPageTest::sessionExpiryReArmsAfterPositiveTick()
+{
+    ShellModel model;
+    UsersSettingsPage page(model);
+    model.setUser(QStringLiteral("admin"), Role::Admin);
+    QSignalSpy logoutSpy(&page, &UsersSettingsPage::logoutRequested);
+    QSignalSpy clearSpy(&page, &UsersSettingsPage::logoutClearRequested);
+
+    // 第一次超时: 注销 + 清零.
+    page.setSessionRemainingSec(0);
+    QCOMPARE(logoutSpy.count(), 1);
+    QCOMPARE(clearSpy.count(), 1);
+
+    // 二次登录后会话重新计时 (正值): 复位超时标记.
+    page.setSessionRemainingSec(600);
+    QCOMPARE(logoutSpy.count(), 1); // 不复发
+
+    // 会话再次超时: 必须再次发出注销 + 清零 (spec §11.5).
+    page.setSessionRemainingSec(0);
+    QCOMPARE(logoutSpy.count(), 2);
+    QCOMPARE(clearSpy.count(), 2);
+}
+
+// --- page: serial config feed --------------------------------------------------------------
+
+void UsersSettingsPageTest::serialConfigFeedEchoesStoredValues()
+{
+    ShellModel model;
+    UsersSettingsPage page(model);
+    model.setUser(QStringLiteral("admin"), Role::Admin);
+
+    // 回显实际存储的串口配置 (Task 20 接线 DatabaseService::getSetting).
+    SerialConfig cfg;
+    cfg.comPort = QStringLiteral("COM3");
+    cfg.station = 7;
+    cfg.baudRate = 19200;
+    cfg.stopBits = 2;
+    cfg.parity = QStringLiteral("偶");
+    cfg.timeoutMs = 500;
+    cfg.readRetries = 3;
+    page.setSerialConfig(cfg);
+
+    QCOMPARE(page.comPortEdit()->text(), QStringLiteral("COM3"));
+    QCOMPARE(page.stationSpin()->value(), 7);
+    QCOMPARE(page.baudRateCombo()->currentData().toInt(), 19200);
+    QCOMPARE(page.stopBitsCombo()->currentData().toInt(), 2);
+    QCOMPARE(page.parityCombo()->currentText(), QStringLiteral("偶"));
+    QCOMPARE(page.timeoutSpin()->value(), 500);
+    QCOMPARE(page.readRetriesSpin()->value(), 3);
+}
+
+// --- page: change password UI ----------------------------------------------------------------
+
+void UsersSettingsPageTest::changePasswordEmitsRequestWithUserId()
+{
+    ShellModel model;
+    UsersSettingsPage page(model);
+    model.setUser(QStringLiteral("admin"), Role::Admin);
+    page.setUsers({user(1, QStringLiteral("admin"), Role::Admin),
+                   user(2, QStringLiteral("operator"), Role::Operator)});
+    QSignalSpy spy(&page, &UsersSettingsPage::changePasswordRequested);
+
+    // 两次输入不一致: 拒绝, 不发请求.
+    page.changePasswordUserEdit()->setText(QStringLiteral("operator"));
+    page.changePasswordNewEdit()->setText(QStringLiteral("new-secret"));
+    page.changePasswordConfirmEdit()->setText(QStringLiteral("other-secret"));
+    clickAt(page.changePasswordButton());
+    QCOMPARE(spy.count(), 0);
+    QVERIFY(page.changePasswordStatusLabel()->text().contains(
+        QStringLiteral("不一致")));
+
+    // 一致: 按用户名匹配用户, 发出改密请求 (密码不回显明文).
+    page.changePasswordConfirmEdit()->setText(QStringLiteral("new-secret"));
+    clickAt(page.changePasswordButton());
+    QCOMPARE(spy.count(), 1);
+    const QList<QVariant> args = spy.takeFirst();
+    QCOMPARE(args.at(0).toLongLong(), qint64(2));
+    QCOMPARE(args.at(1).toString(), QStringLiteral("new-secret"));
+    QCOMPARE(page.changePasswordNewEdit()->echoMode(), QLineEdit::Password);
+}
+
+void UsersSettingsPageTest::changePasswordRejectsMismatchAndUnknownUser()
+{
+    ShellModel model;
+    UsersSettingsPage page(model);
+    model.setUser(QStringLiteral("admin"), Role::Admin);
+    page.setUsers({user(1, QStringLiteral("admin"), Role::Admin)});
+    QSignalSpy spy(&page, &UsersSettingsPage::changePasswordRequested);
+
+    // 空用户名: 拒绝.
+    clickAt(page.changePasswordButton());
+    QCOMPARE(spy.count(), 0);
+
+    // 不存在的用户: 拒绝.
+    page.changePasswordUserEdit()->setText(QStringLiteral("ghost"));
+    page.changePasswordNewEdit()->setText(QStringLiteral("secret"));
+    page.changePasswordConfirmEdit()->setText(QStringLiteral("secret"));
+    clickAt(page.changePasswordButton());
+    QCOMPARE(spy.count(), 0);
+    QVERIFY(page.changePasswordStatusLabel()->text().contains(
+        QStringLiteral("未找到")));
+}
+
+// --- page: user list row height --------------------------------------------------------------
+
+void UsersSettingsPageTest::userListRowHeightMeetsTouchTarget()
+{
+    // 用户列表行高 >= 48 px, 触摸目标达标 (spec §11.1).
+    ShellModel model;
+    UsersSettingsPage page(model);
+    model.setUser(QStringLiteral("admin"), Role::Admin);
+    page.setUsers({user(1, QStringLiteral("admin"), Role::Admin)});
+    QApplication::processEvents();
+
+    QVERIFY(page.userList()->sizeHintForRow(0) >= 48);
 }
 
 // --- page: logout clear intent --------------------------------------------------------------
@@ -481,7 +689,9 @@ void UsersSettingsPageTest::parameterWriteNeverShowsSuccessOptimistically()
     page.d122Spin()->setValue(1500);
     clickAt(page.writeD122Button());
     QCOMPARE(spy.count(), 1);
-    QCOMPARE(spy.takeFirst().at(0).toUInt(), quint16(122)); // D122
+    const QList<QVariant> args = spy.takeFirst();
+    QCOMPARE(args.at(0).toUInt(), quint16(122)); // D122
+    QCOMPARE(args.at(1).toUInt(), quint16(1500)); // 携带目标值
 
     // No result fed yet: the page shows waiting, never success (spec §11.2).
     QVERIFY(page.paramStatusText().contains(QStringLiteral("等待")));

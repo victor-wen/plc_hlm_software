@@ -87,6 +87,8 @@ bool UsersSettingsModel::serialConfigValid() const
 QStringList UsersSettingsModel::serialConfigReasons() const
 {
     QStringList reasons;
+    if (m_serial.comPort.trimmed().isEmpty())
+        reasons.append(QStringLiteral("COM 口不能为空"));
     if (m_serial.station < 1 || m_serial.station > 247)
         reasons.append(QStringLiteral("站号需在 1-247 之间"));
     if (m_serial.baudRate != 9600 && m_serial.baudRate != 19200)

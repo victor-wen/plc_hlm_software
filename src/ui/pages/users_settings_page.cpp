@@ -18,6 +18,7 @@
 #include <QGridLayout>
 #include <QFormLayout>
 #include <QFrame>
+#include <QMessageBox>
 
 namespace hlm {
 
@@ -76,6 +77,13 @@ QWidget *UsersSettingsPage::buildLockedPanel()
     hint->setAlignment(Qt::AlignCenter);
     hint->setWordWrap(true);
     layout->addWidget(hint);
+    // 登录失败/锁定原因显示在锁定面板上, 用户始终可见 (spec §11.5).
+    m_loginStatusLabel = new QLabel(panel);
+    m_loginStatusLabel->setObjectName(QStringLiteral("loginStatus"));
+    m_loginStatusLabel->setMinimumHeight(32);
+    m_loginStatusLabel->setWordWrap(true);
+    m_loginStatusLabel->setAlignment(Qt::AlignCenter);
+    layout->addWidget(m_loginStatusLabel);
     m_loginButton = new QPushButton(QStringLiteral("登录"), panel);
     m_loginButton->setObjectName(QStringLiteral("usersLoginButton"));
     m_loginButton->setMinimumHeight(48); // touch target >= 48 px (spec §11.1)
@@ -157,12 +165,6 @@ QWidget *UsersSettingsPage::buildAdminPanel()
     sessionRow->addWidget(m_logout);
     root->addLayout(sessionRow);
 
-    m_loginStatusLabel = new QLabel(panel);
-    m_loginStatusLabel->setObjectName(QStringLiteral("loginStatus"));
-    m_loginStatusLabel->setMinimumHeight(32);
-    m_loginStatusLabel->setWordWrap(true);
-    root->addWidget(m_loginStatusLabel);
-
     auto *columns = new QHBoxLayout();
     columns->setSpacing(12);
     columns->addWidget(buildUserSection(), /*stretch=*/1);
@@ -186,6 +188,9 @@ QWidget *UsersSettingsPage::buildUserSection()
     m_userList = new QListWidget(box);
     m_userList->setObjectName(QStringLiteral("userList"));
     m_userList->setMinimumHeight(160);
+    m_userList->setUniformItemSizes(true);
+    // 行高 >= 48 px, 触摸目标达标 (spec §11.1).
+    m_userList->setStyleSheet(QStringLiteral("QListWidget::item { min-height: 48px; }"));
     layout->addWidget(m_userList);
 
     auto *form = new QFormLayout();
@@ -223,9 +228,44 @@ QWidget *UsersSettingsPage::buildUserSection()
     buttons->addStretch();
     layout->addLayout(buttons);
 
+    // 改密 (brief: 用户增删改密): 选择用户 -> 新密码 -> 确认密码, 密码框不回显明文.
+    auto *changeForm = new QFormLayout();
+    changeForm->setHorizontalSpacing(8);
+    changeForm->setVerticalSpacing(6);
+    m_changePasswordUser = new QLineEdit(box);
+    m_changePasswordUser->setObjectName(QStringLiteral("changePasswordUser"));
+    m_changePasswordUser->setMinimumHeight(48);
+    m_changePasswordUser->setPlaceholderText(QStringLiteral("用户名"));
+    changeForm->addRow(QStringLiteral("用户"), m_changePasswordUser);
+    m_changePasswordNew = new QLineEdit(box);
+    m_changePasswordNew->setObjectName(QStringLiteral("changePasswordNew"));
+    m_changePasswordNew->setMinimumHeight(48);
+    m_changePasswordNew->setEchoMode(QLineEdit::Password); // 不回显明文 (spec §11.5)
+    m_changePasswordNew->setPlaceholderText(QStringLiteral("新密码"));
+    changeForm->addRow(QStringLiteral("新密码"), m_changePasswordNew);
+    m_changePasswordConfirm = new QLineEdit(box);
+    m_changePasswordConfirm->setObjectName(QStringLiteral("changePasswordConfirm"));
+    m_changePasswordConfirm->setMinimumHeight(48);
+    m_changePasswordConfirm->setEchoMode(QLineEdit::Password);
+    m_changePasswordConfirm->setPlaceholderText(QStringLiteral("确认新密码"));
+    changeForm->addRow(QStringLiteral("确认"), m_changePasswordConfirm);
+    layout->addLayout(changeForm);
+
+    m_changePassword = new QPushButton(QStringLiteral("修改密码"), box);
+    m_changePassword->setObjectName(QStringLiteral("changePasswordButton"));
+    m_changePassword->setMinimumHeight(48);
+    layout->addWidget(m_changePassword);
+    m_changePasswordStatus = new QLabel(box);
+    m_changePasswordStatus->setObjectName(QStringLiteral("changePasswordStatus"));
+    m_changePasswordStatus->setMinimumHeight(32);
+    m_changePasswordStatus->setWordWrap(true);
+    layout->addWidget(m_changePasswordStatus);
+
     connect(m_addUser, &QPushButton::clicked, this, &UsersSettingsPage::onAddUserClicked);
     connect(m_deleteUser, &QPushButton::clicked, this,
             &UsersSettingsPage::onDeleteUserClicked);
+    connect(m_changePassword, &QPushButton::clicked, this,
+            &UsersSettingsPage::onChangePasswordClicked);
     return box;
 }
 
@@ -422,12 +462,17 @@ void UsersSettingsPage::setNeedsInitialAdmin(bool needs)
 void UsersSettingsPage::setLoginResult(const LoginResult &result)
 {
     m_pageModel.setLoginResult(result);
+    // 登录对话框: 失败显示原因, 成功关闭 (spec §11.5).
+    emit loginResultShown(m_pageModel.loginStatusText());
     refresh();
 }
 
 void UsersSettingsPage::setSessionRemainingSec(int seconds)
 {
     m_pageModel.setSessionRemainingSec(seconds);
+    // 会话恢复 (二次登录后重新计时): 复位超时标记, 下次超时仍会注销+清零.
+    if (seconds > 0)
+        m_sessionExpiredEmitted = false;
     // 会话超时: 发出注销 + M42/M106-M111 清零请求, 只发一次 (spec §11.5).
     if (m_pageModel.sessionExpired() && !m_sessionExpiredEmitted) {
         m_sessionExpiredEmitted = true;
@@ -445,7 +490,10 @@ void UsersSettingsPage::setUsers(const QVector<UserRecord> &users)
         const QString roleText = u.role == Role::Admin
             ? QStringLiteral("管理员")
             : QStringLiteral("操作员");
-        m_userList->addItem(QStringLiteral("%1 (%2)").arg(u.username, roleText));
+        auto *item = new QListWidgetItem(
+            QStringLiteral("%1 (%2)").arg(u.username, roleText), m_userList);
+        // 行高 >= 48 px, 触摸目标达标 (spec §11.1).
+        item->setSizeHint(QSize(0, 48));
     }
     refresh();
 }
@@ -453,6 +501,26 @@ void UsersSettingsPage::setUsers(const QVector<UserRecord> &users)
 void UsersSettingsPage::setParameterWriteResult(bool ok, const QString &detail)
 {
     m_pageModel.setParameterWriteResult(ok, detail);
+    refresh();
+}
+
+void UsersSettingsPage::setSerialConfig(const SerialConfig &config)
+{
+    m_pageModel.setSerialConfig(config);
+    // 回显实际存储的串口配置 (Task 20 接线 DatabaseService::getSetting).
+    m_comPort->setText(config.comPort);
+    m_station->setValue(config.station);
+    const int baudIdx = m_baudRate->findData(config.baudRate);
+    if (baudIdx >= 0)
+        m_baudRate->setCurrentIndex(baudIdx);
+    const int stopIdx = m_stopBits->findData(config.stopBits);
+    if (stopIdx >= 0)
+        m_stopBits->setCurrentIndex(stopIdx);
+    const int parityIdx = m_parity->findText(config.parity);
+    if (parityIdx >= 0)
+        m_parity->setCurrentIndex(parityIdx);
+    m_timeout->setValue(config.timeoutMs);
+    m_readRetries->setValue(config.readRetries);
     refresh();
 }
 
@@ -464,10 +532,17 @@ void UsersSettingsPage::onLoginClicked()
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     // The app shell (Task 20) verifies the credentials and feeds the result
     // back via setLoginResult; the dialog itself never logs the password.
+    // 不立即 accept: 失败原因显示在对话框内, 用户可重试 (spec §11.5).
     connect(dialog, &LoginDialog::loginRequested, this,
             [this, dialog](const QString &username, const QString &password) {
                 emit loginRequested(username, password);
-                dialog->accept();
+            });
+    connect(this, &UsersSettingsPage::loginResultShown, dialog,
+            [dialog](const QString &text) {
+                if (text.isEmpty())
+                    dialog->accept();
+                else
+                    dialog->setStatus(text);
             });
     dialog->open();
 }
@@ -478,7 +553,7 @@ void UsersSettingsPage::onCreateAdminClicked()
     const QString password = m_adminPassword->text();
     const QString confirm = m_adminConfirm->text();
     if (username.isEmpty()) {
-        m_adminConfirm->setPlaceholderText(QStringLiteral("请输入用户名"));
+        m_adminUsername->setPlaceholderText(QStringLiteral("请输入用户名"));
         return;
     }
     if (password.isEmpty()) {
@@ -503,30 +578,42 @@ void UsersSettingsPage::onLogoutClicked()
 void UsersSettingsPage::onWriteD122()
 {
     m_pageModel.setEditedD122(m_d122Spin->value());
-    if (!m_pageModel.d122Valid())
+    if (!m_pageModel.d122Valid()) {
+        m_paramStatus->setText(m_pageModel.paramReasons().join(QStringLiteral("；")));
         return;
+    }
     // 无乐观状态: 只标记等待, 成功/失败来自 setParameterWriteResult (spec §11.2).
     m_pageModel.setParameterWritePending();
-    emit writeParameterRequested(kD122);
+    emit writeParameterRequested(kD122, quint16(m_d122Spin->value()));
     refresh();
 }
 
 void UsersSettingsPage::onWriteD220()
 {
     m_pageModel.setEditedD220(m_d220Spin->value());
-    if (!m_pageModel.d220Valid() || !m_pageModel.productValid())
+    if (!m_pageModel.d220Valid() || !m_pageModel.productValid()) {
+        m_paramStatus->setText(m_pageModel.paramReasons().join(QStringLiteral("；")));
         return;
+    }
     m_pageModel.setParameterWritePending();
-    emit writeParameterRequested(kD220);
+    emit writeParameterRequested(kD220, quint16(m_d220Spin->value()));
     refresh();
 }
 
 void UsersSettingsPage::onWriteD204()
 {
     m_pageModel.setEditedD204(m_d204Spin->value());
-    if (!m_pageModel.d204Valid() || !m_pageModel.productValid())
+    if (!m_pageModel.d204Valid() || !m_pageModel.productValid()) {
+        m_paramStatus->setText(m_pageModel.paramReasons().join(QStringLiteral("；")));
         return;
+    }
     // D204 修改需再次输入管理员密码 (spec §11.3): 二次验证对话框.
+    // QPointer: 对话框 WA_DeleteOnClose 后自动置空, 连点不会叠多个对话框.
+    if (m_d204Dialog) {
+        m_d204Dialog->raise();
+        m_d204Dialog->activateWindow();
+        return;
+    }
     m_d204Dialog = new AdminPasswordDialog(
         QStringLiteral("修改 D204 脉冲当量需要再次验证管理员密码。"), this);
     m_d204Dialog->setAttribute(Qt::WA_DeleteOnClose);
@@ -537,9 +624,8 @@ void UsersSettingsPage::onWriteD204()
 
 void UsersSettingsPage::onD204PasswordEntered(const QString &password)
 {
-    // The password is passed to the app shell (Task 20) for verification; it
-    // is never logged or stored here (spec §11.5).
-    emit d204WriteRequested(quint16(m_d204Spin->value()));
+    // 密码随写请求交给应用层 (Task 20) 验证, 页面不记录 (spec §11.5).
+    emit d204WriteRequested(quint16(m_d204Spin->value()), password);
     if (m_d204Dialog)
         m_d204Dialog->accept();
 }
@@ -561,7 +647,51 @@ void UsersSettingsPage::onDeleteUserClicked()
     const int row = m_userList->currentRow();
     if (row < 0 || row >= m_pageModel.users().size())
         return;
-    emit deleteUserRequested(m_pageModel.users().at(row).id);
+    const UserRecord &target = m_pageModel.users().at(row);
+    // 删除用户需确认, 防止误删 (spec §11.5).
+    const auto answer = QMessageBox::question(
+        this, QStringLiteral("删除用户"),
+        QStringLiteral("确定删除用户 \"%1\" 吗? 该操作不可撤销。")
+            .arg(target.username),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (answer != QMessageBox::Yes)
+        return;
+    emit deleteUserRequested(target.id);
+}
+
+void UsersSettingsPage::onChangePasswordClicked()
+{
+    const QString username = m_changePasswordUser->text().trimmed();
+    const QString newPassword = m_changePasswordNew->text();
+    const QString confirm = m_changePasswordConfirm->text();
+    if (username.isEmpty()) {
+        m_changePasswordStatus->setText(QStringLiteral("请输入要改密的用户名"));
+        return;
+    }
+    if (newPassword.isEmpty()) {
+        m_changePasswordStatus->setText(QStringLiteral("新密码不能为空"));
+        return;
+    }
+    if (newPassword != confirm) {
+        m_changePasswordStatus->setText(QStringLiteral("两次输入的新密码不一致"));
+        return;
+    }
+    // 按用户名匹配用户 (改密对象来自用户列表, 不回显明文, spec §11.5).
+    qint64 userId = -1;
+    for (const UserRecord &u : m_pageModel.users()) {
+        if (u.username == username) {
+            userId = u.id;
+            break;
+        }
+    }
+    if (userId < 0) {
+        m_changePasswordStatus->setText(QStringLiteral("未找到该用户"));
+        return;
+    }
+    emit changePasswordRequested(userId, newPassword);
+    m_changePasswordStatus->setText(QStringLiteral("已请求修改密码"));
+    m_changePasswordNew->clear();
+    m_changePasswordConfirm->clear();
 }
 
 void UsersSettingsPage::onSaveSerialClicked()
@@ -583,7 +713,8 @@ void UsersSettingsPage::onSaveSerialClicked()
     // 修改通讯配置必须断开后重连并写入审计 (spec §8.1): 页面只发请求信号,
     // Task 20 接线 DatabaseService::setSetting + 重连 + 审计.
     emit saveSerialConfigRequested(cfg);
-    m_serialStatus->setText(QStringLiteral("已请求保存并重连"));
+    // 非乐观状态: 只标记等待确认, 结果由 Task 20 的 feed 接口回填.
+    m_serialStatus->setText(QStringLiteral("等待确认保存并重连"));
 }
 
 // --- rendering ---------------------------------------------------------------------
@@ -599,14 +730,13 @@ void UsersSettingsPage::refresh()
         m_stack->setCurrentWidget(m_adminPanel);
     } else {
         m_stack->setCurrentWidget(m_lockedPanel);
+        // 登录失败/锁定原因显示在锁定面板上 (spec §11.5).
+        m_loginStatusLabel->setText(m_pageModel.loginStatusText());
         return;
     }
 
     // Session countdown (spec §11.5).
     m_sessionLabel->setText(m_pageModel.sessionStatusText());
-
-    // Login status (lockout / bad credentials).
-    m_loginStatusLabel->setText(m_pageModel.loginStatusText());
 
     // Parameter values from the snapshot (spec §11.2: 无乐观更新).
     const DeviceSnapshot &s = m_model.snapshot();
