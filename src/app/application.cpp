@@ -464,7 +464,6 @@ void Application::handleSettingLoaded(const std::optional<SettingRecord> &settin
         if (ok)
             m_loadedSerialCfg.readRetries = v;
     }
-    --m_pendingSerialLoads;
     if (m_pendingSerialLoads <= 0)
         m_usersPage->setSerialConfig(m_loadedSerialCfg);
 }

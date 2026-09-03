@@ -19,7 +19,8 @@
 #                      OpenSSL and OpenCV DLLs.
 #   -Version           Package version, default 0.1.0 (matches CMake project).
 #   -QtBinDir          Optional Qt bin directory; if omitted, windeployqt is
-#                      located via Get-Command.
+#                      located via Get-Command or probed under the vcpkg
+#                      installed tree (tools/qtbase/bin).
 
 param(
     [Parameter(Mandatory = $true)]
@@ -56,6 +57,11 @@ if ($QtBinDir -ne "") {
 if (-not $windeployqt) {
     $cmd = Get-Command windeployqt -ErrorAction SilentlyContinue
     if ($cmd) { $windeployqt = $cmd.Source }
+}
+if (-not $windeployqt -and $VcpkgInstalledDir -ne "") {
+    # vcpkg's qtbase installs windeployqt under tools/qtbase/bin (not on PATH).
+    $candidate = Join-Path $VcpkgInstalledDir "tools\qtbase\bin\windeployqt.exe"
+    if (Test-Path $candidate) { $windeployqt = $candidate }
 }
 if (-not $windeployqt) { Fail "windeployqt not found (pass -QtBinDir or add Qt bin to PATH)" }
 

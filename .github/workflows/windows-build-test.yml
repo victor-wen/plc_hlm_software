@@ -114,6 +114,7 @@ jobs:
             -OutDir dist `
             -Config Release `
             -VcpkgInstalledDir $vcpkgInstalled `
+            -QtBinDir "$vcpkgInstalled/tools/qtbase/bin" `
             -Version 0.1.0
 
       - name: Check deploy dependencies (positive)
@@ -126,13 +127,12 @@ jobs:
           Expand-Archive -Path dist/plc-hmi-0.1.0-win64.zip -DestinationPath dist/check-negative
           Remove-Item dist/check-negative/sqldrivers/qsqlite.dll
           pwsh -NoProfile -File scripts/check_deploy_deps.ps1 `
-            -PackageDir dist/check-negative `
-            -ExpectMissing sqldrivers/qsqlite.dll
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "check_deploy_deps did not fail on missing qsqlite.dll"
+            -PackageDir dist/check-negative
+          if ($LASTEXITCODE -ne 1) {
+            Write-Error "check_deploy_deps did not fail (exit 1) on missing qsqlite.dll"
             exit 1
           }
-          Write-Host "Negative test passed: missing qsqlite.dll detected"
+          Write-Host "Negative test passed: missing qsqlite.dll detected (exit 1)"
 
       - name: Upload release package artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
