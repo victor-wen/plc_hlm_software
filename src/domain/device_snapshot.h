@@ -97,6 +97,12 @@ DeviceSnapshotData decodeFastBlock(const quint16 raw[41], quint64 sequence,
                                    const QDateTime &captureCompleted,
                                    DataQuality quality);
 
+// Marks slow-block fields (D204 PulsePerMm, D220 WidthSpeed) invalid when
+// their decoded value is out of range (spec §9). Called by the slow-block
+// decode paths (gateway SlowPoll, simulator) before the snapshot is
+// published, so the UI shows "—" instead of an out-of-range value.
+void checkSlowBlockRange(DeviceSnapshotData &d);
+
 // Immutable device snapshot (spec §9). Constructed atomically from a
 // DeviceSnapshotData; exposes only const accessors, no setters.
 class DeviceSnapshot

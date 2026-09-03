@@ -75,6 +75,8 @@ private slots:
     void estopReleaseAdminOnly();
     void estopNotAutoClearedOnLogout();
     void estopSetDuringReleaseConverges();
+    void estopSetTimeoutConverges();
+    void estopReleaseTimeoutConverges();
 
     // --- manual / bypass -----------------------------------------------------
     void manualHoldWritesOnPressAndRelease();
@@ -856,6 +858,84 @@ void ControlCoordinatorTest::estopSetDuringReleaseConverges()
     // state persists.
     QVERIFY(releaseReported);
     QVERIFY(!releaseResult); // superseded: the release did not take effect
+}
+
+// Estop set: the M100 write is accepted but the snapshot never reflects
+// M0/M100 -> the defensive timeout must converge to a defined failure instead
+// of leaving the UI on 待确认 forever (spec §13).
+void ControlCoordinatorTest::estopSetTimeoutConverges()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    ControlCoordinator::PulseTransport t;
+    t.writeCoil = [](quint16, bool, CommandPriority) { return true; }; // no-op write
+    std::unique_ptr<ControlCoordinator> c(makeCoordinatorWithCoil(gw, now, t));
+    c->setRole(Role::Anonymous);
+
+    bool result = true;
+    bool reported = false;
+    QString detail;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &d) {
+                if (cmd == Command::EstopSet) {
+                    result = ok;
+                    reported = true;
+                    detail = d;
+                }
+            });
+
+    QVERIFY(c->estopSet().accepted);
+    gw.tick(); // snapshot never shows M0/M100 (write was a no-op)
+    QVERIFY(!reported); // still pending
+
+    now += 5'001; // past kEstopTimeoutMs
+    gw.tick();
+    QVERIFY(reported);
+    QVERIFY(!result); // converged to failure, not stuck
+    QVERIFY(detail.contains(QStringLiteral("超时")));
+}
+
+// Estop release: same defensive timeout when the snapshot never reflects the
+// M100=0 write (spec §13).
+void ControlCoordinatorTest::estopReleaseTimeoutConverges()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    ControlCoordinator::PulseTransport t;
+    t.writeCoil = [](quint16, bool, CommandPriority) { return true; }; // no-op write
+    std::unique_ptr<ControlCoordinator> c(makeCoordinatorWithCoil(gw, now, t));
+    c->setRole(Role::Admin);
+
+    // Estop is physically set (M0=1, M100=1) so the release cannot confirm
+    // via the snapshot.
+    gw.writeCoil(kM100, true);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m0());
+    QVERIFY(gw.lastSnapshot().m100());
+
+    bool result = true;
+    bool reported = false;
+    QString detail;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &d) {
+                if (cmd == Command::EstopRelease) {
+                    result = ok;
+                    reported = true;
+                    detail = d;
+                }
+            });
+
+    QVERIFY(c->estopRelease().accepted);
+    gw.tick(); // snapshot never shows M0=0/M100=0 (write was a no-op)
+    QVERIFY(!reported); // still pending
+
+    now += 5'001; // past kEstopTimeoutMs
+    gw.tick();
+    QVERIFY(reported);
+    QVERIFY(!result); // converged to failure, not stuck
+    QVERIFY(detail.contains(QStringLiteral("超时")));
 }
 
 // --- manual / bypass --------------------------------------------------------

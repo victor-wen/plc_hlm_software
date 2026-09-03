@@ -208,6 +208,8 @@ void SimulatedPlcGateway::publishSnapshot()
     d.pulsePerMm = m_model.readRegister(kSlowStart);
     d.widthDelta = decode::i16(m_model.readRegister(kSlowStart + 6));
     d.widthSpeed = m_model.readRegister(kSlowStart + 16);
+    // Out-of-range D204/D220 mark the field invalid (spec §9).
+    checkSlowBlockRange(d);
 
     d.overallQuality = aggregateQuality(d);
     m_lastSnapshot = DeviceSnapshot(d);

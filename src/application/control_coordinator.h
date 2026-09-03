@@ -188,6 +188,9 @@ private:
     // Estop confirmation (spec §8.4: until M0=1 or M100=1 readback).
     bool m_estopSetPending = false;
     bool m_estopReleasePending = false;
+    // Defensive estop timeout (spec §13): the pending set/release flow fails
+    // with a defined result if the snapshot never reflects the M100 write.
+    qint64 m_estopDeadlineMs = 0;
 };
 
 } // namespace hlm

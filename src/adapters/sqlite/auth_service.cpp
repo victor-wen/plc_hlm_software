@@ -98,6 +98,12 @@ LoginResult AuthService::login(const QString &username, const QString &password)
     const auto user = m_users->findByName(username);
     if (!user) {
         // Do not reveal whether the account exists; still audit the attempt.
+        // Run a dummy PBKDF2 derivation with the same iteration count so the
+        // unknown-user path takes the same time as a wrong-password attempt
+        // (timing side-channel: account existence must not be observable).
+        const QByteArray dummySalt = m_saltGen();
+        if (!dummySalt.isEmpty())
+            m_derive(password, dummySalt, kDefaultPbkdf2Iterations);
         audit(m_audit, username, Role::Anonymous, QStringLiteral("auth.login"),
               QStringLiteral("user"), QString(), AuditResult::Failure,
               QStringLiteral("unknown user"));

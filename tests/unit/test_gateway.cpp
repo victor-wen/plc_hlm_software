@@ -102,6 +102,7 @@ private slots:
     void stopEmitsConnectionStateChangedFalse();
     void restartAfterStopWorks();
     void writeRejectedUntilFirstSnapshotAfterReconnect();
+    void slowPollOutOfRangeMarksFieldsInvalid();
 
 private:
     FakeTransport *m_transport = nullptr;
@@ -110,6 +111,7 @@ private:
     int m_snapshots = 0;
     bool m_online = false;
     QList<QPair<quint16, bool>> m_writeResults;
+    DeviceSnapshot m_lastSnapshot{DeviceSnapshotData()};
 };
 
 void GatewayTest::init()
@@ -129,7 +131,10 @@ void GatewayTest::init()
     m_writeResults.clear();
 
     connect(m_worker, &ModbusGatewayWorker::snapshotReady, this,
-            [this](const DeviceSnapshot &) { ++m_snapshots; });
+            [this](const DeviceSnapshot &s) {
+                ++m_snapshots;
+                m_lastSnapshot = s;
+            });
     connect(m_worker, &ModbusGatewayWorker::connectionStateChanged, this,
             [this](bool online) { m_online = online; });
     connect(m_worker, &ModbusGatewayWorker::writeCompleted, this,
@@ -666,6 +671,48 @@ void GatewayTest::writeRejectedUntilFirstSnapshotAfterReconnect()
     m_transport->completeOk({0x0001}); // readback confirms
     QCOMPARE(m_writeResults.size(), 2);
     QCOMPARE(m_writeResults.last().second, true);
+}
+
+// A slow poll carrying out-of-range D204/D220 must mark those fields invalid
+// in the published snapshot (spec §9), so the UI shows "—" not a bogus value.
+void GatewayTest::slowPollOutOfRangeMarksFieldsInvalid()
+{
+    m_transport->completeOk(fastBlock(1)); // first fast poll
+    QVERIFY(m_worker->isOnline());
+
+    // Enable the slow poll and dispatch one with D204=0 (below 1) and
+    // D220=99 (above 15). At 300 ms both the fast and slow polls enqueue; the
+    // fast poll dispatches first, so complete it before the slow poll.
+    m_worker->setPollIntervals(250, 1000000, 1000000, 250);
+    m_now = 300;
+    m_worker->onPollTick();
+    m_transport->completeOk(fastBlock(2)); // in-flight fast poll
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::SlowPoll);
+    QList<quint16> slow(20, 0);
+    slow[0] = 0;   // D204
+    slow[16] = 99; // D220
+    m_transport->completeOk(slow);
+
+    // The next fast poll publishes the snapshot with the invalid fields.
+    m_now = 600;
+    m_worker->onPollTick();
+    m_transport->completeOk(fastBlock(3));
+    QVERIFY(m_snapshots >= 3);
+    QVERIFY(!m_lastSnapshot.fieldValid(SnapshotField::PulsePerMm));
+    QVERIFY(!m_lastSnapshot.fieldValid(SnapshotField::WidthSpeed));
+    QVERIFY(m_lastSnapshot.overallQuality() == DataQuality::OutOfRange);
+
+    // In-range slow values keep the fields valid.
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::SlowPoll);
+    QList<quint16> okSlow(20, 0);
+    okSlow[0] = 1280; // D204
+    okSlow[16] = 15;  // D220
+    m_transport->completeOk(okSlow);
+    m_now = 900;
+    m_worker->onPollTick();
+    m_transport->completeOk(fastBlock(4));
+    QVERIFY(m_lastSnapshot.fieldValid(SnapshotField::PulsePerMm));
+    QVERIFY(m_lastSnapshot.fieldValid(SnapshotField::WidthSpeed));
 }
 
 QTEST_GUILESS_MAIN(GatewayTest)

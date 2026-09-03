@@ -33,6 +33,7 @@ private slots:
     void lockoutDoesNotAffectOtherAccounts();
     void disabledUserCannotLogin();
     void failedLoginAuditedWithoutPassword();
+    void unknownUserRunsDummyDerivation();
     void changePasswordInvalidatesOld();
     void changePasswordDerivationFailureLeavesHashUnchanged();
 };
@@ -47,6 +48,18 @@ QByteArray failingSalt()
 QByteArray failingDerive(const QString &, const QByteArray &, int)
 {
     return QByteArray();
+}
+
+// Records the number of derive calls and the last iteration count (used by
+// unknownUserRunsDummyDerivation to prove the dummy derivation runs).
+int g_deriveCalls = 0;
+int g_lastIterations = 0;
+
+QByteArray countingDerive(const QString &, const QByteArray &, int iterations)
+{
+    ++g_deriveCalls;
+    g_lastIterations = iterations;
+    return QByteArray(32, '\x42');
 }
 
 } // namespace
@@ -294,6 +307,38 @@ void AuthServiceTest::failedLoginAuditedWithoutPassword()
             }
         }
         QVERIFY(found);
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("auth_test"));
+}
+
+// The unknown-user path must run a dummy PBKDF2 derivation with the same
+// iteration count as a real verification, so account existence is not
+// observable through login timing (timing side-channel).
+void AuthServiceTest::unknownUserRunsDummyDerivation()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    {
+        QSqlDatabase db = hlm_test::createMigratedDb(dir, QStringLiteral("auth_test"));
+        QVERIFY(db.isOpen());
+        SqliteUserRepository users(db);
+        SqliteAuditRepository audit(db);
+        QString error;
+        AuthService setup(&users, &audit);
+        QVERIFY(setup.createInitialAdmin(QStringLiteral("admin"),
+                                         QStringLiteral("hunter2"), &error));
+
+        g_deriveCalls = 0;
+        g_lastIterations = 0;
+        AuthService auth(&users, &audit, generateSalt, countingDerive);
+
+        const LoginResult r = auth.login(QStringLiteral("nobody"), QStringLiteral("whatever"));
+        QVERIFY(!r.ok);
+        QCOMPARE(r.reason, QStringLiteral("unknown user"));
+        // The dummy derivation ran with the same iteration count as a real
+        // verification (kDefaultPbkdf2Iterations), keeping timing uniform.
+        QCOMPARE(g_deriveCalls, 1);
+        QCOMPARE(g_lastIterations, kDefaultPbkdf2Iterations);
     }
     QSqlDatabase::removeDatabase(QStringLiteral("auth_test"));
 }

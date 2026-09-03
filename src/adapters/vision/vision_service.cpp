@@ -61,19 +61,29 @@ void VisionService::stop()
 
 void VisionService::runSelfTest()
 {
-    m_version = QString::fromUtf8(cv::getVersionString().c_str());
+    const QString version = QString::fromUtf8(cv::getVersionString().c_str());
     if (m_forceFailure) {
-        m_healthy = false;
+        {
+            QMutexLocker lock(&m_mutex);
+            m_healthy = false;
+        }
         emit selfTestFailed(QStringLiteral("injected self-test failure"));
         return;
     }
-    if (m_version.isEmpty() || !runMatrixSelfTest()) {
-        m_healthy = false;
+    if (version.isEmpty() || !runMatrixSelfTest()) {
+        {
+            QMutexLocker lock(&m_mutex);
+            m_healthy = false;
+        }
         emit selfTestFailed(QStringLiteral("OpenCV version or matrix self-test failed"));
         return;
     }
-    m_healthy = true;
-    emit selfTestPassed(m_version);
+    {
+        QMutexLocker lock(&m_mutex);
+        m_version = version;
+        m_healthy = true;
+    }
+    emit selfTestPassed(version);
 }
 
 } // namespace hlm

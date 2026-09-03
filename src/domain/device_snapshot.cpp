@@ -119,6 +119,19 @@ DeviceSnapshotData decodeFastBlock(const quint16 raw[41], quint64 sequence,
     return d;
 }
 
+void checkSlowBlockRange(DeviceSnapshotData &d)
+{
+    // Slow-block ranges (spec §9, requirement table): D204 1-32767, D220 1-15.
+    // Clear the previous slow-block flags first so a later in-range slow poll
+    // can restore the fields to valid.
+    const quint32 slowMask = (quint32(1) << quint8(SnapshotField::PulsePerMm))
+        | (quint32(1) << quint8(SnapshotField::WidthSpeed));
+    d.invalidFields &= ~slowMask;
+    checkRange(d, SnapshotField::PulsePerMm, d.pulsePerMm, 1, 32767);
+    checkRange(d, SnapshotField::WidthSpeed, d.widthSpeed, 1, 15);
+    d.overallQuality = aggregateQuality(d);
+}
+
 DeviceSnapshot::DeviceSnapshot(const DeviceSnapshotData &d)
     : m_captureStarted(d.captureStarted)
     , m_captureCompleted(d.captureCompleted)

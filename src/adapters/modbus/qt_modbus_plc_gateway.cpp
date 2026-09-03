@@ -275,6 +275,13 @@ void ModbusGatewayWorker::stop()
     m_reconnectTimer->stop();
     if (m_transport)
         m_transport->close();
+    // Delete an owned transport so a stop()->start() reconfiguration does not
+    // accumulate dead QObjects and stale transferFinished connections (the
+    // injected test transport is parented by the test and must survive).
+    if (m_ownsTransport && m_transport) {
+        delete m_transport;
+        m_transport = nullptr;
+    }
     m_state = LinkState::Disconnected;
     m_queue.close();
     // Report any in-flight write, ack'd-but-unconfirmed write, and queued
@@ -631,8 +638,23 @@ void ModbusGatewayWorker::handleReadResult(const ModbusRequest &req, const Trans
                 raw[i] = res.values.at(i);
             const QDateTime started = QDateTime::currentDateTime();
             const qint64 ageMs = qMax<qint64>(0, m_nowMs() - m_fastDispatchedMs);
+            // The fast block decode builds a fresh DeviceSnapshotData; the
+            // slow-block fields (D204/D210/D220) and their out-of-range flags
+            // are decoded by the slower SlowPoll and must survive the fast
+            // poll, or the published snapshot would always show them as 0.
+            const quint16 pulsePerMm = m_data.pulsePerMm;
+            const qint16 widthDelta = m_data.widthDelta;
+            const quint16 widthSpeed = m_data.widthSpeed;
+            const quint32 slowInvalid = m_data.invalidFields
+                & ((quint32(1) << quint8(SnapshotField::PulsePerMm))
+                   | (quint32(1) << quint8(SnapshotField::WidthSpeed)));
             m_data = decodeFastBlock(raw, 0, true, ageMs, started, started,
                                      DataQuality::Valid);
+            m_data.pulsePerMm = pulsePerMm;
+            m_data.widthDelta = widthDelta;
+            m_data.widthSpeed = widthSpeed;
+            m_data.invalidFields |= slowInvalid;
+            m_data.overallQuality = aggregateQuality(m_data);
             checkHeartbeatFreeze(m_data.heartbeat);
             if (m_state != LinkState::Online)
                 return; // heartbeat freeze took us offline
@@ -670,6 +692,9 @@ void ModbusGatewayWorker::handleReadResult(const ModbusRequest &req, const Trans
             m_data.pulsePerMm = res.values.at(0);   // D204
             m_data.widthDelta = decode::i16(res.values.at(6));  // D210
             m_data.widthSpeed = res.values.at(16);  // D220
+            // Out-of-range D204/D220 mark the field invalid (spec §9) so the
+            // UI shows "—" instead of a bogus value.
+            checkSlowBlockRange(m_data);
         }
         return;
     }

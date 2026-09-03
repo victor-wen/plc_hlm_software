@@ -36,6 +36,10 @@ constexpr qint64 kModeTimeoutMs = 5'000;
 // even if a concurrent safety write overwrites the pending write and the D128
 // writeCompleted is dropped, the flow still converges to a defined failure).
 constexpr qint64 kAdjustWriteTimeoutMs = 5'000;
+// Estop set/release wait (spec §13: every flow converges). If the PLC accepts
+// the M100 write but never reflects M0/M100 in the snapshot, the pending state
+// must not stay 待确认 forever — the flow fails with a defined result.
+constexpr qint64 kEstopTimeoutMs = 5'000;
 
 } // namespace
 
@@ -244,6 +248,7 @@ ControlCoordinator::CommandResult ControlCoordinator::estopSet()
     // stale release pending state is cleared and its flow converges instead of
     // hanging on 待确认 forever (spec §13: every flow converges to a result).
     m_estopSetPending = true;
+    m_estopDeadlineMs = m_nowMs() + kEstopTimeoutMs;
     if (m_estopReleasePending) {
         m_estopReleasePending = false;
         emit commandResult(Command::EstopRelease, false,
@@ -263,6 +268,7 @@ ControlCoordinator::CommandResult ControlCoordinator::estopRelease()
         return g;
     }
     m_estopReleasePending = true;
+    m_estopDeadlineMs = m_nowMs() + kEstopTimeoutMs;
     if (m_estopSetPending) {
         m_estopSetPending = false;
         emit commandResult(Command::EstopSet, false,
@@ -400,6 +406,19 @@ void ControlCoordinator::onSnapshot(const DeviceSnapshot &s)
         m_stopTimeoutArmed = false;
         finishCommand(Command::Stop, false,
                       QStringLiteral("停止超时, 请检查设备"));
+    }
+    // Estop set/release defensive timeout (spec §13): if the PLC accepted the
+    // M100 write but never reflects M0/M100 in the snapshot, the flow must
+    // still converge to a defined failure instead of 待确认 forever.
+    if (m_estopSetPending && m_nowMs() >= m_estopDeadlineMs) {
+        m_estopSetPending = false;
+        finishCommand(Command::EstopSet, false,
+                      QStringLiteral("急停置位超时, 请检查设备"));
+    }
+    if (m_estopReleasePending && m_nowMs() >= m_estopDeadlineMs) {
+        m_estopReleasePending = false;
+        finishCommand(Command::EstopRelease, false,
+                      QStringLiteral("急停解除超时, 请检查设备"));
     }
 
     // Estop confirmation (spec §8.4: 直到 M0=1 或读回 M100=1).

@@ -10,7 +10,12 @@
 //
 // The service must be created WITHOUT a parent so it can be moved to the
 // worker thread. Call stop() before destroying it.
+//
+// m_version/m_healthy are written on the worker thread (runSelfTest) and read
+// from the caller thread via version()/isHealthy(); both accessors and the
+// writes are guarded by a QMutex so the reads are never torn.
 
+#include <QMutex>
 #include <QObject>
 #include <QString>
 
@@ -34,8 +39,16 @@ public:
     void start() override;
     void stop() override;
 
-    QString version() const override { return m_version; }
-    bool isHealthy() const override { return m_healthy; }
+    QString version() const override
+    {
+        QMutexLocker lock(&m_mutex);
+        return m_version;
+    }
+    bool isHealthy() const override
+    {
+        QMutexLocker lock(&m_mutex);
+        return m_healthy;
+    }
 
 private slots:
     // Runs on the worker thread: performs the OpenCV version + matrix
@@ -44,6 +57,7 @@ private slots:
 
 private:
     bool m_forceFailure;
+    mutable QMutex m_mutex; // guards m_healthy/m_version (worker vs caller)
     bool m_healthy = false;
     QString m_version;
     QThread *m_thread = nullptr;

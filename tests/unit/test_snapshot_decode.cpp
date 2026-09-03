@@ -31,6 +31,7 @@ private slots:
     void d210SignedNegative();
     void d140WrapActivity();
     void outOfRangeMarksFieldInvalid();
+    void slowBlockOutOfRangeMarksFieldInvalid();
     void aggregateQualityWorstWins();
     void unknownFaultCodeDoesNotCrash();
     void addressTableLookup();
@@ -223,6 +224,41 @@ void SnapshotDecodeTest::outOfRangeMarksFieldInvalid()
     QCOMPARE(s2.currentStep(), quint16(3));
     QCOMPARE(s2.beltSpeed(), quint16(1000));
     QCOMPARE(s2.targetWidth(), quint16(200));
+}
+
+void SnapshotDecodeTest::slowBlockOutOfRangeMarksFieldInvalid()
+{
+    // D204 PulsePerMm range 1-32767, D220 WidthSpeed range 1-15 (spec §9).
+    // Out-of-range slow-block values must mark the field invalid and degrade
+    // the overall quality, so the UI shows "—" instead of a bogus value.
+    DeviceSnapshotData d;
+    d.pulsePerMm = 0;    // below 1
+    d.widthSpeed = 99;   // above 15
+    d.overallQuality = aggregateQuality(d);
+    checkSlowBlockRange(d);
+    DeviceSnapshot s(d);
+    QVERIFY(!s.fieldValid(SnapshotField::PulsePerMm));
+    QVERIFY(!s.fieldValid(SnapshotField::WidthSpeed));
+    QVERIFY(s.overallQuality() == DataQuality::OutOfRange);
+
+    // Boundary values stay valid: 1 and 32767 for D204, 1 and 15 for D220.
+    DeviceSnapshotData ok;
+    ok.pulsePerMm = 32767;
+    ok.widthSpeed = 1;
+    checkSlowBlockRange(ok);
+    DeviceSnapshot okS(ok);
+    QVERIFY(okS.fieldValid(SnapshotField::PulsePerMm));
+    QVERIFY(okS.fieldValid(SnapshotField::WidthSpeed));
+    QVERIFY(okS.overallQuality() == DataQuality::Valid);
+
+    DeviceSnapshotData ok2;
+    ok2.pulsePerMm = 1;
+    ok2.widthSpeed = 15;
+    checkSlowBlockRange(ok2);
+    DeviceSnapshot okS2(ok2);
+    QVERIFY(okS2.fieldValid(SnapshotField::PulsePerMm));
+    QVERIFY(okS2.fieldValid(SnapshotField::WidthSpeed));
+    QVERIFY(okS2.overallQuality() == DataQuality::Valid);
 }
 
 void SnapshotDecodeTest::aggregateQualityWorstWins()
