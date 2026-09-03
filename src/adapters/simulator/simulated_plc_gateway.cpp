@@ -114,6 +114,27 @@ void SimulatedPlcGateway::writeRegister(quint16 address, quint16 value,
                                   : QStringLiteral("write not confirmed by readback"));
 }
 
+bool SimulatedPlcGateway::startPulse(quint16 address)
+{
+    if (!m_online) {
+        // Offline: rejected, never queued or replayed (spec §8.4).
+        emit writeCompleted(address, false,
+                            QStringLiteral("offline: command rejected, not replayed"));
+        return false;
+    }
+    // Pulse (spec §8.5): serially write 1 then 0. The model reacts to the
+    // rising edge (M101/M102/M103/M43), so the pair delivers the pulse.
+    m_model.writeCoil(address, true);
+    const bool setOk = m_model.readCoil(address);
+    m_model.writeCoil(address, false);
+    const bool clearOk = !m_model.readCoil(address);
+    const bool ok = setOk && clearOk;
+    emit writeCompleted(address, ok,
+                        ok ? QString()
+                           : QStringLiteral("pulse not confirmed by readback"));
+    return true;
+}
+
 void SimulatedPlcGateway::tick()
 {
     if (!m_started || m_linkDown)
@@ -138,6 +159,7 @@ void SimulatedPlcGateway::tick()
         // Heartbeat moving again: reconnect with a fresh snapshot.
         m_offlineDueToFreeze = false;
         m_freezeTicks = 0;
+        ++m_reconnectCount; // comm stats (spec §16)
         publishSnapshot();
         setOnline(true);
         return;
@@ -158,6 +180,7 @@ void SimulatedPlcGateway::setLinkDown(bool down)
         // Restored: still offline until the next tick reconnects with a
         // fresh snapshot (mirrors the real gateway's reconnect rule).
         m_freezeTicks = 0;
+        ++m_reconnectCount; // comm stats (spec §16)
     }
 }
 
@@ -214,6 +237,10 @@ void SimulatedPlcGateway::publishSnapshot()
     d.overallQuality = aggregateQuality(d);
     m_lastSnapshot = DeviceSnapshot(d);
     emit snapshotReady(m_lastSnapshot.value());
+    // Communication statistics ride along with every published snapshot
+    // (spec §16). failedPolls is always 0: the in-process model never drops
+    // a poll.
+    emit commStatsChanged(d.sequence, m_reconnectCount, m_failedPolls);
 }
 
 void SimulatedPlcGateway::setOnline(bool online)

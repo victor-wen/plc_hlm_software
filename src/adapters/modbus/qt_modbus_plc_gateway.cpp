@@ -142,6 +142,8 @@ QtModbusPlcGateway::QtModbusPlcGateway(const Config &cfg, QObject *parent)
             });
     connect(m_worker, &ModbusGatewayWorker::writeCompleted, this,
             &QtModbusPlcGateway::writeCompleted);
+    connect(m_worker, &ModbusGatewayWorker::commStatsChanged, this,
+            &QtModbusPlcGateway::commStatsChanged);
 }
 
 QtModbusPlcGateway::~QtModbusPlcGateway()
@@ -194,15 +196,90 @@ void QtModbusPlcGateway::writeRegister(quint16 address, quint16 value, CommandPr
                               Q_ARG(CommandPriority, priority));
 }
 
+bool QtModbusPlcGateway::startPulse(quint16 address)
+{
+    // BlockingQueued: the caller (UI thread) needs the synchronous accept/
+    // reject answer (spec §8.5: startPulse returns whether the pulse started).
+    bool ok = false;
+    QMetaObject::invokeMethod(m_worker, "startPulse", Qt::BlockingQueuedConnection,
+                              Q_RETURN_ARG(bool, ok), Q_ARG(quint16, address));
+    return ok;
+}
+
 // ---------------------------------------------------------------------------
 // ModbusGatewayWorker
 // ---------------------------------------------------------------------------
+namespace {
+
+// Map a CommandPriority onto the request queue class (spec §8.3).
+RequestClass requestClassFor(CommandPriority priority)
+{
+    return (priority == CommandPriority::Safety) ? RequestClass::SafetyWrite
+         : (priority == CommandPriority::PulseClear) ? RequestClass::PulseClear
+         : (priority == CommandPriority::Heartbeat) ? RequestClass::Heartbeat
+                                                    : RequestClass::UserWrite;
+}
+
+} // namespace
+
+PulseStateMachine::Callbacks ModbusGatewayWorker::makePulseCallbacks(ModbusGatewayWorker *w)
+{
+    PulseStateMachine::Callbacks cb;
+    // writeCoil: route through the request queue. A rejected enqueue (queue
+    // closed = offline) returns false and aborts the pulse (spec §8.4
+    // no-replay).
+    cb.writeCoil = [w](quint16 address, bool value, CommandPriority priority) {
+        ModbusRequest req;
+        req.kind = ModbusRequest::Kind::WriteCoil;
+        req.address = address;
+        req.value = value ? 1 : 0;
+        req.writeThenReadback = true; // confirm by readback (spec §8.4)
+        req.cls = requestClassFor(priority);
+        if (!w->m_queue.enqueue(req))
+            return false;
+        w->tryDispatch();
+        return true;
+    };
+    // readCoil: dedicated single-coil pulse readback (spec §8.5).
+    cb.readCoil = [w](quint16 address) {
+        w->enqueuePulseReadback(address);
+        return true;
+    };
+    // finished: no-op by design (spec §8.5 design decision). The pulse
+    // outcome is presented to the UI via writeCompleted: the write-0 readback
+    // confirmation reports success, the failed-write path reports failure,
+    // and the coordinator converges on the snapshot.
+    cb.finished = [](quint16, bool) {};
+    return cb;
+}
+
+WatchdogTimer::Callbacks ModbusGatewayWorker::makeWatchdogCallbacks(ModbusGatewayWorker *w)
+{
+    WatchdogTimer::Callbacks cb;
+    // writeCoil: M112 flip at Heartbeat priority (level 3, §8.3).
+    cb.writeCoil = [w](quint16 address, bool value, CommandPriority priority) {
+        ModbusRequest req;
+        req.kind = ModbusRequest::Kind::WriteCoil;
+        req.address = address;
+        req.value = value ? 1 : 0;
+        req.writeThenReadback = true;
+        req.cls = requestClassFor(priority);
+        if (!w->m_queue.enqueue(req))
+            return false; // offline: skip the flip, never queue (spec §8.4)
+        w->tryDispatch();
+        return true;
+    };
+    return cb;
+}
+
 ModbusGatewayWorker::ModbusGatewayWorker(const QtModbusPlcGateway::Config &cfg,
                                          IModbusTransport *transport, QObject *parent)
     : QObject(parent)
     , m_cfg(cfg)
     , m_transport(transport)
     , m_ownsTransport(transport == nullptr)
+    , m_pulses(makePulseCallbacks(this), [this]() { return m_nowMs(); })
+    , m_watchdog(makeWatchdogCallbacks(this), [this]() { return m_nowMs(); })
     , m_nowMs([]() { return QDateTime::currentMSecsSinceEpoch(); })
 {
     m_pollTimer = new QTimer(this);
@@ -273,6 +350,10 @@ void ModbusGatewayWorker::stop()
 {
     m_pollTimer->stop();
     m_reconnectTimer->stop();
+    // Abort any active pulses (spec §8.5: stop aborts with finished(false),
+    // nothing queued) and halt the M112 watchdog.
+    m_pulses.reset();
+    m_watchdog.setOnline(false);
     if (m_transport)
         m_transport->close();
     // Delete an owned transport so a stop()->start() reconfiguration does not
@@ -339,8 +420,21 @@ void ModbusGatewayWorker::submitWriteRegister(quint16 address, quint16 value,
     tryDispatch();
 }
 
+bool ModbusGatewayWorker::startPulse(quint16 address)
+{
+    // Offline (queue closed) or a pulse already active on this address:
+    // rejected, nothing queued (spec §8.4, §8.5).
+    return m_pulses.startPulse(address);
+}
+
 void ModbusGatewayWorker::onPollTick()
 {
+    // Drive the pulse hold timer and the M112 watchdog from the 50 ms poll
+    // tick (spec §7.2, §8.5, §8.6). The watchdog only flips while online.
+    m_pulses.onTick();
+    if (m_watchdogEnabled)
+        m_watchdog.onTick();
+
     if (m_state != LinkState::Online)
         return;
 
@@ -402,6 +496,7 @@ void ModbusGatewayWorker::openLink()
     if (!m_transport)
         return;
     m_state = LinkState::Connecting;
+    m_watchdog.setOnline(false); // not online until the first full snapshot
     if (!m_transport->open()) {
         enterOffline();
         return;
@@ -441,6 +536,11 @@ void ModbusGatewayWorker::enterOffline()
     m_queue.close();
     m_hasValidSnapshot = false;
     m_busy = false;
+    // Abort any active pulses (spec §8.5: offline aborts with finished(false),
+    // nothing queued) and halt the M112 watchdog.
+    m_pulses.reset();
+    m_watchdog.setOnline(false);
+    m_pulseReadbacks.clear();
     // Report any in-flight write, ack'd-but-unconfirmed write, and queued
     // write as failed — never silently dropped (IPlcGateway contract: results
     // arrive via writeCompleted()).
@@ -478,6 +578,7 @@ void ModbusGatewayWorker::reportDroppedWrites(const QString &reason)
 
 void ModbusGatewayWorker::scheduleReconnect()
 {
+    ++m_reconnectCount; // comm stats (spec §16)
     m_reconnectTimer->start(m_policy.nextReconnectDelayMs());
 }
 
@@ -507,6 +608,7 @@ void ModbusGatewayWorker::tryDispatch()
         // is not silently dropped.
         if (req.kind == ModbusRequest::Kind::WriteCoil
             || req.kind == ModbusRequest::Kind::WriteRegister) {
+            m_pulses.onWriteCompleted(req.address, false); // uncertain write (spec §8.5)
             emit writeCompleted(req.address, false,
                                 QStringLiteral("send failed"));
         } else if (req.isReadback) {
@@ -517,6 +619,11 @@ void ModbusGatewayWorker::tryDispatch()
                 emit writeCompleted(it->address, false,
                                     QStringLiteral("readback send failed"));
                 m_pendingConfirmations.erase(it);
+            } else if (m_pulseReadbacks.contains(req.requestId)) {
+                // Pulse readback: converge the pulse as bit 0 (defined
+                // outcome, spec §8.4) and drop the entry.
+                const quint16 addr = m_pulseReadbacks.take(req.requestId);
+                m_pulses.onReadback(addr, false);
             }
         }
         m_inFlight = std::nullopt;
@@ -547,11 +654,13 @@ void ModbusGatewayWorker::onTransferFinished(const TransferResult &res)
                     return;
                 }
             }
+            ++m_failedPolls; // comm stats (spec §16)
         }
         if (req.kind == ModbusRequest::Kind::WriteCoil
             || req.kind == ModbusRequest::Kind::WriteRegister) {
             // A failed write must still report its result (spec §8.4,
             // IPlcGateway contract: results arrive via writeCompleted()).
+            m_pulses.onWriteCompleted(req.address, false); // uncertain write (spec §8.5)
             emit writeCompleted(req.address, false, res.error);
         } else if (req.isReadback) {
             // A failed readback can never confirm the write: fail it and
@@ -561,6 +670,11 @@ void ModbusGatewayWorker::onTransferFinished(const TransferResult &res)
                 emit writeCompleted(req.address, false,
                                     QStringLiteral("readback transfer failed"));
                 m_pendingConfirmations.erase(it);
+            } else if (m_pulseReadbacks.contains(req.requestId)) {
+                // Pulse readback: converge the pulse as bit 0 (defined
+                // outcome, spec §8.4) and drop the entry.
+                const quint16 addr = m_pulseReadbacks.take(req.requestId);
+                m_pulses.onReadback(addr, false);
             }
         }
         m_policy.onTransferFailure();
@@ -592,6 +706,14 @@ void ModbusGatewayWorker::onTransferFinished(const TransferResult &res)
 
 void ModbusGatewayWorker::handleReadResult(const ModbusRequest &req, const TransferResult &res)
 {
+    // Dedicated pulse readback (spec §8.5): a single-coil read requested by
+    // the pulse state machine, matched by request identity. It is NOT routed
+    // through the write-confirmation table (isReadback is consumed there).
+    if (req.isReadback && m_pulseReadbacks.contains(req.requestId)) {
+        handlePulseReadback(req, res);
+        return;
+    }
+
     // Readback of a previously written value (spec §8.4) takes precedence:
     // a readback is a single-register/coil read matched by request identity
     // (isReadback + requestId), never by address alone — a poll whose start
@@ -669,6 +791,7 @@ void ModbusGatewayWorker::handleReadResult(const ModbusRequest &req, const Trans
                 // Reopen the queue: non-safety control may resume now that a
                 // full valid snapshot is in hand (spec §8.4).
                 m_queue.reopen();
+                m_watchdog.setOnline(true); // M112 flips resume (spec §8.6)
                 emit connectionStateChanged(true); // full snapshot acquired
             }
         }
@@ -703,6 +826,10 @@ void ModbusGatewayWorker::handleReadResult(const ModbusRequest &req, const Trans
 void ModbusGatewayWorker::handleWriteResult(const ModbusRequest &req, const TransferResult &res)
 {
     Q_UNUSED(res);
+    // Feed the pulse state machine (spec §8.5): the write-1 ack starts the
+    // hold timing, the write-0 ack completes the pulse. The machine ignores
+    // addresses with no active pulse.
+    m_pulses.onWriteCompleted(req.address, true);
     if (!req.writeThenReadback) {
         emit writeCompleted(req.address, true, QString());
         return;
@@ -727,6 +854,43 @@ void ModbusGatewayWorker::handleWriteResult(const ModbusRequest &req, const Tran
     m_queue.enqueue(readback);
 }
 
+void ModbusGatewayWorker::enqueuePulseReadback(quint16 address)
+{
+    // Dedicated single-coil readback for the pulse state machine (spec §8.5).
+    // Matched by request identity (isReadback + requestId) but kept separate
+    // from the write-confirmation table: the pulse machine's readback is a
+    // convergence probe, not a write confirmation.
+    ModbusRequest readback;
+    readback.kind = ModbusRequest::Kind::ReadCoils;
+    readback.address = address;
+    readback.count = 1;
+    readback.cls = RequestClass::UserWrite; // level 4 (§8.3)
+    readback.isReadback = true;
+    readback.requestId = m_pulseReadbackId++;
+    m_pulseReadbacks.insert(readback.requestId, address);
+    if (!m_queue.enqueue(readback)) {
+        // Offline: the readback can never arrive; abort the pulse.
+        m_pulseReadbacks.remove(readback.requestId);
+        m_pulses.onReadback(address, false);
+    }
+    tryDispatch();
+}
+
+void ModbusGatewayWorker::handlePulseReadback(const ModbusRequest &req,
+                                             const TransferResult &res)
+{
+    const quint16 address = m_pulseReadbacks.take(req.requestId);
+    if (!res.ok) {
+        // A failed readback cannot converge the pulse: treat as bit 0 (the
+        // machine then finishes failed for an uncertain set, or completes for
+        // an uncertain clear — both defined outcomes, spec §8.4).
+        m_pulses.onReadback(address, false);
+        return;
+    }
+    const quint16 bits = res.values.isEmpty() ? 0 : res.values.first();
+    m_pulses.onReadback(address, (bits & 0x0001) ? true : false);
+}
+
 void ModbusGatewayWorker::publishSnapshot()
 {
     m_data.connected = true;
@@ -734,6 +898,9 @@ void ModbusGatewayWorker::publishSnapshot()
     m_data.captureCompleted = QDateTime::currentDateTime();
     m_data.overallQuality = aggregateQuality(m_data);
     emit snapshotReady(DeviceSnapshot(m_data));
+    // Communication statistics ride along with every published snapshot
+    // (spec §16): the counters belong to the snapshot's sequence.
+    emit commStatsChanged(m_sequence, m_reconnectCount, m_failedPolls);
 }
 
 void ModbusGatewayWorker::checkHeartbeatFreeze(quint16 heartbeat)

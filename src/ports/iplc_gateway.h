@@ -45,6 +45,12 @@ public:
     virtual void writeRegister(quint16 address, quint16 value,
                                CommandPriority priority = CommandPriority::Normal) = 0;
 
+    // Start a pulse on `address` (spec §8.5): serially write 1, hold at
+    // least 100 ms, then clear. Returns false when the pulse could not be
+    // started (offline, or a pulse on the same address is already active).
+    // The pulse outcome is reported via writeCompleted(address, ok).
+    virtual bool startPulse(quint16 address) = 0;
+
 signals:
     // A complete, immutable device snapshot (spec §9).
     void snapshotReady(const DeviceSnapshot &snapshot);

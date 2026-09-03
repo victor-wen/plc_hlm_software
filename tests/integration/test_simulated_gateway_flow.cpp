@@ -40,12 +40,17 @@ private slots:
     void stopEmitsOffline();
     void restartAfterStopWorks();
     void tickAdvancesModelDeterministically();
+    void startPulseWritesCoilPair();
+    void commStatsEmitted();
 
 private:
     SimulatedPlcGateway *m_gw = nullptr;
     int m_snapshots = 0;
     bool m_online = false;
     QList<QPair<quint16, bool>> m_writeResults;
+    QList<quint64> m_statSequences;
+    QList<int> m_statReconnects;
+    QList<int> m_statFailedPolls;
 };
 
 void SimulatedGatewayFlowTest::init()
@@ -54,6 +59,9 @@ void SimulatedGatewayFlowTest::init()
     m_snapshots = 0;
     m_online = false;
     m_writeResults.clear();
+    m_statSequences.clear();
+    m_statReconnects.clear();
+    m_statFailedPolls.clear();
     connect(m_gw, &SimulatedPlcGateway::snapshotReady, this,
             [this](const DeviceSnapshot &) { ++m_snapshots; });
     connect(m_gw, &SimulatedPlcGateway::connectionStateChanged, this,
@@ -61,6 +69,12 @@ void SimulatedGatewayFlowTest::init()
     connect(m_gw, &SimulatedPlcGateway::writeCompleted, this,
             [this](quint16 addr, bool ok, const QString &) {
                 m_writeResults.append({addr, ok});
+            });
+    connect(m_gw, &SimulatedPlcGateway::commStatsChanged, this,
+            [this](quint64 seq, int reconnects, int failed) {
+                m_statSequences.append(seq);
+                m_statReconnects.append(reconnects);
+                m_statFailedPolls.append(failed);
             });
 }
 
@@ -484,6 +498,51 @@ void SimulatedGatewayFlowTest::tickAdvancesModelDeterministically()
     m_gw->tick();
     QCOMPARE(m_gw->elapsedSeconds(), quint64(3));
     QCOMPARE(m_gw->lastSnapshot().heartbeat(), quint16(3));
+}
+
+void SimulatedGatewayFlowTest::startPulseWritesCoilPair()
+{
+    m_gw->start();
+    QVERIFY(m_gw->isOnline());
+
+    // startPulse(M103): the simulated gateway writes 1 then 0 and confirms.
+    QVERIFY(m_gw->startPulse(103));
+    QCOMPARE(m_writeResults.size(), 1);
+    QVERIFY(m_writeResults.last().second);
+    // The coil pair delivered the pulse: the bit is back to 0.
+    QVERIFY(!m_gw->model().readCoil(103));
+
+    // The rising edge triggered the reset/home-return flow (spec §10.2).
+    m_gw->tick();
+    QVERIFY(m_gw->lastSnapshot().m50()); // homing in progress
+    m_gw->tick();
+    QVERIFY(!m_gw->lastSnapshot().m50()); // homed
+
+    // Offline: startPulse rejected, nothing written.
+    m_gw->setLinkDown(true);
+    QVERIFY(!m_gw->isOnline());
+    QVERIFY(!m_gw->startPulse(103));
+    QCOMPARE(m_writeResults.size(), 2);
+    QVERIFY(!m_writeResults.last().second);
+    QVERIFY(!m_gw->model().readCoil(103));
+}
+
+void SimulatedGatewayFlowTest::commStatsEmitted()
+{
+    m_gw->start(); // snapshot #1
+    QCOMPARE(m_statSequences.size(), 1);
+    QCOMPARE(m_statSequences.first(), quint64(1));
+    QCOMPARE(m_statReconnects.first(), 0);
+    QCOMPARE(m_statFailedPolls.first(), 0);
+
+    // Link down/up: reconnectCount increments on restore; the next snapshot
+    // carries the updated counters.
+    m_gw->setLinkDown(true);
+    m_gw->setLinkDown(false);
+    m_gw->tick(); // reconnect snapshot
+    QCOMPARE(m_statSequences.size(), 2);
+    QCOMPARE(m_statReconnects.last(), 1);
+    QCOMPARE(m_statFailedPolls.last(), 0); // in-process model never drops polls
 }
 
 QTEST_GUILESS_MAIN(SimulatedGatewayFlowTest)

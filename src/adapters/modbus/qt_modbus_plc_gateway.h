@@ -9,8 +9,10 @@
 #include <optional>
 
 #include "adapters/modbus/modbus_transport.h"
+#include "adapters/modbus/pulse_state_machine.h"
 #include "adapters/modbus/reconnect_policy.h"
 #include "adapters/modbus/request_queue.h"
+#include "adapters/modbus/watchdog_timer.h"
 #include "ports/iplc_gateway.h"
 
 namespace hlm {
@@ -47,6 +49,12 @@ public:
                    CommandPriority priority = CommandPriority::Normal) override;
     void writeRegister(quint16 address, quint16 value,
                        CommandPriority priority = CommandPriority::Normal) override;
+    bool startPulse(quint16 address) override;
+
+signals:
+    // Communication statistics (spec §16): emitted with every published
+    // snapshot. `sequence` is the snapshot sequence the counters belong to.
+    void commStatsChanged(quint64 sequence, int reconnectCount, int failedPolls);
 
 private:
     Config m_cfg;
@@ -75,6 +83,9 @@ public:
     // Test hooks.
     void setNowMs(std::function<qint64()> now);
     void setPollIntervals(int fastMs, int homeMs, int commandMs, int slowMs);
+    // Disable the M112 watchdog flips (test hook: keeps the request stream
+    // deterministic for tests that do not exercise the heartbeat).
+    void setWatchdogEnabled(bool enabled) { m_watchdogEnabled = enabled; }
     bool isOnline() const;
     int reconnectDelayMs() const { return m_reconnectTimer->interval(); }
 
@@ -83,6 +94,7 @@ public slots:
     void stop();
     void submitWriteCoil(quint16 address, bool value, CommandPriority priority);
     void submitWriteRegister(quint16 address, quint16 value, CommandPriority priority);
+    bool startPulse(quint16 address);
     void onPollTick();
     void onReconnectTick();
     void onTransferFinished(const TransferResult &result);
@@ -91,6 +103,7 @@ signals:
     void snapshotReady(const DeviceSnapshot &snapshot);
     void connectionStateChanged(bool online);
     void writeCompleted(quint16 address, bool ok, const QString &error);
+    void commStatsChanged(quint64 sequence, int reconnectCount, int failedPolls);
 
 private:
     enum class LinkState { Disconnected, Connecting, Online, Offline };
@@ -104,6 +117,15 @@ private:
     void handleWriteResult(const ModbusRequest &req, const TransferResult &res);
     void publishSnapshot();
     void checkHeartbeatFreeze(quint16 heartbeat);
+    // Pulse readback path (spec §8.5): a dedicated single-coil readback for
+    // the pulse state machine, matched by request identity (isReadback +
+    // requestId) but NOT routed through the write-confirmation table.
+    void enqueuePulseReadback(quint16 address);
+    void handlePulseReadback(const ModbusRequest &req, const TransferResult &res);
+    // Transport callbacks for the pulse state machine and the M112 watchdog
+    // (spec §8.5, §8.6): route writes through m_queue.enqueue.
+    static PulseStateMachine::Callbacks makePulseCallbacks(ModbusGatewayWorker *w);
+    static WatchdogTimer::Callbacks makeWatchdogCallbacks(ModbusGatewayWorker *w);
 
     struct PendingWrite {
         quint16 address = 0; // address of the original write request
@@ -124,6 +146,22 @@ private:
     bool m_hasValidSnapshot = false;
     quint64 m_sequence = 0;
     std::optional<ModbusRequest> m_inFlight;
+
+    // Task 5 pulse state machine + M112 watchdog, driven from m_pollTimer
+    // (spec §7.2, §8.5, §8.6). Their writeCoil callbacks route through
+    // m_queue.enqueue; a rejected enqueue (queue closed = offline) aborts the
+    // pulse / skips the flip (spec §8.4 no-replay).
+    PulseStateMachine m_pulses;
+    WatchdogTimer m_watchdog;
+    // Dedicated pulse readbacks (spec §8.5): single-coil reads matched by
+    // request identity, kept separate from the write-confirmation table.
+    QHash<quint64, quint16> m_pulseReadbacks; // requestId -> pulse address
+    quint64 m_pulseReadbackId = 1;
+
+    // Communication statistics (spec §16).
+    int m_reconnectCount = 0;
+    int m_failedPolls = 0;
+    bool m_watchdogEnabled = true;
 
     // Poll scheduling (nominal intervals, spec §8.3).
     int m_fastMs = 250;

@@ -103,6 +103,15 @@ private slots:
     void restartAfterStopWorks();
     void writeRejectedUntilFirstSnapshotAfterReconnect();
     void slowPollOutOfRangeMarksFieldsInvalid();
+    // Task 20: pulse state machine + M112 watchdog wiring, comm stats.
+    void startPulseRoutesThroughStateMachine();
+    void pulseHoldThenClearAtMin100ms();
+    void pulseClearPriorityLevel1();
+    void pulseAbortsOnOffline();
+    void uncertainPulseSetConvergesViaReadback();
+    void heartbeatFlipsM112Every500ms();
+    void heartbeatStopsOffline();
+    void commStatsEmitted();
 
 private:
     FakeTransport *m_transport = nullptr;
@@ -112,6 +121,10 @@ private:
     bool m_online = false;
     QList<QPair<quint16, bool>> m_writeResults;
     DeviceSnapshot m_lastSnapshot{DeviceSnapshotData()};
+    // comm stats recording (Task 20).
+    QList<quint64> m_statSequences;
+    QList<int> m_statReconnects;
+    QList<int> m_statFailedPolls;
 };
 
 void GatewayTest::init()
@@ -124,11 +137,18 @@ void GatewayTest::init()
     // Only the fast poll fires (home/command/slow effectively disabled) so
     // the tests are deterministic about which request is in flight.
     m_worker->setPollIntervals(250, 1000000, 1000000, 1000000);
+    // The M112 watchdog would inject a flip into the request stream on the
+    // first online tick; disable it so the existing tests keep their exact
+    // dispatch-order assumptions. Heartbeat tests re-enable it explicitly.
+    m_worker->setWatchdogEnabled(false);
 
     m_now = 0;
     m_snapshots = 0;
     m_online = false;
     m_writeResults.clear();
+    m_statSequences.clear();
+    m_statReconnects.clear();
+    m_statFailedPolls.clear();
 
     connect(m_worker, &ModbusGatewayWorker::snapshotReady, this,
             [this](const DeviceSnapshot &s) {
@@ -140,6 +160,12 @@ void GatewayTest::init()
     connect(m_worker, &ModbusGatewayWorker::writeCompleted, this,
             [this](quint16 addr, bool ok, const QString &) {
                 m_writeResults.append({addr, ok});
+            });
+    connect(m_worker, &ModbusGatewayWorker::commStatsChanged, this,
+            [this](quint64 seq, int reconnects, int failed) {
+                m_statSequences.append(seq);
+                m_statReconnects.append(reconnects);
+                m_statFailedPolls.append(failed);
             });
 
     m_worker->start();
@@ -713,6 +739,222 @@ void GatewayTest::slowPollOutOfRangeMarksFieldsInvalid()
     m_transport->completeOk(fastBlock(4));
     QVERIFY(m_lastSnapshot.fieldValid(SnapshotField::PulsePerMm));
     QVERIFY(m_lastSnapshot.fieldValid(SnapshotField::WidthSpeed));
+}
+
+// ---------------------------------------------------------------------------
+// Task 20: pulse state machine + M112 watchdog wiring, comm stats (spec §8.5,
+// §8.6, §16).
+// ---------------------------------------------------------------------------
+
+void GatewayTest::startPulseRoutesThroughStateMachine()
+{
+    m_transport->completeOk(fastBlock(1)); // first fast poll
+    QVERIFY(m_worker->isOnline());
+
+    // startPulse(101) -> the state machine enqueues write-1 (user priority).
+    QVERIFY(m_worker->startPulse(101));
+    QCOMPARE(m_transport->sent.size(), 2);
+    QCOMPARE(m_transport->sent.last().kind, ModbusRequest::Kind::WriteCoil);
+    QCOMPARE(m_transport->sent.last().address, quint16(101));
+    QCOMPARE(m_transport->sent.last().value, quint16(1));
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::UserWrite);
+}
+
+void GatewayTest::pulseHoldThenClearAtMin100ms()
+{
+    m_transport->completeOk(fastBlock(1)); // first fast poll
+    QVERIFY(m_worker->isOnline());
+
+    QVERIFY(m_worker->startPulse(101));
+    m_transport->completeOk({}); // write-1 ack -> holding, timing starts at t=0
+    m_transport->completeOk({0x0001}); // write-1 readback confirms (M101=1)
+
+    // Before 100 ms the clear must NOT be enqueued.
+    m_now = 50;
+    m_worker->onPollTick();
+    QCOMPARE(m_transport->sent.size(), 3); // write-1 + its readback only
+
+    // At >= 100 ms the clear is enqueued at PulseClear priority (level 1).
+    m_now = 100;
+    m_worker->onPollTick();
+    QCOMPARE(m_transport->sent.size(), 4);
+    QCOMPARE(m_transport->sent.last().kind, ModbusRequest::Kind::WriteCoil);
+    QCOMPARE(m_transport->sent.last().address, quint16(101));
+    QCOMPARE(m_transport->sent.last().value, quint16(0));
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::PulseClear);
+
+    // Clear ack + readback confirm -> pulse complete, reported via
+    // writeCompleted(address, true).
+    m_transport->completeOk({}); // clear ack
+    m_transport->completeOk({0x0000}); // clear readback confirms (M101=0)
+    QCOMPARE(m_writeResults.size(), 2);
+    QCOMPARE(m_writeResults.last().first, quint16(101));
+    QCOMPARE(m_writeResults.last().second, true);
+}
+
+void GatewayTest::pulseClearPriorityLevel1()
+{
+    m_transport->completeOk(fastBlock(1)); // first fast poll
+    QVERIFY(m_worker->isOnline());
+
+    QVERIFY(m_worker->startPulse(101));
+    m_transport->completeOk({}); // write-1 ack -> readback dispatched
+
+    // A user write queued behind the pulse must not preempt the clear: the
+    // clear (level 1) dispatches before the user write (level 4).
+    m_worker->submitWriteCoil(200, true, CommandPriority::Normal);
+    m_now = 100;
+    m_worker->onPollTick(); // clear enqueued (readback still in flight)
+    m_transport->completeOk({0x0001}); // write-1 readback confirms
+    QCOMPARE(m_transport->sent.size(), 4);
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::PulseClear);
+    QCOMPARE(m_transport->sent.last().address, quint16(101));
+}
+
+void GatewayTest::pulseAbortsOnOffline()
+{
+    m_transport->completeOk(fastBlock(1)); // first fast poll
+    QVERIFY(m_worker->isOnline());
+
+    // Drive offline via heartbeat freeze.
+    m_now = 3200;
+    m_worker->onPollTick();
+    m_transport->completeOk(fastBlock(1));
+    QVERIFY(!m_worker->isOnline());
+
+    // Offline startPulse: rejected, nothing queued.
+    const int sentBefore = m_transport->sent.size();
+    QVERIFY(!m_worker->startPulse(101));
+    QCOMPARE(m_transport->sent.size(), sentBefore); // no new request
+}
+
+void GatewayTest::uncertainPulseSetConvergesViaReadback()
+{
+    m_transport->completeOk(fastBlock(1)); // first fast poll
+    QVERIFY(m_worker->isOnline());
+
+    QVERIFY(m_worker->startPulse(101));
+    m_transport->completeFail(); // write-1 times out (uncertain)
+
+    // The failed write reports its result; the machine must NOT re-send 1:
+    // it requests a dedicated single-coil readback (isReadback, matched by
+    // request identity, NOT the write confirmation table).
+    QCOMPARE(m_writeResults.size(), 1);
+    QCOMPARE(m_writeResults.first().second, false);
+    QCOMPARE(m_transport->sent.size(), 3);
+    QCOMPARE(m_transport->sent.last().kind, ModbusRequest::Kind::ReadCoils);
+    QCOMPARE(m_transport->sent.last().address, quint16(101));
+    QVERIFY(m_transport->sent.last().isReadback);
+
+    // Readback shows the bit is 0: the set never took effect, the pulse is
+    // aborted (finished(false) path) — no clear write is queued.
+    m_transport->completeOk({0x0000});
+    QCOMPARE(m_transport->sent.size(), 3); // no re-send, no clear
+    QCOMPARE(m_writeResults.size(), 1);    // only the failed write reported
+}
+
+void GatewayTest::heartbeatFlipsM112Every500ms()
+{
+    m_transport->completeOk(fastBlock(1)); // first fast poll
+    QVERIFY(m_worker->isOnline());
+
+    // Re-enable the watchdog: the next online tick flips M112 immediately.
+    m_worker->setWatchdogEnabled(true);
+    m_worker->onPollTick();
+    QCOMPARE(m_transport->sent.size(), 2);
+    QCOMPARE(m_transport->sent.last().kind, ModbusRequest::Kind::WriteCoil);
+    QCOMPARE(m_transport->sent.last().address, quint16(112));
+    QCOMPARE(m_transport->sent.last().value, quint16(1));
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::Heartbeat);
+    m_transport->completeOk({}); // flip ack
+    m_transport->completeOk({0x0001}); // flip readback confirms
+
+    // 499 ms later: no flip yet (a fast poll fires at 250 ms; complete it).
+    m_now = 499;
+    m_worker->onPollTick();
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::FastPoll);
+    m_transport->completeOk(fastBlock(1));
+
+    // 500 ms: flip to 0 (dispatches before the fast poll, level 3 < 5).
+    m_now = 500;
+    m_worker->onPollTick();
+    QCOMPARE(m_transport->sent.size(), 5);
+    QCOMPARE(m_transport->sent.last().address, quint16(112));
+    QCOMPARE(m_transport->sent.last().value, quint16(0));
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::Heartbeat);
+}
+
+void GatewayTest::heartbeatStopsOffline()
+{
+    m_transport->completeOk(fastBlock(1)); // first fast poll
+    QVERIFY(m_worker->isOnline());
+    m_worker->setWatchdogEnabled(true);
+    m_worker->onPollTick(); // flip #1 (M112=1)
+    QCOMPARE(m_transport->sent.size(), 2);
+    m_transport->completeOk({}); // flip ack
+    m_transport->completeOk({0x0001}); // flip readback confirms
+
+    // Drive offline via heartbeat freeze. At t=3200 the watchdog also flips
+    // (M112=0, level 3) and dispatches before the fast poll (level 5);
+    // complete that flip before the poll.
+    m_now = 3200;
+    m_worker->onPollTick();
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::Heartbeat);
+    m_transport->completeOk({}); // flip ack
+    m_transport->completeOk({0x0000}); // flip readback confirms
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::FastPoll);
+    m_transport->completeOk(fastBlock(1)); // heartbeat unchanged -> freeze
+    QVERIFY(!m_worker->isOnline());
+
+    // Offline: no further flips queued.
+    const int sentAfterOffline = m_transport->sent.size();
+    m_now = 4000;
+    m_worker->onPollTick();
+    QCOMPARE(m_transport->sent.size(), sentAfterOffline);
+}
+
+void GatewayTest::commStatsEmitted()
+{
+    m_transport->completeOk(fastBlock(1)); // first fast poll -> snapshot #1
+    QCOMPARE(m_statSequences.size(), 1);
+    QCOMPARE(m_statSequences.first(), quint64(1));
+    QCOMPARE(m_statReconnects.first(), 0);
+    QCOMPARE(m_statFailedPolls.first(), 0);
+
+    // A failed poll (retry exhausted) increments failedPolls; the next
+    // snapshot carries the updated counters.
+    m_now = 300;
+    m_worker->onPollTick();
+    m_transport->completeFail(); // fast poll fails -> retry
+    m_transport->completeFail(); // retry fails -> failure #1 (not offline)
+    QVERIFY(m_worker->isOnline());
+    m_now = 600;
+    m_worker->onPollTick();
+    m_transport->completeOk(fastBlock(2)); // snapshot #2
+    QCOMPARE(m_statSequences.size(), 2);
+    QCOMPARE(m_statFailedPolls.last(), 1);
+
+    // Drive offline (3 consecutive failures) and reconnect: reconnectCount
+    // increments when the reconnect is scheduled (enterOffline).
+    m_now = 900;
+    m_worker->onPollTick();
+    m_transport->completeFail();
+    m_transport->completeFail();
+    m_now = 1200;
+    m_worker->onPollTick();
+    m_transport->completeFail();
+    m_transport->completeFail();
+    m_now = 1500;
+    m_worker->onPollTick();
+    m_transport->completeFail();
+    m_transport->completeFail();
+    QVERIFY(!m_worker->isOnline());
+    m_worker->onReconnectTick();
+    m_transport->completeOk(fastBlock(3)); // snapshot #3
+    QCOMPARE(m_statSequences.size(), 3);
+    QCOMPARE(m_statReconnects.last(), 1);
+    // 1 (earlier) + 3 offline-driving cycles = 4 failed polls.
+    QCOMPARE(m_statFailedPolls.last(), 4);
 }
 
 QTEST_GUILESS_MAIN(GatewayTest)

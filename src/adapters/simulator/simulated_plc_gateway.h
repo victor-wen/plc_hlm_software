@@ -47,7 +47,15 @@ public:
                    CommandPriority priority = CommandPriority::Normal) override;
     void writeRegister(quint16 address, quint16 value,
                        CommandPriority priority = CommandPriority::Normal) override;
+    bool startPulse(quint16 address) override;
 
+signals:
+    // Communication statistics (spec §16): emitted with every published
+    // snapshot. reconnectCount = link-restore count, failedPolls = 0 (the
+    // in-process model never drops a poll).
+    void commStatsChanged(quint64 sequence, int reconnectCount, int failedPolls);
+
+public:
     // --- deterministic time hooks -------------------------------------------
     // Advance the model by `tickSeconds` simulated seconds and publish a fresh
     // snapshot. No-op while the link is down or the gateway is stopped.
@@ -87,6 +95,9 @@ private:
 
     quint64 m_tickSeconds = 1;
     quint64 m_sequence = 0;
+    // Communication statistics (spec §16).
+    int m_reconnectCount = 0;
+    int m_failedPolls = 0;
 
     // D140 heartbeat freeze tracking (spec §8.4): 3 ticks without a change.
     quint64 m_freezeTicks = 0;
