@@ -1,4 +1,5 @@
-# Windows MSVC 2022 x64 Debug/Release build matrix (spec §15.1, §17).
+# Windows MSVC 2022 x64 Debug/Release build matrix (spec §15.1, §17) plus
+# Release packaging, deploy-dependency checks and artifact upload (Task 21).
 #
 # All third-party actions are pinned to reviewed commit SHAs (not tags or
 # branches). Verified 2026-09-02 via the GitHub API:
@@ -6,6 +7,9 @@
 #   ilammy/msvc-dev-cmd   v1.13.0 -> 0b201ec74fa43914dc39ae48a89fd1d8cb592756
 #   lukka/run-vcpkg       v11.6   -> b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
 #   actions/upload-artifact v7.0.1 -> 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+#
+# No virtual COM driver is installed in CI (spec §15.5 acceptance runs on a
+# local Windows machine with com0com; see docs/testing/rtu-simulator-acceptance.md).
 
 name: windows-build-test
 
@@ -64,3 +68,76 @@ jobs:
             !build/vcpkg_installed/**
           if-no-files-found: warn
           retention-days: 7
+
+  package:
+    name: Package and deploy-deps check (Release)
+    runs-on: windows-2022
+    needs: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Enable MSVC 2022 x64 developer environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+
+      - name: Setup vcpkg (manifest mode, vcpkg.json)
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
+        with:
+          vcpkgJsonGlob: '**/vcpkg.json'
+          runVcpkgInstall: true
+
+      - name: Configure (HLM_ENABLE_VISION=ON, Release)
+        run: |
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DHLM_ENABLE_VISION=ON
+
+      - name: Build (Release)
+        run: cmake --build build --config Release
+
+      - name: Package (windeployqt + OpenSSL/OpenCV DLLs + LICENSES)
+        run: |
+          $vcpkgInstalled = "$env:VCPKG_ROOT/installed/x64-windows"
+          if (-not (Test-Path $vcpkgInstalled)) {
+            # run-vcpkg may place the installed tree under the build dir.
+            $vcpkgInstalled = "build/vcpkg_installed/x64-windows"
+          }
+          if (-not (Test-Path $vcpkgInstalled)) {
+            throw "vcpkg installed tree not found (tried VCPKG_ROOT and build/vcpkg_installed)"
+          }
+          pwsh -NoProfile -File scripts/package.ps1 `
+            -BuildDir build `
+            -OutDir dist `
+            -Config Release `
+            -VcpkgInstalledDir $vcpkgInstalled `
+            -Version 0.1.0
+
+      - name: Check deploy dependencies (positive)
+        run: |
+          Expand-Archive -Path dist/plc-hmi-0.1.0-win64.zip -DestinationPath dist/check-positive
+          pwsh -NoProfile -File scripts/check_deploy_deps.ps1 -PackageDir dist/check-positive
+
+      - name: "Check deploy dependencies (negative: qsqlite.dll removed must fail)"
+        run: |
+          Expand-Archive -Path dist/plc-hmi-0.1.0-win64.zip -DestinationPath dist/check-negative
+          Remove-Item dist/check-negative/sqldrivers/qsqlite.dll
+          pwsh -NoProfile -File scripts/check_deploy_deps.ps1 `
+            -PackageDir dist/check-negative `
+            -ExpectMissing sqldrivers/qsqlite.dll
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "check_deploy_deps did not fail on missing qsqlite.dll"
+            exit 1
+          }
+          Write-Host "Negative test passed: missing qsqlite.dll detected"
+
+      - name: Upload release package artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: plc-hmi-0.1.0-win64
+          path: dist/plc-hmi-0.1.0-win64.zip
+          if-no-files-found: error
+          retention-days: 30

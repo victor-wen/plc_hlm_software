@@ -1,0 +1,28 @@
+GNU LESSER GENERAL PUBLIC LICENSE
+Version 3, 29 June 2007
+
+Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
+
+This product uses Qt, which is licensed under the GNU Lesser General
+Public License version 3 (LGPLv3).
+
+Official license text:
+  https://www.gnu.org/licenses/lgpl-3.0.txt
+
+NOTE: The full LGPL-3.0 text could not be embedded at build time because
+the packaging environment had no network access when this file was
+generated (Task 21). Before shipping a release, replace this file with
+the complete LGPL-3.0 text downloaded from the official URL above, and
+keep a copy of the Qt source code or a written offer to provide it, as
+required by the LGPLv3.
+
+Summary of the license (not a substitute for the full text):
+  - You may use, copy and redistribute the library.
+  - You may modify the library and distribute modified versions under
+    the same license, provided you allow reverse engineering for
+    interoperability with the modified library.
+  - If you distribute a work that links the library, you must provide
+    the object files or equivalent so the user can relink with a
+    modified version of the library.
+  - You must give prominent notice that the library is used and that it
+    is licensed under the LGPLv3, and provide a copy of the license.
