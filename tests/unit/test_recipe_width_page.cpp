@@ -117,6 +117,7 @@ private slots:
     // --- page: rendering and permission gating --------------------------------
     void pageShowsStatusAndDisplays();
     void operatorSeesDisabledApplyWithReason();
+    void editorControlsMeetTouchTargetSize();
 
     // --- MainWindow integration ------------------------------------------------
     void mainWindowUsesRecipeWidthPage();
@@ -592,6 +593,18 @@ void RecipeWidthPageTest::operatorSeesDisabledApplyWithReason()
     QVERIFY(!page.deleteButton()->isEnabled());
     QVERIFY(!page.nameEdit()->isEnabled());
     QVERIFY(!page.widthSpin()->isEnabled());
+}
+
+void RecipeWidthPageTest::editorControlsMeetTouchTargetSize()
+{
+    // 触摸目标 >= 48 px (spec §11.1): the interactive editor controls must be
+    // at least as tall as every other control on the page (buttons 48, apply
+    // 64, displays 48, status 48).
+    ShellModel model;
+    RecipeWidthPage page(model);
+
+    QVERIFY(page.nameEdit()->minimumHeight() >= 48);
+    QVERIFY(page.widthSpin()->minimumHeight() >= 48);
 }
 
 // --- MainWindow integration ------------------------------------------------------

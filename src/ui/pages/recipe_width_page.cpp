@@ -88,6 +88,7 @@ void RecipeWidthPage::buildLayout()
     m_nameEdit = new QLineEdit(recipeBox);
     m_nameEdit->setObjectName(QStringLiteral("recipeNameEdit"));
     m_nameEdit->setPlaceholderText(QStringLiteral("配方名称"));
+    m_nameEdit->setMinimumHeight(48); // touch target >= 48 px (spec §11.1)
     editRow->addWidget(m_nameEdit, /*stretch=*/1);
     auto *widthLabel = new QLabel(QStringLiteral("宽度 mm"), recipeBox);
     editRow->addWidget(widthLabel);
@@ -95,6 +96,7 @@ void RecipeWidthPage::buildLayout()
     m_widthSpin->setObjectName(QStringLiteral("recipeWidthSpin"));
     m_widthSpin->setRange(50, 400); // D128 range (spec §10.3)
     m_widthSpin->setValue(50);
+    m_widthSpin->setMinimumHeight(48); // touch target >= 48 px (spec §11.1)
     editRow->addWidget(m_widthSpin);
     recipeLayout->addLayout(editRow);
 
