@@ -26,8 +26,7 @@
     "openssl",
     {
       "name": "opencv4",
-      "default-features": false,
-      "features": [ "core" ]
+      "default-features": false
     }
   ],
   "builtin-baseline": "a9eee3b18df395dbb8be71a31bd78ea441056e42"
