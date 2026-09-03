@@ -57,6 +57,12 @@ public:
     // written to the audit log.
     LoginResult login(const QString &username, const QString &password);
 
+    // Pure password verification (spec §11.3 D204 二次验证): returns true only
+    // when `userId` exists, is enabled and `password` matches. No lockout
+    // accounting, no audit record, no timing dummy for unknown users — this is
+    // an in-session admin re-verification, not an authentication attempt.
+    bool verifyPassword(qint64 userId, const QString &password) const;
+
     // Changes a user's password (admin action). Returns false if the user does
     // not exist.
     bool changePassword(qint64 userId, const QString &newPassword,

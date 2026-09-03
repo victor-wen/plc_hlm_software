@@ -59,6 +59,12 @@ public:
 public slots:
     void createInitialAdmin(const QString &username, const QString &password);
     void login(const QString &username, const QString &password);
+    // Pure password verification for the D204 二次验证 flow (spec §11.3):
+    // no lockout accounting, no audit. Result via passwordVerified(bool).
+    void verifyPassword(qint64 userId, const QString &password);
+    // True when no user exists yet (first start, spec §11.5). Result via
+    // initialAdminNeeded(bool).
+    void needsInitialAdmin();
     void changePassword(qint64 userId, const QString &newPassword);
     void addUser(const QString &username, Role role, const QString &password);
     void deleteUser(qint64 userId);
@@ -82,6 +88,8 @@ signals:
     void ready();
     void databaseRestricted(const QString &reason);
     void initialAdminCreated(bool ok, const QString &error);
+    void initialAdminNeeded(bool needs);
+    void passwordVerified(bool ok);
     void loginResult(const LoginResult &result);
     void passwordChanged(bool ok, const QString &error);
     void userAdded(bool ok, const QString &error);

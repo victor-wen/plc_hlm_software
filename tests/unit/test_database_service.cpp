@@ -31,6 +31,8 @@ private slots:
     void healthyServiceRunsOperationsOnWorkerThread();
     void unopenableDatabaseEntersRestrictedMode();
     void restrictedServiceRejectsOperations();
+    void needsInitialAdminSignal();
+    void verifyPasswordSlot();
 };
 
 void DatabaseServiceTest::initTestCase()
@@ -164,6 +166,88 @@ void DatabaseServiceTest::restrictedServiceRejectsOperations()
     service.login(QStringLiteral("admin"), QStringLiteral("x"));
     QTRY_VERIFY_WITH_TIMEOUT(loginSpy.size() > 0, 5000);
     QCOMPARE(loginSpy[0][0].value<LoginResult>().ok, false);
+
+    service.stop();
+}
+
+// needsInitialAdmin: an empty database reports true, and after the initial
+// admin is created the same slot reports false (spec §11.5 first start).
+void DatabaseServiceTest::needsInitialAdminSignal()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    DatabaseService service(dir.filePath(QStringLiteral("app.db")));
+    QSignalSpy readySpy(&service, &DatabaseService::ready);
+    service.start();
+    QTRY_VERIFY_WITH_TIMEOUT(readySpy.size() > 0, 5000);
+    QVERIFY(!service.isRestricted());
+
+    QSignalSpy needsSpy(&service, &DatabaseService::initialAdminNeeded);
+    const bool queued = QMetaObject::invokeMethod(
+        &service, "needsInitialAdmin", Qt::QueuedConnection);
+    QVERIFY(queued);
+    QTRY_VERIFY_WITH_TIMEOUT(needsSpy.size() > 0, 5000);
+    QCOMPARE(needsSpy[0][0].toBool(), true);
+
+    QSignalSpy adminSpy(&service, &DatabaseService::initialAdminCreated);
+    QVERIFY(QMetaObject::invokeMethod(
+        &service, "createInitialAdmin", Qt::QueuedConnection,
+        Q_ARG(QString, QStringLiteral("admin")),
+        Q_ARG(QString, QStringLiteral("s3cret!"))));
+    QTRY_VERIFY_WITH_TIMEOUT(adminSpy.size() > 0, 5000);
+    QCOMPARE(adminSpy[0][0].toBool(), true);
+
+    QSignalSpy needsAfterSpy(&service, &DatabaseService::initialAdminNeeded);
+    QVERIFY(QMetaObject::invokeMethod(
+        &service, "needsInitialAdmin", Qt::QueuedConnection));
+    QTRY_VERIFY_WITH_TIMEOUT(needsAfterSpy.size() > 0, 5000);
+    QCOMPARE(needsAfterSpy[0][0].toBool(), false);
+
+    service.stop();
+}
+
+// verifyPassword slot: queued invocation returns the correct result for a
+// known user (true with the right password, false with a wrong one).
+void DatabaseServiceTest::verifyPasswordSlot()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    DatabaseService service(dir.filePath(QStringLiteral("app.db")));
+    QSignalSpy readySpy(&service, &DatabaseService::ready);
+    service.start();
+    QTRY_VERIFY_WITH_TIMEOUT(readySpy.size() > 0, 5000);
+    QVERIFY(!service.isRestricted());
+
+    QSignalSpy adminSpy(&service, &DatabaseService::initialAdminCreated);
+    QVERIFY(QMetaObject::invokeMethod(
+        &service, "createInitialAdmin", Qt::QueuedConnection,
+        Q_ARG(QString, QStringLiteral("admin")),
+        Q_ARG(QString, QStringLiteral("s3cret!"))));
+    QTRY_VERIFY_WITH_TIMEOUT(adminSpy.size() > 0, 5000);
+    QCOMPARE(adminSpy[0][0].toBool(), true);
+
+    // Fetch the admin's id via listUsers.
+    QSignalSpy usersSpy(&service, &DatabaseService::usersLoaded);
+    QVERIFY(QMetaObject::invokeMethod(
+        &service, "listUsers", Qt::QueuedConnection));
+    QTRY_VERIFY_WITH_TIMEOUT(usersSpy.size() > 0, 5000);
+    const QVector<UserRecord> users = usersSpy[0][0].value<QVector<UserRecord>>();
+    QCOMPARE(users.size(), 1);
+    const qint64 adminId = users[0].id;
+
+    QSignalSpy okSpy(&service, &DatabaseService::passwordVerified);
+    QVERIFY(QMetaObject::invokeMethod(
+        &service, "verifyPassword", Qt::QueuedConnection,
+        Q_ARG(qint64, adminId), Q_ARG(QString, QStringLiteral("s3cret!"))));
+    QTRY_VERIFY_WITH_TIMEOUT(okSpy.size() > 0, 5000);
+    QCOMPARE(okSpy[0][0].toBool(), true);
+
+    QSignalSpy badSpy(&service, &DatabaseService::passwordVerified);
+    QVERIFY(QMetaObject::invokeMethod(
+        &service, "verifyPassword", Qt::QueuedConnection,
+        Q_ARG(qint64, adminId), Q_ARG(QString, QStringLiteral("wrong"))));
+    QTRY_VERIFY_WITH_TIMEOUT(badSpy.size() > 0, 5000);
+    QCOMPARE(badSpy[0][0].toBool(), false);
 
     service.stop();
 }

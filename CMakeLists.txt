@@ -203,8 +203,25 @@ target_link_libraries(plc_simulator_exe PRIVATE
     Qt6::Widgets
 )
 
-# Planned targets added by later tasks (do not create empty targets now):
-#   hlm_app       -> all production modules above
+# hlm_app: application composition root + entry point (spec §6, §7, §13).
+# Links every production module; the executable is the real HMI.
+add_executable(hlm_app
+    src/app/application.cpp
+    src/app/lifecycle_controller.cpp
+    src/app/main.cpp
+)
+target_include_directories(hlm_app PRIVATE src)
+target_link_libraries(hlm_app PRIVATE
+    hlm_core
+    hlm_modbus
+    hlm_sqlite
+    hlm_simulator
+    hlm_ui
+    Qt6::Widgets
+)
+if(HLM_ENABLE_VISION)
+    target_link_libraries(hlm_app PRIVATE hlm_vision)
+endif()
 
 # --- Tests ------------------------------------------------------------------
 enable_testing()

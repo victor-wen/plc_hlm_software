@@ -152,6 +152,24 @@ void DatabaseService::login(const QString &username, const QString &password)
     emit loginResult(m_auth->login(username, password));
 }
 
+void DatabaseService::verifyPassword(qint64 userId, const QString &password)
+{
+    if (!m_auth) {
+        emit passwordVerified(false);
+        return;
+    }
+    emit passwordVerified(m_auth->verifyPassword(userId, password));
+}
+
+void DatabaseService::needsInitialAdmin()
+{
+    if (!m_auth) {
+        emit initialAdminNeeded(false);
+        return;
+    }
+    emit initialAdminNeeded(m_auth->needsInitialAdmin());
+}
+
 void DatabaseService::changePassword(qint64 userId, const QString &newPassword)
 {
     if (!m_auth) {

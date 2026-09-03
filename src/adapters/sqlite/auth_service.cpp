@@ -152,6 +152,21 @@ LoginResult AuthService::login(const QString &username, const QString &password)
     return {false, QStringLiteral("bad credentials"), std::nullopt};
 }
 
+bool AuthService::verifyPassword(qint64 userId, const QString &password) const
+{
+    const QVector<UserRecord> users = m_users->allUsers();
+    for (const UserRecord &u : users) {
+        if (u.id != userId)
+            continue;
+        if (!u.enabled)
+            return false;
+        const QByteArray derived = derivePasswordKey(password, u.salt, u.iterations);
+        return !derived.isEmpty()
+            && constantTimeEquals(passwordHashHex(derived), u.passwordHash);
+    }
+    return false; // unknown user
+}
+
 bool AuthService::changePassword(qint64 userId, const QString &newPassword,
                                  QString *error)
 {

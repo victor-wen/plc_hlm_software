@@ -36,6 +36,10 @@ private slots:
     void unknownUserRunsDummyDerivation();
     void changePasswordInvalidatesOld();
     void changePasswordDerivationFailureLeavesHashUnchanged();
+    void verifyPasswordCorrect();
+    void verifyPasswordIncorrect();
+    void verifyPasswordUnknownUser();
+    void verifyPasswordDoesNotTriggerLockout();
 };
 
 namespace {
@@ -403,6 +407,91 @@ void AuthServiceTest::changePasswordDerivationFailureLeavesHashUnchanged()
 
         // The original password still works after both failed attempts.
         QVERIFY(auth.login(QStringLiteral("admin"), QStringLiteral("hunter2")).ok);
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("auth_test"));
+}
+
+void AuthServiceTest::verifyPasswordCorrect()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    {
+        QSqlDatabase db = hlm_test::createMigratedDb(dir, QStringLiteral("auth_test"));
+        QVERIFY(db.isOpen());
+        SqliteUserRepository users(db);
+        SqliteAuditRepository audit(db);
+        AuthService auth(&users, &audit);
+        QString error;
+        QVERIFY(auth.createInitialAdmin(QStringLiteral("admin"), QStringLiteral("hunter2"), &error));
+
+        const auto u = users.findByName(QStringLiteral("admin"));
+        QVERIFY(u.has_value());
+        QVERIFY(auth.verifyPassword(u->id, QStringLiteral("hunter2")));
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("auth_test"));
+}
+
+void AuthServiceTest::verifyPasswordIncorrect()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    {
+        QSqlDatabase db = hlm_test::createMigratedDb(dir, QStringLiteral("auth_test"));
+        QVERIFY(db.isOpen());
+        SqliteUserRepository users(db);
+        SqliteAuditRepository audit(db);
+        AuthService auth(&users, &audit);
+        QString error;
+        QVERIFY(auth.createInitialAdmin(QStringLiteral("admin"), QStringLiteral("hunter2"), &error));
+
+        const auto u = users.findByName(QStringLiteral("admin"));
+        QVERIFY(u.has_value());
+        QVERIFY(!auth.verifyPassword(u->id, QStringLiteral("wrong")));
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("auth_test"));
+}
+
+void AuthServiceTest::verifyPasswordUnknownUser()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    {
+        QSqlDatabase db = hlm_test::createMigratedDb(dir, QStringLiteral("auth_test"));
+        QVERIFY(db.isOpen());
+        SqliteUserRepository users(db);
+        SqliteAuditRepository audit(db);
+        AuthService auth(&users, &audit);
+        QString error;
+        QVERIFY(auth.createInitialAdmin(QStringLiteral("admin"), QStringLiteral("hunter2"), &error));
+
+        QVERIFY(!auth.verifyPassword(9999, QStringLiteral("hunter2")));
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("auth_test"));
+}
+
+// Pure verification must not count toward the 3-failure lockout: 3 wrong
+// verifyPassword calls leave login() unlocked (spec §11.3 二次验证 vs §11.5).
+void AuthServiceTest::verifyPasswordDoesNotTriggerLockout()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    {
+        QSqlDatabase db = hlm_test::createMigratedDb(dir, QStringLiteral("auth_test"));
+        QVERIFY(db.isOpen());
+        SqliteUserRepository users(db);
+        SqliteAuditRepository audit(db);
+        AuthService auth(&users, &audit);
+        QString error;
+        QVERIFY(auth.createInitialAdmin(QStringLiteral("admin"), QStringLiteral("hunter2"), &error));
+
+        const auto u = users.findByName(QStringLiteral("admin"));
+        QVERIFY(u.has_value());
+        for (int i = 0; i < 3; ++i)
+            QVERIFY(!auth.verifyPassword(u->id, QStringLiteral("bad")));
+
+        // The account is NOT locked: the correct password still logs in.
+        const LoginResult r = auth.login(QStringLiteral("admin"), QStringLiteral("hunter2"));
+        QVERIFY2(r.ok, qPrintable(r.reason));
     }
     QSqlDatabase::removeDatabase(QStringLiteral("auth_test"));
 }
