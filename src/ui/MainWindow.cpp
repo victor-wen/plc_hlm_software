@@ -5,6 +5,7 @@
 #include "ui/shell/alarm_banner.h"
 #include "ui/shell/nav_panel.h"
 #include "ui/shell/action_bar.h"
+#include "ui/pages/overview_page.h"
 #include "ui/widgets/hold_button.h"
 #include "ui/widgets/permission_button.h"
 
@@ -113,8 +114,11 @@ void MainWindow::buildLayout()
 void MainWindow::createStubPages()
 {
     // Order must match NavPanel's 7 items (spec §11.1, §11.3).
-    const QStringList pages = {
-        QStringLiteral("总览"),
+    // Index 0 (总览) is the real OverviewPage (Task 11); the rest stay stubs
+    // until Tasks 12-17.
+    m_pages->addWidget(new OverviewPage(*m_model, this));
+
+    const QStringList stubPages = {
         QStringLiteral("配方与调宽"),
         QStringLiteral("手动控制"),
         QStringLiteral("报警"),
@@ -122,7 +126,7 @@ void MainWindow::createStubPages()
         QStringLiteral("I/O 与诊断"),
         QStringLiteral("用户与设置"),
     };
-    for (const QString &title : pages)
+    for (const QString &title : stubPages)
         m_pages->addWidget(makeStubPage(title));
 }
 

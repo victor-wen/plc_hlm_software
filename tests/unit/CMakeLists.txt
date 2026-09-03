@@ -182,6 +182,16 @@ target_link_libraries(test_shell PRIVATE
 
 add_test(NAME shell COMMAND test_shell)
 
-set_tests_properties(widgets shell PROPERTIES
+# --- Task 11: 总览 page (spec §9, §11.3) --------------------------------------
+
+add_executable(test_overview_page test_overview_page.cpp)
+target_link_libraries(test_overview_page PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+
+add_test(NAME overview_page COMMAND test_overview_page)
+
+set_tests_properties(widgets shell overview_page PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )

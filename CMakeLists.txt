@@ -145,6 +145,8 @@ add_library(hlm_ui STATIC
     src/ui/shell/alarm_banner.cpp
     src/ui/shell/nav_panel.cpp
     src/ui/shell/action_bar.cpp
+    src/ui/pages/overview_model.cpp
+    src/ui/pages/overview_page.cpp
     src/ui/widgets/hold_button.cpp
     src/ui/widgets/status_light.cpp
     src/ui/widgets/value_display.cpp
