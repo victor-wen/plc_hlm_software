@@ -10,6 +10,13 @@
 #
 # No virtual COM driver is installed in CI (spec §15.5 acceptance runs on a
 # local Windows machine with com0com; see docs/testing/rtu-simulator-acceptance.md).
+#
+# USER-REQUESTED CI OPTIMIZATION (2026-09-04):
+# Keep vcpkg caches enabled so repeated agent pushes do not rebuild/download
+# Qt, OpenCV, OpenSSL and the rest of the third-party dependency graph from
+# scratch on every fresh GitHub-hosted runner. This is intentionally a CI-only
+# change requested by the repository owner; it is not an application-code
+# change and should be preserved when rebasing/merging agent work.
 
 name: windows-build-test
 
@@ -20,6 +27,13 @@ on:
 
 permissions:
   contents: read
+
+# USER-REQUESTED CI OPTIMIZATION: when the remote agent pushes a newer commit,
+# the older run for the same branch is obsolete. Cancel it instead of wasting
+# runner time finishing vcpkg/build/test for stale source.
+concurrency:
+  group: windows-build-test-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -39,11 +53,19 @@ jobs:
         with:
           arch: x64
 
+      # USER-REQUESTED CI OPTIMIZATION: run-vcpkg already uses vcpkg binary
+      # caching for built packages on GitHub Actions. doNotCache=false also
+      # persists the vcpkg executable/data files, while binaryCachePath keeps
+      # the package cache location stable across Debug/Release/package jobs and
+      # subsequent workflow runs. Cache keys still follow the pinned baseline
+      # and manifest, so changing vcpkg.json/baseline invalidates stale entries.
       - name: Setup vcpkg (manifest mode, vcpkg.json)
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
           vcpkgJsonGlob: '**/vcpkg.json'
           runVcpkgInstall: true
+          doNotCache: false
+          binaryCachePath: '${{ runner.workspace }}/vcpkg-binary-cache'
 
       - name: Configure (HLM_ENABLE_VISION=ON)
         run: |
@@ -55,10 +77,11 @@ jobs:
       - name: Build
         run: cmake --build build --config ${{ matrix.config }}
 
-      # Keep independent test executables parallel for fast CI feedback.
-      # The timeout is also a safety guard: a hung Qt/GUI test (for example an
-      # offscreen widget event-loop hang) must fail and let the remaining tests
-      # continue instead of occupying a GitHub runner indefinitely.
+      # USER-REQUESTED CI OPTIMIZATION: keep independent test executables
+      # parallel for fast feedback. The timeout is also a safety guard: a hung
+      # Qt/GUI test (for example an offscreen widget event-loop hang) must fail
+      # and let the remaining tests continue instead of occupying a runner
+      # indefinitely.
       - name: Test (ctest)
         run: ctest --test-dir build -C ${{ matrix.config }} --parallel 4 --timeout 30 --output-on-failure
 
@@ -87,11 +110,16 @@ jobs:
         with:
           arch: x64
 
+      # Same user-requested vcpkg cache policy as the build matrix. Package
+      # should restore already-built dependency binaries instead of rebuilding
+      # the Qt/OpenCV/OpenSSL graph again after Debug/Release validation.
       - name: Setup vcpkg (manifest mode, vcpkg.json)
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
           vcpkgJsonGlob: '**/vcpkg.json'
           runVcpkgInstall: true
+          doNotCache: false
+          binaryCachePath: '${{ runner.workspace }}/vcpkg-binary-cache'
 
       - name: Configure (HLM_ENABLE_VISION=ON, Release)
         run: |
