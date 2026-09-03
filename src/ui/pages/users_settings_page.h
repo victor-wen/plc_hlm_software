@@ -89,6 +89,8 @@ public:
     void setParameterWriteResult(bool ok, const QString &detail);
     // 回显实际存储的串口配置 (Task 20 接线 DatabaseService::getSetting).
     void setSerialConfig(const SerialConfig &config);
+    // 串口配置保存结果 (Task 20 接线 DatabaseService::settingSaved + 重连).
+    void setSerialSaveResult(bool ok, const QString &detail);
 
 public slots:
     // Re-renders every widget from the model's current state.

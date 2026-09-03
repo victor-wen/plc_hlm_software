@@ -62,6 +62,16 @@ public:
     bool changePassword(qint64 userId, const QString &newPassword,
                         QString *error = nullptr);
 
+    // Creates a user with the given role (admin action, spec §11.3 用户增删改密).
+    // Returns false if the username is blank, the password is empty, the
+    // username already exists, or key derivation fails.
+    bool createUser(const QString &username, Role role, const QString &password,
+                    QString *error = nullptr);
+
+    // Deletes a user by id (admin action, spec §11.3). Returns false if the
+    // user does not exist.
+    bool deleteUser(qint64 id, QString *error = nullptr);
+
     // Overrides the lockout window (seconds). Test hook; default 30 (spec §11.5).
     void setLockoutSeconds(int seconds) { m_lockoutSeconds = seconds; }
 

@@ -524,6 +524,14 @@ void UsersSettingsPage::setSerialConfig(const SerialConfig &config)
     refresh();
 }
 
+void UsersSettingsPage::setSerialSaveResult(bool ok, const QString &detail)
+{
+    // 非乐观状态: 保存结果由 Task 20 回填 (spec §11.2).
+    m_serialStatus->setText(ok ? QStringLiteral("串口配置已保存并重连")
+                               : QStringLiteral("串口配置保存失败: %1").arg(detail));
+    refresh();
+}
+
 // --- actions ----------------------------------------------------------------------
 
 void UsersSettingsPage::onLoginClicked()

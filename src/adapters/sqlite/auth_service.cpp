@@ -191,4 +191,44 @@ bool AuthService::changePassword(qint64 userId, const QString &newPassword,
     return false;
 }
 
+bool AuthService::createUser(const QString &username, Role role,
+                             const QString &password, QString *error)
+{
+    if (username.trimmed().isEmpty()) {
+        if (error)
+            *error = QStringLiteral("username must not be empty");
+        return false;
+    }
+    if (password.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("password must not be empty");
+        return false;
+    }
+    if (m_users->findByName(username)) {
+        if (error)
+            *error = QStringLiteral("username already exists");
+        return false;
+    }
+    const auto u = makeUserRecord(username, role, password);
+    if (!u) {
+        if (error)
+            *error = QStringLiteral("failed to derive password hash");
+        return false;
+    }
+    if (!m_users->createUser(*u, error))
+        return false;
+    audit(m_audit, username, role, QStringLiteral("user.create"),
+          QStringLiteral("user"), QString(), AuditResult::Success, QString());
+    return true;
+}
+
+bool AuthService::deleteUser(qint64 id, QString *error)
+{
+    if (!m_users->deleteUser(id, error))
+        return false;
+    audit(m_audit, QStringLiteral("admin"), Role::Admin, QStringLiteral("user.delete"),
+          QStringLiteral("user"), QString(), AuditResult::Success, QString());
+    return true;
+}
+
 } // namespace hlm

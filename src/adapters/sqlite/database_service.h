@@ -60,6 +60,8 @@ public slots:
     void createInitialAdmin(const QString &username, const QString &password);
     void login(const QString &username, const QString &password);
     void changePassword(qint64 userId, const QString &newPassword);
+    void addUser(const QString &username, Role role, const QString &password);
+    void deleteUser(qint64 userId);
     void listUsers();
     void saveRecipe(const RecipeRecord &recipe);
     void deleteRecipe(qint64 id);
@@ -82,6 +84,8 @@ signals:
     void initialAdminCreated(bool ok, const QString &error);
     void loginResult(const LoginResult &result);
     void passwordChanged(bool ok, const QString &error);
+    void userAdded(bool ok, const QString &error);
+    void userDeleted(bool ok, const QString &error);
     void usersLoaded(const QVector<UserRecord> &users);
     void recipeSaved(bool ok, const QString &error);
     void recipeDeleted(bool ok, const QString &error);

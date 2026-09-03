@@ -172,6 +172,29 @@ void DatabaseService::listUsers()
     emit usersLoaded(m_users->allUsers());
 }
 
+void DatabaseService::addUser(const QString &username, Role role,
+                              const QString &password)
+{
+    if (!m_auth) {
+        emit userAdded(false, QStringLiteral("database restricted"));
+        return;
+    }
+    QString error;
+    const bool ok = m_auth->createUser(username, role, password, &error);
+    emit userAdded(ok, error);
+}
+
+void DatabaseService::deleteUser(qint64 userId)
+{
+    if (!m_auth) {
+        emit userDeleted(false, QStringLiteral("database restricted"));
+        return;
+    }
+    QString error;
+    const bool ok = m_auth->deleteUser(userId, &error);
+    emit userDeleted(ok, error);
+}
+
 void DatabaseService::saveRecipe(const RecipeRecord &recipe)
 {
     if (!m_recipes) {
