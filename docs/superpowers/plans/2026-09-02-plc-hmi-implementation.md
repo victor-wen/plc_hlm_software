@@ -39,7 +39,7 @@
 
 ### Task 1: 仓库、CMake 与 GitHub Actions 基线
 
-- [ ] **Owner:** `@coder`
+- [x] **Owner:** `@coder`
 - **Goal:** 完善仓库基础，建立 CMake 目标、依赖清单、测试入口、`.gitignore` 和 Windows GitHub Actions Debug/Release 构建矩阵。
 - **Files:** `CMakeLists.txt`、`vcpkg.json`、`.gitignore`、`.github/workflows/windows-build-test.yml`、`tests/unit/test_smoke.cpp`。
 - **Tests:** CMake 配置测试、目标链接冒烟测试、`ctest` 发现测试；CI 执行 Windows MSVC 2022 Debug/Release 构建。
@@ -49,7 +49,7 @@
 
 ### Task 2: 地址表、数据类型与设备快照
 
-- [ ] **Owner:** `@coder`
+- [x] **Owner:** `@coder`
 - **Goal:** 实现集中 `AddressTable`、故障码、数据质量和不可变 `DeviceSnapshot`。
 - **Files:** `src/domain/address_table.*`、`device_snapshot.*`、`fault_code.*`、`quality.*`、`tests/unit/test_snapshot_decode.cpp`。
 - **Tests:** D100/D103 位映射；D126/D127、D136/D137、D138/D139 字序；D210 有符号；D140 回绕；非法值质量。
@@ -59,7 +59,7 @@
 
 ### Task 3: 共享 H3U 模拟状态模型
 
-- [ ] **Owner:** `@coder`
+- [x] **Owner:** `@coder`
 - **Goal:** 实现两个模拟器共用的 `H3uSimulationModel`，覆盖复位、调宽、自动流程、故障、D140 和 M112。
 - **Files:** `src/adapters/simulator/h3u_simulation_model.*`、`simulation_clock.*`、`tests/unit/test_h3u_simulation_model.cpp`。
 - **Tests:** M43/M44/M45 互斥、目标锁存、SUB/MUL 不覆盖产量、动态超时、回原点故障 8/9、调宽故障 10、M112 两秒清位、模式和急停。
@@ -69,7 +69,7 @@
 
 ### Task 4: Modbus 请求队列与真实 PLC 网关
 
-- [ ] **Owner:** `@coder`
+- [x] **Owner:** `@coder`
 - **Goal:** 实现 `IPlcGateway`、`QModbusRtuSerialClient` 工作线程、单请求队列、轮询、写优先、重连和数据快照发布。
 - **Files:** `src/ports/iplc_gateway.h`、`src/adapters/modbus/qt_modbus_plc_gateway.*`、`request_queue.*`、`reconnect_policy.*`。
 - **Tests:** 请求优先级、防饥饿、三次失败离线、D140 冻结、1/2/5 秒退避、重连不重放命令。
@@ -79,7 +79,7 @@
 
 ### Task 5: 脉冲命令与 M112 心跳
 
-- [ ] **Owner:** `@coder`
+- [x] **Owner:** `@coder`
 - **Goal:** 实现 M101/M102/M103/M43 统一脉冲状态机和工作线程 M112 翻转。
 - **Files:** `src/adapters/modbus/pulse_state_machine.*`、`watchdog_timer.*`、对应单元测试。
 - **Tests:** 写 1 应答后保持至少 100 ms；清零最高优先级；不确定写不重复置 1；M112 每 500 ms 翻转且正常压力下应答间隔不超过 1 秒。
@@ -89,7 +89,7 @@
 
 ### Task 6: 进程内 PLC 网关
 
-- [ ] **Owner:** `@coder`
+- [x] **Owner:** `@coder`
 - **Goal:** 实现包装共享模型的 `SimulatedPlcGateway`，供应用和 UI 测试替代真实 PLC。
 - **Files:** `src/adapters/simulator/simulated_plc_gateway.*`、`tests/integration/test_simulated_gateway_flow.cpp`。
 - **Tests:** 复位→调宽→自动→启动→停止，以及失败、超时、急停、断线和恢复场景。
@@ -99,7 +99,7 @@
 
 ### Task 7: 控制协调器与权限互锁
 
-- [ ] **Owner:** `@coder`
+- [x] **Owner:** `@coder`
 - **Goal:** 实现复位、配方调宽、模式、启动、停止、软件急停、手动命令和屏蔽的统一业务协调。
 - **Files:** `src/application/control_coordinator.*`、`permission_policy.*`、`interlock_rules.*`、对应单元测试。
 - **Tests:** 权限矩阵全部组合；每个流程的前置条件、超时和结果收敛；注销清 M42/M106-M111；M100 不自动清除。
@@ -109,7 +109,7 @@
 
 ### Task 8: SQLite、认证、配方、报警和审计
 
-- [ ] **Owner:** `@coder`
+- [x] **Owner:** `@coder`
 - **Goal:** 实现数据库线程、迁移、用户认证、配方、设置、报警边沿、审计、365 天清理和滚动诊断日志。
 - **Files:** `src/adapters/sqlite/`、`src/ports/repositories.h`、`src/common/rolling_file_logger.*`、`tests/unit/test_*_repository.cpp`、`tests/unit/test_rolling_file_logger.cpp`。
 - **Tests:** PBKDF2 向量、账号锁定、迁移回滚、唯一约束、报警开始/恢复、未知代码、保留期、数据库受限模式、10×10 MiB 日志轮转和敏感信息脱敏。
@@ -119,7 +119,7 @@
 
 ### Task 9: OpenCV 隔离适配器
 
-- [ ] **Owner:** `@coder`
+- [x] **Owner:** `@coder`
 - **Goal:** 实现 `IVisionService` 和 OpenCV 版本/矩阵自检，不进入 PLC 控制闭环。
 - **Files:** `src/ports/ivision_service.h`、`src/adapters/vision/`、`tests/unit/test_vision_adapter.cpp`。
 - **Tests:** 自检成功、失败和关闭构建选项；视觉失败时 PLC 控制仍可运行。
@@ -129,7 +129,7 @@
 
 ### Task 10: UI 外壳与通用工业控件
 
-- [ ] **Owner:** `@frontend`
+- [x] **Owner:** `@frontend`
 - **Goal:** 实现顶部状态、报警横幅、左导航、右操作栏、主题和共享触摸控件。
 - **Files:** `src/ui/MainWindow.*`、`src/ui/shell/`、`src/ui/widgets/`、`src/ui/theme.qss`。
 - **Tests:** 导航、权限禁用原因、过期值、HoldButton 全部释放路径、无乐观状态、100/125/150% DPI。
@@ -139,7 +139,7 @@
 
 ### Task 11: 总览页面
 
-- [ ] **Owner:** `@frontend`
+- [x] **Owner:** `@frontend`
 - **Goal:** 展示设备状态、D120 步骤、宽度、差值、速度、产量和最新报警。
 - **Files:** `src/ui/pages/OverviewPage.*`、页面模型和测试。
 - **Tests:** 快照字段映射、过期显示“—”、只读页面不发送写意图。
@@ -149,7 +149,7 @@
 
 ### Task 12: 配方与调宽页面
 
-- [ ] **Owner:** `@frontend`
+- [x] **Owner:** `@frontend`
 - **Goal:** 实现配方 CRUD、宽度输入、应用确认、互锁原因和 M34/M44/M45 结果展示。
 - **Files:** `src/ui/pages/RecipeWidthPage.*`、页面模型和测试。
 - **Tests:** 选择配方不写 PLC；应用确认；50-400 校验；目标等于当前时只更新 D128、不发 M43；等待 PLC 结果。
@@ -159,7 +159,7 @@
 
 ### Task 13: 手动控制页面
 
-- [ ] **Owner:** `@frontend`
+- [x] **Owner:** `@frontend`
 - **Goal:** 实现点动、挡停、调宽速度、直通、常转和安全屏蔽界面。
 - **Files:** `src/ui/pages/ManualControlPage.*`、页面模型和测试。
 - **Tests:** 按下/释放/移出/失活/切页/弹窗/注销清零；权限、互锁、回读状态和离线禁用。
@@ -169,7 +169,7 @@
 
 ### Task 14: 报警页面
 
-- [ ] **Owner:** `@frontend`
+- [x] **Owner:** `@frontend`
 - **Goal:** 实现当前/历史 PLC 与 HMI 报警、日期和代码筛选。
 - **Files:** `src/ui/pages/AlarmPage.*`、过滤模型和测试。
 - **Tests:** 活动/恢复、未知代码、筛选、异步加载和 48 px 行高。
@@ -179,7 +179,7 @@
 
 ### Task 15: 操作记录页面
 
-- [ ] **Owner:** `@frontend`
+- [x] **Owner:** `@frontend`
 - **Goal:** 展示并筛选时间、用户、角色、动作、对象、脱敏参数、结果和失败原因。
 - **Files:** `src/ui/pages/AuditLogPage.*`、页面模型和测试。
 - **Tests:** 筛选、异步分页/滚动、匿名用户显示和敏感字段不渲染。
@@ -189,7 +189,7 @@
 
 ### Task 16: I/O 与诊断页面
 
-- [ ] **Owner:** `@frontend`
+- [x] **Owner:** `@frontend`
 - **Goal:** 展示原始状态字、已定义位、关键寄存器、通讯统计和 OpenCV 自检。
 - **Files:** `src/ui/pages/DiagnosticsPage.*`、页面模型和测试。
 - **Tests:** D100/D103 位展示、M50-M53/M100-M112、D140 活性、过期值和视觉失败隔离。
@@ -199,7 +199,7 @@
 
 ### Task 17: 用户与设置页面
 
-- [ ] **Owner:** `@frontend`
+- [x] **Owner:** `@frontend`
 - **Goal:** 实现登录、首次管理员、用户管理、会话提示、通讯配置和管理员参数设置。
 - **Files:** `src/ui/pages/UsersSettingsPage.*`、`src/ui/dialogs/`、页面模型和测试。
 - **Tests:** 未登录/操作员锁定、三次失败锁定、会话超时、D122 的 100-20000 范围、D204/D220 及频率乘积校验、注销清零意图。
@@ -209,7 +209,7 @@
 
 ### Task 18: 独立 RTU 模拟器后端
 
-- [ ] **Owner:** `@coder`
+- [x] **Owner:** `@coder`
 - **Goal:** 使用 `QModbusRtuSerialServer` 包装共享 H3U 模型，提供站号、虚拟 COM 和故障注入接口。
 - **Files:** `tools/plc_simulator/rtu_server.*`、`fault_injection.*`、对应测试。
 - **Tests:** 功能码 01/03/05/06、站号过滤、寄存器映射、延迟/异常/断线注入。
@@ -219,7 +219,7 @@
 
 ### Task 19: RTU 模拟器控制面板
 
-- [ ] **Owner:** `@frontend`
+- [x] **Owner:** `@frontend`
 - **Goal:** 实现模拟器连接、状态、寄存器和故障场景控制面板。
 - **Files:** `tools/plc_simulator/ControlPanel.*`、页面模型和测试。
 - **Tests:** 场景选择只调用后端接口；状态回显、无效配置和触摸/鼠标操作。
@@ -229,7 +229,7 @@
 
 ### Task 20: 应用组合与进程内集成测试
 
-- [ ] **Owner:** `@coder`
+- [x] **Owner:** `@coder`
 - **Goal:** 装配线程、端口、适配器和全部 UI，完成阶段 3 进程内集成测试。
 - **Files:** `src/app/application.*`、`configuration.*`、`lifecycle_controller.*`、`tests/integration/test_full_flow.cpp`。
 - **Tests:** 首次启动、登录、完整生产流程、故障、权限、持久化、重连、受限模式、退出清理和 M100 保持。
@@ -239,7 +239,7 @@
 
 ### Task 21: CI 打包与模拟 PLC 验收门
 
-- [ ] **Owner:** `@coder`
+- [x] **Owner:** `@coder`
 - **Goal:** 完成 GitHub Actions 的全量 Windows 构建/测试/打包，并编写本地虚拟 COM RTU 验收步骤和报告模板。
 - **Files:** `.github/workflows/windows-build-test.yml`、`scripts/package.ps1`、`scripts/check_deploy_deps.ps1`、`LICENSES/`、`docs/testing/rtu-simulator-acceptance.md`。
 - **Tests:** CI 重跑全部单元和进程内集成测试；打包依赖检查故意移除 DLL 时必须失败；本地执行 9600/19200 RTU 场景。
