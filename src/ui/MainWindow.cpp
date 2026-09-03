@@ -8,6 +8,7 @@
 #include "ui/pages/overview_page.h"
 #include "ui/pages/recipe_width_page.h"
 #include "ui/pages/manual_control_page.h"
+#include "ui/pages/alarm_page.h"
 #include "ui/widgets/hold_button.h"
 #include "ui/widgets/permission_button.h"
 
@@ -118,7 +119,8 @@ void MainWindow::createStubPages()
     // Order must match NavPanel's 7 items (spec §11.1, §11.3).
     // Index 0 (总览) is the real OverviewPage (Task 11); index 1 (配方与调宽)
     // is the real RecipeWidthPage (Task 12); index 2 (手动控制) is the real
-    // ManualControlPage (Task 13); the rest stay stubs until Tasks 14-17.
+    // ManualControlPage (Task 13); index 3 (报警) is the real AlarmPage
+    // (Task 14); the rest stay stubs until Tasks 15-17.
     m_pages->addWidget(new OverviewPage(*m_model, this));
     m_pages->addWidget(new RecipeWidthPage(*m_model, this));
     auto *manualPage = new ManualControlPage(*m_model, this);
@@ -127,9 +129,9 @@ void MainWindow::createStubPages()
     // window deactivation cancel active holds (spec §10.7).
     for (HoldButton *hb : manualPage->findChildren<HoldButton *>())
         registerHoldWidget(hb);
+    m_pages->addWidget(new AlarmPage(this));
 
     const QStringList stubPages = {
-        QStringLiteral("报警"),
         QStringLiteral("操作记录"),
         QStringLiteral("I/O 与诊断"),
         QStringLiteral("用户与设置"),

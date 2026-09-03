@@ -212,6 +212,16 @@ target_link_libraries(test_manual_control_page PRIVATE
 
 add_test(NAME manual_control_page COMMAND test_manual_control_page)
 
-set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page PROPERTIES
+# --- Task 14: 报警 page (spec §11.3, §12) ----------------------------------------
+
+add_executable(test_alarm_page test_alarm_page.cpp)
+target_link_libraries(test_alarm_page PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+
+add_test(NAME alarm_page COMMAND test_alarm_page)
+
+set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )
