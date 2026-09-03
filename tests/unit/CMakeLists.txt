@@ -252,6 +252,16 @@ target_link_libraries(test_users_settings_page PRIVATE
 
 add_test(NAME users_settings_page COMMAND test_users_settings_page)
 
+# --- Task 18: standalone RTU simulator backend (spec §14.3, §15.5) ----------
+
+add_executable(test_rtu_simulator test_rtu_simulator.cpp)
+target_link_libraries(test_rtu_simulator PRIVATE
+    plc_simulator
+    Qt6::Test
+)
+
+add_test(NAME rtu_simulator COMMAND test_rtu_simulator)
+
 set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )

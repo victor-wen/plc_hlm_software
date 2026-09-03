@@ -173,9 +173,23 @@ target_link_libraries(hlm_ui PUBLIC
     Qt6::Widgets
 )
 
+# plc_simulator: standalone RTU simulator backend (spec §14.3). Wraps the
+# shared H3uSimulationModel in a QModbusRtuSerialServer with an explicit
+# station and fault-injection interface. Task 19 adds the control panel and
+# the plc_simulator.exe executable.
+add_library(plc_simulator STATIC
+    tools/plc_simulator/rtu_server.cpp
+)
+target_include_directories(plc_simulator PUBLIC src tools ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(plc_simulator PUBLIC
+    hlm_simulator
+    Qt6::Core
+    Qt6::SerialBus
+    Qt6::SerialPort
+)
+
 # Planned targets added by later tasks (do not create empty targets now):
 #   hlm_app       -> all production modules above
-#   plc_simulator -> Qt6::SerialBus Qt6::SerialPort Qt6::Widgets + hlm_simulator
 
 # --- Tests ------------------------------------------------------------------
 enable_testing()
