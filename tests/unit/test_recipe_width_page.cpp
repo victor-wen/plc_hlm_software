@@ -108,6 +108,11 @@ private slots:
     void applyRequiresSecondConfirmation();
     void applyClickNeverShowsSuccess();
     void pageTargetEqualsCurrentDoesNotEmitApply();
+    void synchronousResultDuringApplyNotSwallowed();
+    void armedStateResetOnPageSwitch();
+    void armedStateResetOnGateChange();
+    void setRecipesClearsStaleEditorState();
+    void saveRejectsEmptyName();
 
     // --- page: rendering and permission gating --------------------------------
     void pageShowsStatusAndDisplays();
@@ -423,6 +428,130 @@ void RecipeWidthPageTest::pageTargetEqualsCurrentDoesNotEmitApply()
     clickAt(page.applyButton());
     QCOMPARE(spy.count(), 0);
     QVERIFY(page.statusText().contains(QStringLiteral("当前已是目标宽度")));
+}
+
+void RecipeWidthPageTest::synchronousResultDuringApplyNotSwallowed()
+{
+    ShellModel model;
+    RecipeWidthPage page(model);
+    model.setUser(QStringLiteral("admin"), Role::Admin);
+    model.updateSnapshot(DeviceSnapshot(validSnapshotData()));
+
+    // Task 20 wires the coordinator with a DIRECT connection: a synchronous
+    // rejection (e.g. interlock changed at click time) calls setAdjustResult
+    // inside the emit. The result must survive beginApply (regression: emit
+    // before beginApply swallowed it and left the UI stuck pending).
+    QObject::connect(&page, &RecipeWidthPage::applyAdjustRequested, &page,
+                     [&page](quint16) {
+                         page.setAdjustResult(false,
+                                              QStringLiteral("互锁已变化, 拒绝"));
+                     });
+
+    clickAt(page.applyButton()); // arm
+    clickAt(page.applyButton()); // confirm -> emit -> synchronous reject
+
+    QVERIFY(!page.statusText().contains(QStringLiteral("等待 PLC 结果")));
+    QVERIFY(page.statusText().contains(QStringLiteral("互锁已变化, 拒绝")));
+}
+
+void RecipeWidthPageTest::armedStateResetOnPageSwitch()
+{
+    MainWindow w;
+    w.resize(1920, 1080);
+    w.show();
+    RecipeWidthPage *page = w.findChild<RecipeWidthPage *>();
+    QVERIFY(page != nullptr);
+    w.shellModel()->setUser(QStringLiteral("admin"), Role::Admin);
+    w.shellModel()->updateSnapshot(DeviceSnapshot(validSnapshotData()));
+    QApplication::processEvents();
+
+    w.setCurrentPage(1);
+    QVERIFY(page->isVisible());
+    clickAt(page->applyButton()); // arm
+    QCOMPARE(page->applyButton()->text(), QStringLiteral("确认应用?"));
+
+    // Switching away and back clears the armed confirmation (spec §11.1-§11.2
+    // 页面切换清零意图): the next click re-arms instead of dispatching.
+    w.setCurrentPage(0);
+    QVERIFY(!page->isVisible());
+    w.setCurrentPage(1);
+    QVERIFY(page->isVisible());
+    QCOMPARE(page->applyButton()->text(), QStringLiteral("应用并调宽"));
+
+    QSignalSpy spy(page, &RecipeWidthPage::applyAdjustRequested);
+    clickAt(page->applyButton());
+    QCOMPARE(spy.count(), 0); // re-armed, nothing dispatched
+    QCOMPARE(page->applyButton()->text(), QStringLiteral("确认应用?"));
+}
+
+void RecipeWidthPageTest::armedStateResetOnGateChange()
+{
+    ShellModel model;
+    RecipeWidthPage page(model);
+    model.setUser(QStringLiteral("admin"), Role::Admin);
+    model.updateSnapshot(DeviceSnapshot(validSnapshotData()));
+
+    clickAt(page.applyButton()); // arm
+    QCOMPARE(page.applyButton()->text(), QStringLiteral("确认应用?"));
+
+    // A gate change that disables apply (M34=1 调宽中) resets the armed
+    // confirmation; re-enabling later requires a fresh confirm.
+    DeviceSnapshotData adjusting = validSnapshotData();
+    adjusting.statusWord3 = (quint16(1) << 4); // M34
+    model.updateSnapshot(DeviceSnapshot(adjusting));
+    QVERIFY(!page.applyButton()->isEnabled());
+    QCOMPARE(page.applyButton()->text(), QStringLiteral("应用并调宽"));
+
+    model.updateSnapshot(DeviceSnapshot(validSnapshotData()));
+    QVERIFY(page.applyButton()->isEnabled());
+    QSignalSpy spy(&page, &RecipeWidthPage::applyAdjustRequested);
+    clickAt(page.applyButton());
+    QCOMPARE(spy.count(), 0); // re-armed, nothing dispatched
+    QCOMPARE(page.applyButton()->text(), QStringLiteral("确认应用?"));
+}
+
+void RecipeWidthPageTest::setRecipesClearsStaleEditorState()
+{
+    ShellModel model;
+    RecipeWidthPage page(model);
+    model.setUser(QStringLiteral("admin"), Role::Admin);
+    model.updateSnapshot(DeviceSnapshot(validSnapshotData()));
+
+    page.setRecipes({recipe(1, QStringLiteral("窄幅"), 180)});
+    page.recipeList()->setCurrentRow(0); // loads 窄幅/180 into the editor
+    QCOMPARE(page.nameEdit()->text(), QStringLiteral("窄幅"));
+    QCOMPARE(page.widthSpin()->value(), 180);
+
+    // Reloading the list clears the stale editor/selection state.
+    page.setRecipes({recipe(2, QStringLiteral("宽幅"), 350)});
+    QCOMPARE(page.recipeList()->currentRow(), -1);
+    QVERIFY(page.nameEdit()->text().isEmpty());
+    QCOMPARE(page.widthSpin()->value(), 50);
+}
+
+void RecipeWidthPageTest::saveRejectsEmptyName()
+{
+    ShellModel model;
+    RecipeWidthPage page(model);
+    model.setUser(QStringLiteral("admin"), Role::Admin);
+    model.updateSnapshot(DeviceSnapshot(validSnapshotData()));
+    QSignalSpy spy(&page, &RecipeWidthPage::saveRecipeRequested);
+
+    // Empty name: no save request is emitted.
+    page.nameEdit()->clear();
+    clickAt(page.saveButton());
+    QCOMPARE(spy.count(), 0);
+
+    // Whitespace-only name: still rejected.
+    page.nameEdit()->setText(QStringLiteral("   "));
+    clickAt(page.saveButton());
+    QCOMPARE(spy.count(), 0);
+
+    // Valid name: request emitted with the trimmed name.
+    page.nameEdit()->setText(QStringLiteral("  窄幅  "));
+    clickAt(page.saveButton());
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.takeFirst().at(0).toString(), QStringLiteral("窄幅"));
 }
 
 // --- page: rendering and permission gating -------------------------------------

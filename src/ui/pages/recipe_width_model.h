@@ -77,8 +77,6 @@ private slots:
     void onShellStateChanged();
 
 private:
-    bool fresh() const;
-
     const ShellModel &m_model;
     QVector<RecipeRecord> m_recipes;
     std::optional<RecipeRecord> m_selected;

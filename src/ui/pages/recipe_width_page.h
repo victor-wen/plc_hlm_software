@@ -11,6 +11,7 @@ class QLineEdit;
 class QSpinBox;
 class QListWidget;
 class QVBoxLayout;
+class QHideEvent;
 
 namespace hlm {
 
@@ -62,14 +63,20 @@ signals:
     void saveRecipeRequested(const QString &name, int targetWidthMm);
     void deleteRecipeRequested(qint64 recipeId);
 
+protected:
+    // Page switch (QStackedWidget hides the page) clears the armed
+    // confirmation (spec §11.1-§11.2 页面切换清零意图).
+    void hideEvent(QHideEvent *event) override;
+
 private:
     void buildLayout();
-    ValueDisplay *addField(const QString &key, const QString &title,
-                           QVBoxLayout *column);
+    ValueDisplay *addField(const QString &key, const QString &title);
     void onApplyClicked();
     void onRecipeSelected(int row);
     void onSaveClicked();
     void onDeleteClicked();
+    // Resets the two-step confirmation to the idle label.
+    void disarmApply();
 
     ShellModel &m_model;
     RecipeWidthModel m_pageModel;

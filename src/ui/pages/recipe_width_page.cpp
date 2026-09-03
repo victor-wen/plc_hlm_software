@@ -13,6 +13,7 @@
 #include <QGridLayout>
 #include <QFrame>
 #include <QHash>
+#include <QHideEvent>
 
 namespace hlm {
 
@@ -51,15 +52,15 @@ void RecipeWidthPage::buildLayout()
     auto *leftColumn = new QVBoxLayout();
     auto *rightColumn = new QVBoxLayout();
     leftColumn->addWidget(addField(QStringLiteral("targetWidth"),
-                                   QStringLiteral("目标宽度 (D128)"), nullptr));
+                                   QStringLiteral("目标宽度 (D128)")));
     leftColumn->addWidget(addField(QStringLiteral("currentWidth"),
-                                   QStringLiteral("当前宽度 (D130)"), nullptr));
+                                   QStringLiteral("当前宽度 (D130)")));
     leftColumn->addWidget(addField(QStringLiteral("widthDelta"),
-                                   QStringLiteral("调宽差值 (D210)"), nullptr));
+                                   QStringLiteral("调宽差值 (D210)")));
     rightColumn->addWidget(addField(QStringLiteral("pulsePerMm"),
-                                    QStringLiteral("脉冲当量 (D204)"), nullptr));
+                                    QStringLiteral("脉冲当量 (D204)")));
     rightColumn->addWidget(addField(QStringLiteral("widthSpeed"),
-                                    QStringLiteral("调宽速度 (D220)"), nullptr));
+                                    QStringLiteral("调宽速度 (D220)")));
     grid->addLayout(leftColumn, 0, 0);
     grid->addLayout(rightColumn, 0, 1);
     grid->setColumnStretch(0, 1);
@@ -138,10 +139,8 @@ void RecipeWidthPage::buildLayout()
             [this](int v) { m_pageModel.setEditedWidth(v); });
 }
 
-ValueDisplay *RecipeWidthPage::addField(const QString &key, const QString &title,
-                                       QVBoxLayout *column)
+ValueDisplay *RecipeWidthPage::addField(const QString &key, const QString &title)
 {
-    Q_UNUSED(column);
     auto *titleWrap = new QWidget(this);
     auto *layout = new QVBoxLayout(titleWrap);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -176,6 +175,11 @@ void RecipeWidthPage::setRecipes(const QVector<RecipeRecord> &recipes)
     m_recipeList->clear();
     for (const RecipeRecord &r : recipes)
         m_recipeList->addItem(QStringLiteral("%1  (%2 mm)").arg(r.name).arg(r.targetWidthMm));
+    // Reloading the recipe list clears the stale editor/selection state so a
+    // previously loaded recipe does not linger after the list changes.
+    m_recipeList->setCurrentRow(-1);
+    m_nameEdit->clear();
+    m_widthSpin->setValue(50);
     refresh();
 }
 
@@ -193,17 +197,33 @@ void RecipeWidthPage::onApplyClicked()
         m_apply->setText(QStringLiteral("确认应用?"));
         return;
     }
-    m_applyArmed = false;
-    m_apply->setText(QStringLiteral("应用并调宽"));
+    disarmApply();
 
     // 目标 == 当前: 显示"当前已是目标宽度"并结束, 不发命令 (spec §10.3 step 3).
     if (m_pageModel.targetEqualsCurrent()) {
         refresh();
         return;
     }
-    emit applyAdjustRequested(quint16(m_widthSpin->value()));
+    // beginApply BEFORE emitting: a direct/synchronous connection (Task 20)
+    // may call setAdjustResult immediately (e.g. instant rejection); the
+    // result must not be swallowed by beginApply resetting the pending state.
     m_pageModel.beginApply(quint16(m_widthSpin->value()));
+    emit applyAdjustRequested(quint16(m_widthSpin->value()));
     refresh();
+}
+
+void RecipeWidthPage::disarmApply()
+{
+    m_applyArmed = false;
+    m_apply->setText(QStringLiteral("应用并调宽"));
+}
+
+void RecipeWidthPage::hideEvent(QHideEvent *event)
+{
+    // Page switch (QStackedWidget hides the page) clears the armed
+    // confirmation (spec §11.1-§11.2 页面切换清零意图).
+    disarmApply();
+    QWidget::hideEvent(event);
 }
 
 void RecipeWidthPage::onRecipeSelected(int row)
@@ -219,7 +239,12 @@ void RecipeWidthPage::onRecipeSelected(int row)
 
 void RecipeWidthPage::onSaveClicked()
 {
-    emit saveRecipeRequested(m_nameEdit->text(), m_widthSpin->value());
+    // Guard against programmatic/empty saves: a recipe needs a non-empty
+    // name and a width within the D128 range (spec §10.3).
+    const QString name = m_nameEdit->text().trimmed();
+    if (name.isEmpty() || !m_pageModel.canEditRecipes())
+        return;
+    emit saveRecipeRequested(name, m_widthSpin->value());
 }
 
 void RecipeWidthPage::onDeleteClicked()
@@ -257,6 +282,11 @@ void RecipeWidthPage::refresh()
     const QStringList reasons = m_pageModel.applyUnmetReasons();
     m_apply->setEnabledWithReason(m_pageModel.canApply(),
                                   reasons.join(QStringLiteral("；")));
+    // A gate change that disables apply must not leave a stale armed
+    // confirmation: the next click would dispatch without a fresh confirm
+    // (spec §11.1-§11.2 门控变化清零意图).
+    if (!m_apply->isEnabled() && m_applyArmed)
+        disarmApply();
     const bool canEdit = m_pageModel.canEditRecipes();
     const QString permReason = canEdit ? QString()
                                        : QStringLiteral("需要管理员权限");
