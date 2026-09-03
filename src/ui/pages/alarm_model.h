@@ -71,6 +71,7 @@ private:
     QString m_failureReason;
     std::optional<QDate> m_from;
     std::optional<QDate> m_to;
+    bool m_invalidRange = false;
     QString m_codeFilter;
 };
 

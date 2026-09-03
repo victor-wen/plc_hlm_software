@@ -53,6 +53,11 @@ void AlarmPage::buildLayout()
     m_dateFrom->setCalendarPopup(true);
     m_dateFrom->setDisplayFormat(QStringLiteral("yyyy-MM-dd"));
     m_dateFrom->setMinimumHeight(48); // 触摸目标 >= 48 px (spec §11.1)
+    // 默认"全部": 哨兵日期显示为"全部", 映射到模型为 nullopt (无日期筛选),
+    // 保证显示值与模型筛选状态一致 (review finding: 初始日期从未推给模型).
+    m_dateFrom->setSpecialValueText(QStringLiteral("全部"));
+    m_dateFrom->setMinimumDate(sentinelDate());
+    m_dateFrom->setDate(sentinelDate());
     filterRow->addWidget(m_dateFrom);
 
     auto *toLabel = new QLabel(QStringLiteral("至"), this);
@@ -62,6 +67,9 @@ void AlarmPage::buildLayout()
     m_dateTo->setCalendarPopup(true);
     m_dateTo->setDisplayFormat(QStringLiteral("yyyy-MM-dd"));
     m_dateTo->setMinimumHeight(48);
+    m_dateTo->setSpecialValueText(QStringLiteral("全部"));
+    m_dateTo->setMinimumDate(sentinelDate());
+    m_dateTo->setDate(sentinelDate());
     filterRow->addWidget(m_dateTo);
 
     auto *codeLabel = new QLabel(QStringLiteral("代码/内容"), this);
@@ -107,13 +115,19 @@ void AlarmPage::buildLayout()
     root->addWidget(m_table, /*stretch=*/1);
 
     // --- wiring: filters re-render the table; reload requests fresh data ----------
+    // 哨兵日期 (显示"全部") 映射为 nullopt, 真实日期推给模型: 显示值与筛选
+    // 状态始终一致 (review finding: 初始日期从未推给模型).
     connect(m_dateFrom, &QDateEdit::dateChanged, this, [this](const QDate &d) {
-        m_model.setDateRange(d, m_model.dateTo());
+        const std::optional<QDate> from =
+            (d == sentinelDate()) ? std::nullopt : std::optional<QDate>(d);
+        m_model.setDateRange(from, m_model.dateTo());
         refreshTable();
         refreshStatus();
     });
     connect(m_dateTo, &QDateEdit::dateChanged, this, [this](const QDate &d) {
-        m_model.setDateRange(m_model.dateFrom(), d);
+        const std::optional<QDate> to =
+            (d == sentinelDate()) ? std::nullopt : std::optional<QDate>(d);
+        m_model.setDateRange(m_model.dateFrom(), to);
         refreshTable();
         refreshStatus();
     });
@@ -183,7 +197,12 @@ void AlarmPage::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
     // Page switch to 报警: request fresh data (async load, Task 20 wires it).
-    emit requestReload();
+    // Only on the first show — showEvent also fires on window restore from
+    // minimize, which would otherwise trigger redundant reloads (review finding).
+    if (m_firstShow) {
+        m_firstShow = false;
+        emit requestReload();
+    }
 }
 
 } // namespace hlm

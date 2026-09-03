@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QDate>
 #include <QWidget>
 #include <QVector>
 
@@ -64,6 +65,11 @@ private:
     void refreshTable();
     void refreshStatus();
 
+    // Sentinel date shown as "全部" (no date filtering). Any real user-picked
+    // date is mapped to the model; the sentinel maps to std::nullopt so the
+    // displayed value and the model filter always agree.
+    static QDate sentinelDate() { return QDate(1900, 1, 1); }
+
     AlarmModel m_model;
     QTableWidget *m_table = nullptr;
     QDateEdit *m_dateFrom = nullptr;
@@ -71,6 +77,7 @@ private:
     QLineEdit *m_codeFilter = nullptr;
     QPushButton *m_reload = nullptr;
     QLabel *m_status = nullptr;
+    bool m_firstShow = true;
 };
 
 } // namespace hlm

@@ -31,6 +31,7 @@ void AlarmModel::setDateRange(const std::optional<QDate> &from,
 {
     m_from = from;
     m_to = to;
+    m_invalidRange = from.has_value() && to.has_value() && *from > *to;
     refilter();
 }
 
@@ -43,6 +44,9 @@ void AlarmModel::setCodeFilter(const QString &text)
 void AlarmModel::refilter()
 {
     m_filtered.clear();
+    // 起止日期倒置 (from > to): 无有效范围, 不匹配任何记录.
+    if (m_invalidRange)
+        return;
     for (const AlarmEventRecord &r : m_all) {
         const QDate started = r.startedAt.date();
         if (m_from && started < *m_from)
@@ -131,8 +135,15 @@ QString AlarmModel::statusText() const
     case LoadState::Failed:
         return QStringLiteral("报警数据加载失败: %1").arg(m_failureReason);
     case LoadState::Loaded:
-        if (m_filtered.isEmpty())
-            return QStringLiteral("无报警记录");
+        if (m_invalidRange)
+            return QStringLiteral("起止日期无效: 开始日期晚于结束日期");
+        if (m_filtered.isEmpty()) {
+            // 有筛选条件但无匹配记录 vs 无数据 (spec §11.3 状态行).
+            const bool filtersActive = m_from.has_value() || m_to.has_value()
+                                       || !m_codeFilter.isEmpty();
+            return filtersActive ? QStringLiteral("无匹配记录")
+                                 : QStringLiteral("无报警记录");
+        }
         return QStringLiteral("共 %1 条报警记录").arg(m_filtered.size());
     }
     return QString();

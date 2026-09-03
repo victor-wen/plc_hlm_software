@@ -79,6 +79,15 @@ private slots:
     // --- page: 渲染 --------------------------------------------------------------
     void pageRendersFilteredRows();
 
+    // --- page: 日期筛选控件与模型联动 (review finding 回归) ----------------------
+    void dateEditsDefaultToAllAndMatchModel();
+    void dateEditChangeFiltersModel();
+    void dateEditResetToAllClearsFilter();
+    void invalidDateRangeShowsMessage();
+
+    // --- page: showEvent 仅首次触发 reload (review finding) ----------------------
+    void showEventReloadsOnlyOnce();
+
     // --- MainWindow integration --------------------------------------------------
     void mainWindowUsesAlarmPage();
 };
@@ -338,6 +347,109 @@ void AlarmPageTest::pageRendersFilteredRows()
     page.codeFilterEdit()->setText(QStringLiteral("2"));
     QCOMPARE(page.table()->rowCount(), 1);
     QCOMPARE(page.table()->item(0, 2)->text(), QStringLiteral("2"));
+}
+
+// --- page: 日期筛选控件与模型联动 (review finding 回归) --------------------------
+
+void AlarmPageTest::dateEditsDefaultToAllAndMatchModel()
+{
+    // 初始状态: 两个日期字段都显示"全部" (哨兵日期), 模型无日期筛选 —
+    // 显示值与筛选状态一致 (review finding: 初始日期从未推给模型).
+    AlarmPage page;
+    QCOMPARE(page.dateFromEdit()->text(), QStringLiteral("全部"));
+    QCOMPARE(page.dateToEdit()->text(), QStringLiteral("全部"));
+    QVERIFY(!page.model()->dateFrom().has_value());
+    QVERIFY(!page.model()->dateTo().has_value());
+}
+
+void AlarmPageTest::dateEditChangeFiltersModel()
+{
+    AlarmPage page;
+    const QDateTime d1(QDate(2026, 8, 1), QTime(10, 0));
+    const QDateTime d2(QDate(2026, 8, 15), QTime(10, 0));
+    const QDateTime d3(QDate(2026, 9, 1), QTime(10, 0));
+    page.setAlarms({
+        alarm(1, AlarmSource::Plc, 1, QStringLiteral("急停"),
+              AlarmSeverity::Critical, d1, QDateTime()),
+        alarm(2, AlarmSource::Plc, 2, QStringLiteral("安全门打开"),
+              AlarmSeverity::Warning, d2, QDateTime()),
+        alarm(3, AlarmSource::Plc, 3, QStringLiteral("安全光栅遮挡"),
+              AlarmSeverity::Warning, d3, QDateTime()),
+    });
+    QCOMPARE(page.table()->rowCount(), 3);
+
+    // 设置"从"日期: 字段显示真实日期, 模型同步筛选.
+    page.dateFromEdit()->setDate(QDate(2026, 8, 15));
+    QCOMPARE(page.model()->dateFrom(), std::optional<QDate>(QDate(2026, 8, 15)));
+    QCOMPARE(page.table()->rowCount(), 2);
+    QCOMPARE(page.table()->item(0, 2)->text(), QStringLiteral("2"));
+
+    // 设置"至"日期: 字段与模型一致.
+    page.dateToEdit()->setDate(QDate(2026, 8, 15));
+    QCOMPARE(page.model()->dateTo(), std::optional<QDate>(QDate(2026, 8, 15)));
+    QCOMPARE(page.table()->rowCount(), 1);
+    QCOMPARE(page.table()->item(0, 2)->text(), QStringLiteral("2"));
+}
+
+void AlarmPageTest::dateEditResetToAllClearsFilter()
+{
+    AlarmPage page;
+    const QDateTime t = QDateTime::currentDateTime();
+    page.setAlarms({
+        alarm(1, AlarmSource::Plc, 1, QStringLiteral("急停"),
+              AlarmSeverity::Critical, t, QDateTime()),
+        alarm(2, AlarmSource::Plc, 2, QStringLiteral("安全门打开"),
+              AlarmSeverity::Warning, t, QDateTime()),
+    });
+    page.dateFromEdit()->setDate(QDate(2026, 8, 15));
+    page.dateToEdit()->setDate(QDate(2026, 8, 20));
+    QCOMPARE(page.table()->rowCount(), 0);
+
+    // 重置回"全部": 模型筛选清除, 显示值与模型一致.
+    page.dateFromEdit()->setDate(page.dateFromEdit()->minimumDate());
+    QCOMPARE(page.dateFromEdit()->text(), QStringLiteral("全部"));
+    QVERIFY(!page.model()->dateFrom().has_value());
+    QCOMPARE(page.table()->rowCount(), 0); // "至" 仍生效
+
+    page.dateToEdit()->setDate(page.dateToEdit()->minimumDate());
+    QCOMPARE(page.dateToEdit()->text(), QStringLiteral("全部"));
+    QVERIFY(!page.model()->dateTo().has_value());
+    QCOMPARE(page.table()->rowCount(), 2);
+}
+
+void AlarmPageTest::invalidDateRangeShowsMessage()
+{
+    AlarmPage page;
+    const QDateTime t = QDateTime::currentDateTime();
+    page.setAlarms({
+        alarm(1, AlarmSource::Plc, 1, QStringLiteral("急停"),
+              AlarmSeverity::Critical, t, QDateTime()),
+    });
+    // from > to: 无有效范围, 不匹配任何记录, 状态行给出明确提示.
+    page.dateFromEdit()->setDate(QDate(2026, 9, 1));
+    page.dateToEdit()->setDate(QDate(2026, 8, 1));
+    QCOMPARE(page.table()->rowCount(), 0);
+    QVERIFY(page.statusText().contains(QStringLiteral("起止日期无效")));
+
+    // 修正范围后恢复.
+    page.dateToEdit()->setDate(QDate(2026, 9, 30));
+    QCOMPARE(page.table()->rowCount(), 1);
+    QVERIFY(page.statusText().contains(QStringLiteral("共 1 条")));
+}
+
+// --- page: showEvent 仅首次触发 reload (review finding) --------------------------
+
+void AlarmPageTest::showEventReloadsOnlyOnce()
+{
+    AlarmPage page;
+    QSignalSpy spy(&page, &AlarmPage::requestReload);
+    page.show();
+    QCOMPARE(spy.count(), 1);
+
+    // 再次 show (如窗口从最小化恢复): 不应重复触发 reload.
+    page.hide();
+    page.show();
+    QCOMPARE(spy.count(), 1);
 }
 
 // --- MainWindow integration ----------------------------------------------------------
