@@ -1,0 +1,112 @@
+/* PLC HMI industrial theme (spec §11.1, §11.2).
+ *
+ * Design rules:
+ * - High contrast, large touch targets (>= 48 px), main control buttons
+ *   >= 72 px high, table rows >= 48 px.
+ * - Status colors (§11.2): green=online/ready, blue=auto/sending,
+ *   amber=manual/warning, red=fault/estop, gray=offline/unknown.
+ * - Color is never the only channel; widgets always pair color with text.
+ */
+
+QMainWindow#mainWindow {
+    background-color: #eceff3;
+}
+
+/* --- top status bar (~72 px) --- */
+QWidget#topBar {
+    background-color: #24303e;
+}
+
+QLabel#appName {
+    color: white;
+    font-size: 22px;
+    font-weight: bold;
+}
+
+QLabel#clockLabel {
+    color: #cfd8e0;
+    font-size: 16px;
+}
+
+/* --- alarm banner (~40 px) --- */
+QWidget#alarmBannerOk {
+    background-color: #2e9e4f; /* green 无报警 (spec §11.1) */
+}
+
+QWidget#alarmBannerActive {
+    background-color: #c42b2b; /* red active alarm */
+}
+
+QWidget#alarmBannerOk QLabel,
+QWidget#alarmBannerActive QLabel {
+    color: white;
+    font-size: 18px;
+    font-weight: bold;
+}
+
+/* --- left navigation (~176 px) --- */
+QWidget#navPanel {
+    background-color: #2c3a49;
+}
+
+QListWidget#navList {
+    background-color: #2c3a49;
+    color: #e6edf3;
+    border: none;
+    outline: none;
+    font-size: 17px;
+}
+
+QListWidget#navList::item {
+    height: 64px; /* >= 48 px touch target (spec §11.1) */
+    padding-left: 16px;
+    border-bottom: 1px solid #22303d;
+}
+
+QListWidget#navList::item:selected {
+    background-color: #2f6fd0;
+    color: white;
+}
+
+QListWidget#navList::item:hover:!selected {
+    background-color: #3a4c5f;
+}
+
+/* --- right action bar (~192 px) --- */
+QWidget#actionBar {
+    background-color: #dfe5ec;
+}
+
+QWidget#actionBar QPushButton {
+    font-size: 18px;
+    font-weight: bold;
+    border: 1px solid #b6c0cc;
+    border-radius: 6px;
+    background-color: #f4f7fa;
+}
+
+QWidget#actionBar QPushButton:pressed {
+    background-color: #cfe0f5;
+}
+
+/* --- shared widgets --- */
+QPushButton {
+    min-height: 48px; /* touch target (spec §11.1) */
+    padding: 8px 16px;
+}
+
+QTableView {
+    alternate-background-color: #f6f8fa;
+    gridline-color: #c8d0d9;
+}
+
+QTableView QHeaderView::section {
+    min-height: 48px; /* table rows >= 48 px (spec §11.1) */
+    background-color: #d5dce4;
+    border: 1px solid #b6c0cc;
+    font-weight: bold;
+}
+
+QDialog {
+    background-color: #eceff3;
+}

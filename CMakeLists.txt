@@ -30,7 +30,7 @@ option(HLM_ENABLE_VISION "Build the hlm_vision module (requires OpenCV 4.x)" ON)
 # Qt: >= 6.4 for local dev (Ubuntu 24.04 ships 6.4.2); CI pins 6.8.x via the
 # vcpkg manifest (vcpkg.json). Only components used by current targets are
 # requested; later tasks add Widgets/Sql as needed.
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core Test SerialBus SerialPort Sql)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Core Test SerialBus SerialPort Sql Widgets)
 
 # OpenSSL 3.x Crypto: password derivation in hlm_core (spec §17).
 find_package(OpenSSL 3 REQUIRED)
@@ -134,8 +134,28 @@ if(HLM_ENABLE_VISION)
     )
 endif()
 
+# hlm_ui: Qt Widgets UI shell and shared industrial widgets (spec §6, §11).
+# UI never touches Modbus or SQL directly; it binds to ShellModel which the
+# app shell wires to the application layer.
+add_library(hlm_ui STATIC
+    src/ui/MainWindow.cpp
+    src/ui/shell/shell_model.cpp
+    src/ui/shell/top_bar.cpp
+    src/ui/shell/alarm_banner.cpp
+    src/ui/shell/nav_panel.cpp
+    src/ui/shell/action_bar.cpp
+    src/ui/widgets/hold_button.cpp
+    src/ui/widgets/status_light.cpp
+    src/ui/widgets/value_display.cpp
+    src/ui/widgets/permission_button.cpp
+)
+target_include_directories(hlm_ui PUBLIC src)
+target_link_libraries(hlm_ui PUBLIC
+    hlm_core
+    Qt6::Widgets
+)
+
 # Planned targets added by later tasks (do not create empty targets now):
-#   hlm_ui        -> Qt6::Widgets
 #   hlm_app       -> all production modules above
 #   plc_simulator -> Qt6::SerialBus Qt6::SerialPort Qt6::Widgets + hlm_simulator
 

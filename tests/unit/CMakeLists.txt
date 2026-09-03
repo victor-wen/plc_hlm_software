@@ -161,3 +161,27 @@ if(HLM_ENABLE_VISION)
 
     add_test(NAME vision_adapter COMMAND test_vision_adapter)
 endif()
+
+# --- Task 10: UI shell and shared industrial widgets (spec §11) --------------
+# Widget tests need a QApplication (QTEST_MAIN) and run headless via
+# QT_QPA_PLATFORM=offscreen (CI has no display).
+
+add_executable(test_widgets test_widgets.cpp)
+target_link_libraries(test_widgets PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+
+add_test(NAME widgets COMMAND test_widgets)
+
+add_executable(test_shell test_shell.cpp)
+target_link_libraries(test_shell PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+
+add_test(NAME shell COMMAND test_shell)
+
+set_tests_properties(widgets shell PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
+)
