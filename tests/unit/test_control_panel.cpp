@@ -98,6 +98,7 @@ private slots:
     // --- scenario selection only touches the backend -------------------------
     void scenarioSelectionOnlyTouchesFaultInjector();
     void conditionalFailureScenarioForcesM45();
+    void scenarioSpinboxValuesReachFaultInjector();
 
     // --- state echo ----------------------------------------------------------
     void connectionStatusReflectsStartStop();
@@ -203,6 +204,46 @@ void ControlPanelTest::conditionalFailureScenarioForcesM45()
     QVERIFY(model.readCoil(45));
     QVERIFY(!model.readCoil(34));
     QVERIFY(!model.readCoil(44));
+}
+
+void ControlPanelTest::scenarioSpinboxValuesReachFaultInjector()
+{
+    // Task 19 review: the parameter spinboxes were dead UI — their values were
+    // never forwarded to the FaultInjector. Pre-fill each spinbox, then select
+    // the matching scenario and verify the value reached the backend.
+    SimulationClock clock;
+    H3uSimulationModel model(clock);
+    ControlPanel widget(model);
+    widget.show();
+    QApplication::processEvents();
+
+    // Delay: pre-fill 500 ms, then select 延迟.
+    widget.delaySpin()->setValue(500);
+    const int delayIndex =
+        widget.scenarioCombo()->findText(QStringLiteral("延迟"));
+    QVERIFY(delayIndex >= 0);
+    widget.scenarioCombo()->setCurrentIndex(delayIndex);
+    QCOMPARE(widget.faults().scenario(), FaultInjector::Scenario::Delay);
+    QCOMPARE(widget.faults().delayMs(), 500);
+
+    // Exception code: pre-fill 0x0B, then select 异常响应.
+    widget.exceptionSpin()->setValue(0x0B);
+    const int excIndex =
+        widget.scenarioCombo()->findText(QStringLiteral("异常响应"));
+    QVERIFY(excIndex >= 0);
+    widget.scenarioCombo()->setCurrentIndex(excIndex);
+    QCOMPARE(widget.faults().scenario(),
+             FaultInjector::Scenario::ExceptionResponse);
+    QCOMPARE(int(widget.faults().exceptionCode()), 0x0B);
+
+    // Fault code: pre-fill 3, then select 故障代码.
+    widget.faultCodeSpin()->setValue(3);
+    const int fcIndex =
+        widget.scenarioCombo()->findText(QStringLiteral("故障代码"));
+    QVERIFY(fcIndex >= 0);
+    widget.scenarioCombo()->setCurrentIndex(fcIndex);
+    QCOMPARE(widget.faults().scenario(), FaultInjector::Scenario::FaultCode);
+    QCOMPARE(widget.faults().faultCode(), 3);
 }
 
 // --- state echo ----------------------------------------------------------------
@@ -376,15 +417,21 @@ void ControlPanelTest::buttonsClickable()
 
 void ControlPanelTest::touchTargetsAtLeast48px()
 {
-    // Touch targets >= 48 px (spec §11.1).
+    // Touch targets >= 48 px (spec §11.1). Verify the rendered size, not just
+    // the enforced minimum (Task 19 review: minimumHeight() >= 48 was a
+    // tautology).
     SimulationClock clock;
     H3uSimulationModel model(clock);
     ControlPanel widget(model);
+    widget.show();
+    QApplication::processEvents();
 
     for (QPushButton *button : {widget.startButton(), widget.stopButton(),
                                 widget.clearLogButton()}) {
-        // The enforced minimum height is the touch target (spec §11.1).
-        QVERIFY(button->minimumHeight() >= 48);
+        QVERIFY2(button->size().height() >= 48,
+                 qPrintable(QStringLiteral("%1 rendered %2 px")
+                                .arg(button->text())
+                                .arg(button->size().height())));
     }
 }
 
@@ -400,13 +447,14 @@ void ControlPanelTest::requestLogReadableAndClearable()
 
     server.handler().handleRequest(readCoilsReq(0, 1));
     server.handler().handleRequest(writeSingleRegisterReq(100, 42));
+    server.handler().handleRequest(writeSingleCoilReq(43, true));
     faults.setScenario(FaultInjector::Scenario::ExceptionResponse);
     faults.setExceptionCode(quint8(QModbusExceptionResponse::ServerDeviceFailure));
     server.handler().handleRequest(readHoldingRegistersReq(100, 1));
     faults.setScenario(FaultInjector::Scenario::None);
 
     const QStringList lines = panel.requestLogLines();
-    QCOMPARE(lines.size(), 3);
+    QCOMPARE(lines.size(), 4);
 
     // Readable format: function code, address, count/value, response, exception.
     QVERIFY2(lines[0].contains(QStringLiteral("读线圈")),
@@ -419,24 +467,31 @@ void ControlPanelTest::requestLogReadableAndClearable()
     QVERIFY2(lines[1].contains(QStringLiteral("D100")), qPrintable(lines[1]));
     QVERIFY2(lines[1].contains(QStringLiteral("42")), qPrintable(lines[1]));
 
-    QVERIFY2(lines[2].contains(QStringLiteral("读寄存器")),
+    // Task 19 review: 0x05 write-coil must use the M prefix, not D.
+    QVERIFY2(lines[2].contains(QStringLiteral("写线圈")),
              qPrintable(lines[2]));
-    QVERIFY2(lines[2].contains(QStringLiteral("异常")), qPrintable(lines[2]));
-    QVERIFY2(lines[2].contains(QStringLiteral("0x04")), qPrintable(lines[2]));
+    QVERIFY2(lines[2].contains(QStringLiteral("M43")), qPrintable(lines[2]));
+
+    QVERIFY2(lines[3].contains(QStringLiteral("读寄存器")),
+             qPrintable(lines[3]));
+    QVERIFY2(lines[3].contains(QStringLiteral("异常")), qPrintable(lines[3]));
+    QVERIFY2(lines[3].contains(QStringLiteral("0x04")), qPrintable(lines[3]));
 
     // The widget renders the same entries in its table.
     ControlPanel widget(model);
     widget.server().handler().handleRequest(readCoilsReq(0, 1));
     widget.server().handler().handleRequest(writeSingleRegisterReq(100, 42));
+    widget.server().handler().handleRequest(writeSingleCoilReq(43, true));
     widget.faults().setScenario(FaultInjector::Scenario::ExceptionResponse);
     widget.faults().setExceptionCode(
         quint8(QModbusExceptionResponse::ServerDeviceFailure));
     widget.server().handler().handleRequest(readHoldingRegistersReq(100, 1));
     widget.refresh();
-    QCOMPARE(widget.logTable()->rowCount(), 3);
+    QCOMPARE(widget.logTable()->rowCount(), 4);
     QCOMPARE(widget.logTable()->item(0, 0)->text(), QStringLiteral("01"));
     QCOMPARE(widget.logTable()->item(1, 1)->text(), QStringLiteral("D100"));
-    QCOMPARE(widget.logTable()->item(2, 5)->text(), QStringLiteral("0x04"));
+    QCOMPARE(widget.logTable()->item(2, 1)->text(), QStringLiteral("M43"));
+    QCOMPARE(widget.logTable()->item(3, 5)->text(), QStringLiteral("0x04"));
 
     // Clearable.
     panel.clearRequestLog();

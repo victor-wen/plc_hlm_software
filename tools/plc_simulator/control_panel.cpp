@@ -209,12 +209,13 @@ QStringList ControlPanelModel::requestLogLines() const
     lines.reserve(log.size());
     for (const RtuRequestLogEntry &e : log) {
         const bool isRead = e.functionCode == 0x01 || e.functionCode == 0x03;
-        const QString addrText = isRead
-            ? QStringLiteral("%1%2")
-                  .arg(e.functionCode == 0x01 ? QStringLiteral("M")
-                                              : QStringLiteral("D"))
-                  .arg(e.address)
-            : QStringLiteral("D%1").arg(e.address);
+        const QString prefix =
+            (e.functionCode == 0x01 || e.functionCode == 0x05)
+            ? QStringLiteral("M")
+            : QStringLiteral("D");
+        const QString addrText = QStringLiteral("%1%2")
+                                     .arg(prefix)
+                                     .arg(e.address);
         QString line = QStringLiteral("%1 地址 %2")
                            .arg(functionCodeName(e.functionCode), addrText);
         if (isRead)
@@ -362,6 +363,14 @@ void ControlPanel::buildLayout()
             &ControlPanel::onClearLogClicked);
     connect(m_scenarioCombo, &QComboBox::currentIndexChanged, this,
             &ControlPanel::onScenarioChanged);
+    // Scenario parameter spinboxes push their values into the FaultInjector
+    // immediately (Task 19 review: they were dead UI otherwise).
+    connect(m_exceptionSpin, &QSpinBox::valueChanged, this,
+            [this](int v) { m_panelModel.setExceptionCode(quint8(v)); });
+    connect(m_delaySpin, &QSpinBox::valueChanged, this,
+            [this](int v) { m_panelModel.setDelayMs(v); });
+    connect(m_faultCodeSpin, &QSpinBox::valueChanged, this,
+            [this](int v) { m_panelModel.setFaultCode(v); });
 }
 
 QLabel *ControlPanel::registerLabel(const QString &key) const
@@ -395,8 +404,9 @@ void ControlPanel::refresh()
             QStringLiteral("%1").arg(e.functionCode, 2, 16, QLatin1Char('0')));
         auto *addr = new QTableWidgetItem(
             QStringLiteral("%1%2")
-                .arg(e.functionCode == 0x01 ? QStringLiteral("M")
-                                            : QStringLiteral("D"))
+                .arg((e.functionCode == 0x01 || e.functionCode == 0x05)
+                         ? QStringLiteral("M")
+                         : QStringLiteral("D"))
                 .arg(e.address));
         auto *count = new QTableWidgetItem(
             e.count ? QString::number(e.count) : QString());
@@ -427,9 +437,14 @@ void ControlPanel::onScenarioChanged(int index)
     if (index < 0 || index >= int(std::size(kScenarios)))
         return;
     const FaultInjector::Scenario scenario = kScenarios[index].scenario;
+    // Push the current spinbox values so pre-filled parameters apply to the
+    // newly selected scenario (Task 19 review: values were never forwarded).
+    m_panelModel.setExceptionCode(quint8(m_exceptionSpin->value()));
+    m_panelModel.setDelayMs(m_delaySpin->value());
+    m_panelModel.setFaultCode(m_faultCodeSpin->value());
     m_panelModel.setScenario(scenario);
-    // Parameter widgets are only meaningful for their scenario; keep them
-    // enabled so the operator can pre-fill values before selecting.
+    // Each parameter widget is only meaningful for its own scenario; the
+    // others are disabled to avoid implying they apply.
     m_exceptionSpin->setEnabled(scenario == FaultInjector::Scenario::ExceptionResponse);
     m_delaySpin->setEnabled(scenario == FaultInjector::Scenario::Delay);
     m_faultCodeSpin->setEnabled(scenario == FaultInjector::Scenario::FaultCode);
