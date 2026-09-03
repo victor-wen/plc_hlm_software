@@ -11,6 +11,7 @@
 #include "ui/pages/alarm_page.h"
 #include "ui/pages/audit_log_page.h"
 #include "ui/pages/diagnostics_page.h"
+#include "ui/pages/users_settings_page.h"
 #include "ui/widgets/hold_button.h"
 #include "ui/widgets/permission_button.h"
 
@@ -136,8 +137,7 @@ void MainWindow::createStubPages()
     m_pages->addWidget(new AlarmPage(this));
     m_pages->addWidget(new AuditLogPage(this));
     m_pages->addWidget(new DiagnosticsPage(*m_model, this));
-
-    m_pages->addWidget(makeStubPage(QStringLiteral("用户与设置")));
+    m_pages->addWidget(new UsersSettingsPage(*m_model, this));
 }
 
 int MainWindow::navItemCount() const

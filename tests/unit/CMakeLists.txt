@@ -242,6 +242,16 @@ target_link_libraries(test_diagnostics_page PRIVATE
 
 add_test(NAME diagnostics_page COMMAND test_diagnostics_page)
 
-set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page PROPERTIES
+# --- Task 17: 用户与设置 page (spec §8.1, §11.3-§11.5) ------------------------
+
+add_executable(test_users_settings_page test_users_settings_page.cpp)
+target_link_libraries(test_users_settings_page PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+
+add_test(NAME users_settings_page COMMAND test_users_settings_page)
+
+set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )
