@@ -6,6 +6,7 @@
 #include "ui/shell/nav_panel.h"
 #include "ui/shell/action_bar.h"
 #include "ui/pages/overview_page.h"
+#include "ui/pages/recipe_width_page.h"
 #include "ui/widgets/hold_button.h"
 #include "ui/widgets/permission_button.h"
 
@@ -114,12 +115,13 @@ void MainWindow::buildLayout()
 void MainWindow::createStubPages()
 {
     // Order must match NavPanel's 7 items (spec §11.1, §11.3).
-    // Index 0 (总览) is the real OverviewPage (Task 11); the rest stay stubs
-    // until Tasks 12-17.
+    // Index 0 (总览) is the real OverviewPage (Task 11); index 1 (配方与调宽)
+    // is the real RecipeWidthPage (Task 12); the rest stay stubs until
+    // Tasks 13-17.
     m_pages->addWidget(new OverviewPage(*m_model, this));
+    m_pages->addWidget(new RecipeWidthPage(*m_model, this));
 
     const QStringList stubPages = {
-        QStringLiteral("配方与调宽"),
         QStringLiteral("手动控制"),
         QStringLiteral("报警"),
         QStringLiteral("操作记录"),

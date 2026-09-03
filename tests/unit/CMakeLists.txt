@@ -192,6 +192,16 @@ target_link_libraries(test_overview_page PRIVATE
 
 add_test(NAME overview_page COMMAND test_overview_page)
 
-set_tests_properties(widgets shell overview_page PROPERTIES
+# --- Task 12: 配方与调宽 page (spec §10.3, §11.3, §11.4) ------------------------
+
+add_executable(test_recipe_width_page test_recipe_width_page.cpp)
+target_link_libraries(test_recipe_width_page PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+
+add_test(NAME recipe_width_page COMMAND test_recipe_width_page)
+
+set_tests_properties(widgets shell overview_page recipe_width_page PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )

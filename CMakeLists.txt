@@ -147,6 +147,8 @@ add_library(hlm_ui STATIC
     src/ui/shell/action_bar.cpp
     src/ui/pages/overview_model.cpp
     src/ui/pages/overview_page.cpp
+    src/ui/pages/recipe_width_model.cpp
+    src/ui/pages/recipe_width_page.cpp
     src/ui/widgets/hold_button.cpp
     src/ui/widgets/status_light.cpp
     src/ui/widgets/value_display.cpp
