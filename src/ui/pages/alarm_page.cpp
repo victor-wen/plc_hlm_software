@@ -1,6 +1,7 @@
 #include "ui/pages/alarm_page.h"
 
 #include <QDateEdit>
+#include <QElapsedTimer>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -197,10 +198,15 @@ void AlarmPage::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
     // Page switch to 报警: request fresh data (async load, Task 20 wires it).
-    // Only on the first show — showEvent also fires on window restore from
-    // minimize, which would otherwise trigger redundant reloads (review finding).
-    if (m_firstShow) {
-        m_firstShow = false;
+    // Window restore from minimize fires several showEvents in quick
+    // succession; deduplicate re-shows within a short window so they do not
+    // trigger redundant reloads (review finding).
+    const bool firstShow = !m_timer.isValid();
+    if (firstShow)
+        m_timer.start();
+    const qint64 now = m_timer.elapsed();
+    if (firstShow || now - m_lastReloadMs >= kReloadDedupMs) {
+        m_lastReloadMs = now;
         emit requestReload();
     }
 }

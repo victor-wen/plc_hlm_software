@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDate>
+#include <QElapsedTimer>
 #include <QWidget>
 #include <QVector>
 
@@ -26,9 +27,12 @@ namespace hlm {
 // 无确认语义 (spec §12): no confirm/acknowledge control or state exists.
 // 查看报警 = 任何人 (spec §11.4): no permission gating on this page.
 //
-// Async load: the page emits requestReload() when shown and on the reload
-// button; setLoading/setAlarms/setLoadFailed drive an explicit status line
-// (加载中 / 加载失败 / 无报警记录).
+// Async load: the page emits requestReload() when shown (page switch to 报警
+// requests fresh data) and on the reload button; setLoading/setAlarms/
+// setLoadFailed drive an explicit status line (加载中 / 加载失败 / 无报警记录).
+// Re-shows within a short window (e.g. window restore from minimize, where
+// several showEvents fire in quick succession) are deduplicated so they do not
+// trigger redundant reloads.
 class AlarmPage : public QWidget
 {
     Q_OBJECT
@@ -58,12 +62,17 @@ signals:
 
 protected:
     // Page switch (QStackedWidget shows the page): request fresh data.
+    // Re-shows within kReloadDedupMs of the last reload are ignored (window
+    // restore from minimize fires several showEvents in quick succession).
     void showEvent(QShowEvent *event) override;
 
 private:
     void buildLayout();
     void refreshTable();
     void refreshStatus();
+
+    // Re-shows closer than this to the previous reload are deduplicated.
+    static constexpr qint64 kReloadDedupMs = 500;
 
     // Sentinel date shown as "全部" (no date filtering). Any real user-picked
     // date is mapped to the model; the sentinel maps to std::nullopt so the
@@ -77,7 +86,8 @@ private:
     QLineEdit *m_codeFilter = nullptr;
     QPushButton *m_reload = nullptr;
     QLabel *m_status = nullptr;
-    bool m_firstShow = true;
+    QElapsedTimer m_timer;
+    qint64 m_lastReloadMs = 0;
 };
 
 } // namespace hlm

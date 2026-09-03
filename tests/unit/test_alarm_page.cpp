@@ -85,8 +85,10 @@ private slots:
     void dateEditResetToAllClearsFilter();
     void invalidDateRangeShowsMessage();
 
-    // --- page: showEvent 仅首次触发 reload (review finding) ----------------------
-    void showEventReloadsOnlyOnce();
+    // --- page: showEvent 触发 reload, 窗口内去重 (review finding) ------------------
+    void showEventReloadsOnFirstShow();
+    void showEventReloadsOnPageReentry();
+    void rapidDoubleShowDoesNotDoubleReload();
 
     // --- MainWindow integration --------------------------------------------------
     void mainWindowUsesAlarmPage();
@@ -437,16 +439,43 @@ void AlarmPageTest::invalidDateRangeShowsMessage()
     QVERIFY(page.statusText().contains(QStringLiteral("共 1 条")));
 }
 
-// --- page: showEvent 仅首次触发 reload (review finding) --------------------------
+// --- page: showEvent 触发 reload, 窗口内去重 (review finding) --------------------------
 
-void AlarmPageTest::showEventReloadsOnlyOnce()
+void AlarmPageTest::showEventReloadsOnFirstShow()
 {
     AlarmPage page;
     QSignalSpy spy(&page, &AlarmPage::requestReload);
     page.show();
     QCOMPARE(spy.count(), 1);
+}
 
-    // 再次 show (如窗口从最小化恢复): 不应重复触发 reload.
+void AlarmPageTest::showEventReloadsOnPageReentry()
+{
+    // 页面切换: 离开 报警 再回来 (show → hide → show) 应再次请求新数据,
+    // 否则报警会一直陈旧直到手动刷新 (review finding).
+    AlarmPage page;
+    QSignalSpy spy(&page, &AlarmPage::requestReload);
+    page.show();
+    QCOMPARE(spy.count(), 1);
+
+    page.hide();
+    // 真实页面切换间隔远超去重窗口 (500ms); 等待窗口过后再回来.
+    QTest::qWait(600);
+    page.show();
+    QCOMPARE(spy.count(), 2);
+}
+
+void AlarmPageTest::rapidDoubleShowDoesNotDoubleReload()
+{
+    // 窗口从最小化恢复时会在短时间内连续触发多个 showEvent: 窗口内去重,
+    // 不产生冗余 reload (review finding).
+    AlarmPage page;
+    QSignalSpy spy(&page, &AlarmPage::requestReload);
+    page.show();
+    QCOMPARE(spy.count(), 1);
+
+    page.hide();
+    page.show();
     page.hide();
     page.show();
     QCOMPARE(spy.count(), 1);
