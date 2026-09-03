@@ -203,15 +203,15 @@ target_link_libraries(plc_simulator_exe PRIVATE
     Qt6::Widgets
 )
 
-# hlm_app: application composition root + entry point (spec §6, §7, §13).
-# Links every production module; the executable is the real HMI.
-add_executable(hlm_app
+# hlm_app_core: application composition root + lifecycle controller (spec
+# §6, §7, §13). A static library so integration tests can link the real
+# composition root without pulling in the executable entry point.
+add_library(hlm_app_core STATIC
     src/app/application.cpp
     src/app/lifecycle_controller.cpp
-    src/app/main.cpp
 )
-target_include_directories(hlm_app PRIVATE src)
-target_link_libraries(hlm_app PRIVATE
+target_include_directories(hlm_app_core PUBLIC src)
+target_link_libraries(hlm_app_core PUBLIC
     hlm_core
     hlm_modbus
     hlm_sqlite
@@ -220,8 +220,18 @@ target_link_libraries(hlm_app PRIVATE
     Qt6::Widgets
 )
 if(HLM_ENABLE_VISION)
-    target_link_libraries(hlm_app PRIVATE hlm_vision)
+    target_link_libraries(hlm_app_core PUBLIC hlm_vision)
 endif()
+
+# hlm_app: executable entry point (spec §6, §7, §13). The real HMI.
+add_executable(hlm_app
+    src/app/main.cpp
+)
+target_include_directories(hlm_app PRIVATE src)
+target_link_libraries(hlm_app PRIVATE
+    hlm_app_core
+    Qt6::Widgets
+)
 
 # --- Tests ------------------------------------------------------------------
 enable_testing()
