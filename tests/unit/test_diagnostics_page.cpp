@@ -112,6 +112,8 @@ private slots:
     void pageRendersSnapshot();
     void pageStaleShowsDash();
     void pageShowsHeartbeatActivity();
+    void pageHeartbeatShowsDashWhenStale();
+    void pageShowsSectionTitles();
     void pageVisionFailureIsolated();
     void pageCommStatsRendered();
 
@@ -483,6 +485,73 @@ void DiagnosticsPageTest::pageShowsHeartbeatActivity()
     QCOMPARE(page.heartbeatLight()->text(), QStringLiteral("心跳 失效"));
 }
 
+void DiagnosticsPageTest::pageHeartbeatShowsDashWhenStale()
+{
+    // Review finding: heartbeat light must not cache "活性" once the snapshot
+    // goes stale/offline (spec §9: 过期值显示"—"; §13: D140 冻结 -> 数据失效).
+    ShellModel model;
+    DiagnosticsPage page(model);
+
+    // Fresh snapshot: active.
+    DeviceSnapshotData a = validSnapshotData();
+    a.sequence = 1;
+    a.heartbeat = 1;
+    model.updateSnapshot(DeviceSnapshot(a));
+    QCOMPARE(page.heartbeatLight()->text(), QStringLiteral("心跳 活性"));
+
+    // Snapshot goes stale (PLC disconnected): light must show "—", not the
+    // cached "活性".
+    DeviceSnapshotData stale = validSnapshotData();
+    stale.sequence = 2;
+    stale.heartbeat = 1;
+    stale.fastQuality = DataQuality::Stale;
+    stale.overallQuality = aggregateQuality(stale);
+    model.updateSnapshot(DeviceSnapshot(stale));
+    QCOMPARE(page.heartbeatLight()->text(), QStringLiteral("心跳 —"));
+
+    // First snapshot already stale: never shows "活性".
+    ShellModel model2;
+    DiagnosticsPage page2(model2);
+    model2.updateSnapshot(DeviceSnapshot(stale));
+    QCOMPARE(page2.heartbeatLight()->text(), QStringLiteral("心跳 —"));
+}
+
+void DiagnosticsPageTest::pageShowsSectionTitles()
+{
+    // Review finding: the register/comm section titles were lost because the
+    // ValueDisplay was reparented out of its wrapper. The wrapper (title label
+    // + value) must be added to the layout and stay visible.
+    ShellModel model;
+    DiagnosticsPage page(model);
+    model.updateSnapshot(DeviceSnapshot(validSnapshotData()));
+    page.show();
+    QApplication::processEvents();
+    const QList<QLabel *> labels = page.findChildren<QLabel *>();
+    auto findTitle = [&labels](const QString &text) -> QLabel * {
+        for (QLabel *l : labels)
+            if (l->text() == text)
+                return l;
+        return nullptr;
+    };
+
+    QLabel *belt = findTitle(QStringLiteral("皮带速度 (D122)"));
+    QVERIFY(belt != nullptr);
+    QVERIFY(belt->isVisible());
+    QCOMPARE(belt->text(), QStringLiteral("皮带速度 (D122)"));
+
+    QLabel *fault = findTitle(QStringLiteral("故障代码 (D110)"));
+    QVERIFY(fault != nullptr);
+    QVERIFY(fault->isVisible());
+
+    QLabel *latency = findTitle(QStringLiteral("最近快照延迟"));
+    QVERIFY(latency != nullptr);
+    QVERIFY(latency->isVisible());
+
+    QLabel *reconnect = findTitle(QStringLiteral("重连次数"));
+    QVERIFY(reconnect != nullptr);
+    QVERIFY(reconnect->isVisible());
+}
+
 void DiagnosticsPageTest::pageVisionFailureIsolated()
 {
     // spec §7.4/§13: vision self-test failure only marks the vision diagnostic
@@ -603,7 +672,8 @@ void DiagnosticsPageTest::mainWindowUsesDiagnosticsPage()
 void DiagnosticsPageTest::tableRowHeightAtLeast48()
 {
     // 表格行高不得小于 48 px (spec §11.1).
-    DiagnosticsPage page(*new ShellModel);
+    ShellModel model;
+    DiagnosticsPage page(model);
     for (QTableWidget *table : {page.rawWordTable(), page.d100BitTable(),
                                 page.d103BitTable(), page.homeCommandTable()}) {
         QVERIFY(table->verticalHeader()->defaultSectionSize() >= 48);

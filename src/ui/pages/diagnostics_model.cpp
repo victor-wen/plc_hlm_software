@@ -211,10 +211,13 @@ QVector<BitRow> DiagnosticsModel::homeCommandBits() const
 
 bool DiagnosticsModel::heartbeatKnown() const
 {
+    // Stale/offline snapshot: activity is unknown, show "—" (spec §9). Never
+    // record a baseline from an expired snapshot, otherwise the light would
+    // stay "活性" forever after the PLC disconnects (spec §13: D140 frozen).
+    if (!fresh())
+        return false;
     if (m_hasLastHeartbeat)
         return true;
-    if (!m_model.hasSnapshot())
-        return false;
     // First observed snapshot: record it as the activity baseline.
     const DeviceSnapshot &s = m_model.snapshot();
     m_lastHeartbeat = s.heartbeat();

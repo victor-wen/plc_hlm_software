@@ -151,28 +151,28 @@ void DiagnosticsPage::buildRegisterGrid(QVBoxLayout *root)
     auto *right = new QVBoxLayout();
 
     left->addWidget(addRegister(QStringLiteral("faultCode"),
-                                QStringLiteral("故障代码 (D110)"), QString(), nullptr));
+                                QStringLiteral("故障代码 (D110)")));
     left->addWidget(addRegister(QStringLiteral("currentStep"),
-                                QStringLiteral("当前步骤 (D120)"), QString(), nullptr));
+                                QStringLiteral("当前步骤 (D120)")));
     left->addWidget(addRegister(QStringLiteral("beltSpeed"),
-                                QStringLiteral("皮带速度 (D122)"), QStringLiteral("Hz"), nullptr));
+                                QStringLiteral("皮带速度 (D122)")));
     left->addWidget(addRegister(QStringLiteral("widthFrequency"),
-                                QStringLiteral("调宽频率 (D126/127)"), QStringLiteral("Hz"), nullptr));
+                                QStringLiteral("调宽频率 (D126/127)")));
     left->addWidget(addRegister(QStringLiteral("targetWidth"),
-                                QStringLiteral("目标宽度 (D128)"), QStringLiteral("mm"), nullptr));
+                                QStringLiteral("目标宽度 (D128)")));
     left->addWidget(addRegister(QStringLiteral("currentWidth"),
-                                QStringLiteral("当前宽度 (D130)"), QStringLiteral("mm"), nullptr));
+                                QStringLiteral("当前宽度 (D130)")));
 
     right->addWidget(addRegister(QStringLiteral("pulseCount"),
-                                 QStringLiteral("调宽脉冲 (D136/137)"), QStringLiteral("脉冲"), nullptr));
+                                 QStringLiteral("调宽脉冲 (D136/137)")));
     right->addWidget(addRegister(QStringLiteral("productionCount"),
-                                 QStringLiteral("累计产量 (D138/139)"), QStringLiteral("件"), nullptr));
+                                 QStringLiteral("累计产量 (D138/139)")));
     right->addWidget(addRegister(QStringLiteral("pulsePerMm"),
-                                 QStringLiteral("脉冲当量 (D204)"), QStringLiteral("脉冲/mm"), nullptr));
+                                 QStringLiteral("脉冲当量 (D204)")));
     right->addWidget(addRegister(QStringLiteral("widthDelta"),
-                                 QStringLiteral("调宽差值 (D210)"), QStringLiteral("mm"), nullptr));
+                                 QStringLiteral("调宽差值 (D210)")));
     right->addWidget(addRegister(QStringLiteral("widthSpeed"),
-                                 QStringLiteral("调宽速度 (D220)"), QStringLiteral("mm/s"), nullptr));
+                                 QStringLiteral("调宽速度 (D220)")));
 
     grid->addLayout(left, 0, 0);
     grid->addLayout(right, 0, 1);
@@ -200,13 +200,13 @@ void DiagnosticsPage::buildCommSection(QVBoxLayout *root)
     auto *left = new QVBoxLayout();
     auto *right = new QVBoxLayout();
     left->addWidget(addComm(QStringLiteral("latency"),
-                            QStringLiteral("最近快照延迟"), QStringLiteral("ms"), nullptr));
+                            QStringLiteral("最近快照延迟")));
     left->addWidget(addComm(QStringLiteral("sequence"),
-                            QStringLiteral("快照序号"), QString(), nullptr));
+                            QStringLiteral("快照序号")));
     right->addWidget(addComm(QStringLiteral("reconnect"),
-                             QStringLiteral("重连次数"), QString(), nullptr));
+                             QStringLiteral("重连次数")));
     right->addWidget(addComm(QStringLiteral("failedPolls"),
-                             QStringLiteral("失败轮询"), QString(), nullptr));
+                             QStringLiteral("失败轮询")));
     grid->addLayout(left, 0, 0);
     grid->addLayout(right, 0, 1);
     grid->setColumnStretch(0, 1);
@@ -256,12 +256,8 @@ void DiagnosticsPage::fillBitTable(QTableWidget *table, const QVector<BitRow> &r
     }
 }
 
-ValueDisplay *DiagnosticsPage::addRegister(const QString &key,
-                                           const QString &title,
-                                           const QString &unit,
-                                           QVBoxLayout *column)
+QWidget *DiagnosticsPage::addRegister(const QString &key, const QString &title)
 {
-    Q_UNUSED(column);
     auto *wrap = new QWidget(this);
     auto *layout = new QVBoxLayout(wrap);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -272,13 +268,11 @@ ValueDisplay *DiagnosticsPage::addRegister(const QString &key,
     display->setMinimumHeight(48);
     layout->addWidget(display);
     m_registers.insert(key, display);
-    return display;
+    return wrap;
 }
 
-ValueDisplay *DiagnosticsPage::addComm(const QString &key, const QString &title,
-                                       const QString &unit, QVBoxLayout *column)
+QWidget *DiagnosticsPage::addComm(const QString &key, const QString &title)
 {
-    Q_UNUSED(column);
     auto *wrap = new QWidget(this);
     auto *layout = new QVBoxLayout(wrap);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -289,7 +283,7 @@ ValueDisplay *DiagnosticsPage::addComm(const QString &key, const QString &title,
     display->setMinimumHeight(48);
     layout->addWidget(display);
     m_comm.insert(key, display);
-    return display;
+    return wrap;
 }
 
 ValueDisplay *DiagnosticsPage::registerDisplay(const QString &key) const
@@ -321,10 +315,8 @@ void DiagnosticsPage::refresh()
     // (spec §9: 完整快照更新，无逐字段或乐观更新).
 
     // Raw words (D100-D105). D102/D104/D105 are raw hex only (acceptance).
-    const bool rawValid = m_pageModel.rawWordsValid();
     for (int i = 0; i < 5; ++i)
         m_rawWordTable->item(i, 1)->setText(m_pageModel.rawWordHex(i));
-    Q_UNUSED(rawValid);
 
     // Defined bits.
     fillBitTable(m_d100BitTable, m_pageModel.d100Bits());
@@ -365,7 +357,8 @@ void DiagnosticsPage::refresh()
     }
 
     // Comm statistics: latency/sequence from the snapshot, reconnect/failed
-    // polls from the externally-fed CommStats (Task 20).
+    // polls from the externally-fed CommStats (Task 20). Without a fresh
+    // snapshot the counters are meaningless -> "—" (spec §9).
     const bool fresh = m_pageModel.rawWordsValid();
     const DeviceSnapshot &s = m_model.snapshot();
     m_comm[QStringLiteral("latency")]->setValue(
@@ -374,9 +367,13 @@ void DiagnosticsPage::refresh()
     m_comm[QStringLiteral("sequence")]->setValue(
         fresh ? QString::number(s.sequence()) : QString(), QString(), fresh);
     m_comm[QStringLiteral("reconnect")]->setValue(
-        QString::number(m_pageModel.commStats().reconnectCount), QString(), true);
+        fresh ? QString::number(m_pageModel.commStats().reconnectCount)
+              : QString(),
+        QString(), fresh);
     m_comm[QStringLiteral("failedPolls")]->setValue(
-        QString::number(m_pageModel.commStats().failedPolls), QString(), true);
+        fresh ? QString::number(m_pageModel.commStats().failedPolls)
+              : QString(),
+        QString(), fresh);
 
     // Vision self-test (spec §7.4/§13): failure only marks this section red;
     // the rest of the page is unaffected.

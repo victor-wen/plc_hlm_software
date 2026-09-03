@@ -70,10 +70,10 @@ private:
     void buildCommSection(QVBoxLayout *root);
     void buildVisionSection(QVBoxLayout *root);
     void fillBitTable(QTableWidget *table, const QVector<BitRow> &rows);
-    ValueDisplay *addRegister(const QString &key, const QString &title,
-                              const QString &unit, QVBoxLayout *column);
-    ValueDisplay *addComm(const QString &key, const QString &title,
-                          const QString &unit, QVBoxLayout *column);
+    // Returns the wrapper widget (title label + ValueDisplay) so callers add
+    // the whole block to a layout; the ValueDisplay is stored in the hash.
+    QWidget *addRegister(const QString &key, const QString &title);
+    QWidget *addComm(const QString &key, const QString &title);
 
     ShellModel &m_model;
     DiagnosticsModel m_pageModel;
