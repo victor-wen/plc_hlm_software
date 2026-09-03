@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QPointer>
 #include <QVector>
 
 #include "application/permission_policy.h"
@@ -58,6 +59,12 @@ public:
     void clearHoldIntents();
     bool hasActiveHolds() const;
 
+protected:
+    // Top-level widgets (incl. QMainWindow) receive QEvent::WindowDeactivate
+    // but child widgets never do. Handling it here makes the §10.7 release
+    // path work in the real app (a HoldButton on a page is never a top-level).
+    bool event(QEvent *event) override;
+
 public slots:
     // Switches page and clears hold intents (spec §10.7).
     void setCurrentPage(int index);
@@ -79,7 +86,7 @@ private:
     NavPanel *m_nav = nullptr;
     ActionBar *m_actions = nullptr;
     QStackedWidget *m_pages = nullptr;
-    QVector<HoldButton *> m_holdWidgets;
+    QVector<QPointer<HoldButton>> m_holdWidgets;
 };
 
 } // namespace hlm

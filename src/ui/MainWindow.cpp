@@ -15,6 +15,7 @@
 #include <QLabel>
 #include <QFile>
 #include <QDebug>
+#include <QEvent>
 
 // Force the theme.qss resource object into the link (static lib). Must be at
 // global scope so Q_INIT_RESOURCE resolves to the un-namespaced symbol.
@@ -178,16 +179,27 @@ void MainWindow::registerHoldWidget(HoldButton *button)
 
 void MainWindow::clearHoldIntents()
 {
-    for (HoldButton *b : std::as_const(m_holdWidgets))
-        b->cancelHold();
+    for (const QPointer<HoldButton> &b : std::as_const(m_holdWidgets))
+        if (b)
+            b->cancelHold();
 }
 
 bool MainWindow::hasActiveHolds() const
 {
-    for (const HoldButton *b : m_holdWidgets)
-        if (b->isHeld())
+    for (const QPointer<HoldButton> &b : m_holdWidgets)
+        if (b && b->isHeld())
             return true;
     return false;
+}
+
+bool MainWindow::event(QEvent *event)
+{
+    // QEvent::WindowDeactivate is only delivered to the top-level widget, so a
+    // HoldButton on a page inside this shell never sees it. Handle it here so
+    // the §10.7 窗口失活 release path works in the real app.
+    if (event->type() == QEvent::WindowDeactivate)
+        clearHoldIntents();
+    return QMainWindow::event(event);
 }
 
 void MainWindow::setCurrentPage(int index)

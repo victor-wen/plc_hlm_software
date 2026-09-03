@@ -88,6 +88,8 @@ private slots:
 
     // --- intent clearing -----------------------------------------------------
     void modalDialogTriggerClearsHoldIntents();
+    void mainWindowDeactivationClearsHolds();
+    void destroyedHoldWidgetIsSafe();
 
     // --- DPI scaling ----------------------------------------------------------
     void layoutAtScaledFonts();
@@ -306,6 +308,41 @@ void ShellTest::modalDialogTriggerClearsHoldIntents()
     w.clearHoldIntents();
     QVERIFY(!w.hasActiveHolds());
     QVERIFY(!held.isHeld());
+}
+
+void ShellTest::mainWindowDeactivationClearsHolds()
+{
+    // Qt delivers QEvent::WindowDeactivate only to the top-level widget, never
+    // to child widgets. A HoldButton on a page is a child, so the §10.7 release
+    // path must run at the MainWindow level.
+    MainWindow w;
+    w.show();
+    HoldButton held(QStringLiteral("点动"));
+    w.registerHoldWidget(&held);
+    pressAt(&held);
+    QVERIFY(w.hasActiveHolds());
+
+    QEvent deactivate(QEvent::WindowDeactivate);
+    QApplication::sendEvent(&w, &deactivate);
+    QVERIFY(!w.hasActiveHolds());
+    QVERIFY(!held.isHeld());
+}
+
+void ShellTest::destroyedHoldWidgetIsSafe()
+{
+    // A registered button may be destroyed before MainWindow (pages own their
+    // buttons and are rebuilt). MainWindow destruction must not dereference
+    // freed memory (QPointer auto-nulls). This is the former use-after-free UB.
+    MainWindow w;
+    w.show();
+    {
+        HoldButton held(QStringLiteral("点动"));
+        w.registerHoldWidget(&held);
+        pressAt(&held);
+        QVERIFY(w.hasActiveHolds());
+    }
+    // held destroyed; w must still be safe to destroy and report no active holds.
+    QVERIFY(!w.hasActiveHolds());
 }
 
 // --- DPI scaling -------------------------------------------------------------
