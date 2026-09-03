@@ -13,6 +13,7 @@ class FaultInjector
 public:
     enum class Scenario {
         None,             // normal operation
+        ConditionalFailure, // width-adjust command fails its preconditions (M45)
         Timeout,          // do not respond to requests
         ExceptionResponse, // answer every request with a Modbus exception
         IllegalValue,     // reject writes with IllegalDataValue

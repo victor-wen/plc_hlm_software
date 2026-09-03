@@ -179,6 +179,7 @@ target_link_libraries(hlm_ui PUBLIC
 # the plc_simulator.exe executable.
 add_library(plc_simulator STATIC
     tools/plc_simulator/rtu_server.cpp
+    tools/plc_simulator/control_panel.cpp
 )
 target_include_directories(plc_simulator PUBLIC src tools ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(plc_simulator PUBLIC
@@ -186,6 +187,20 @@ target_link_libraries(plc_simulator PUBLIC
     Qt6::Core
     Qt6::SerialBus
     Qt6::SerialPort
+    Qt6::Widgets
+)
+
+# plc_simulator.exe: standalone RTU simulator with the control panel (spec
+# §14.3). Owns the shared model and the panel; the panel owns the
+# FaultInjector and the RtuServer.
+add_executable(plc_simulator_exe
+    tools/plc_simulator/main.cpp
+)
+target_include_directories(plc_simulator_exe PRIVATE src tools ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(plc_simulator_exe PRIVATE
+    plc_simulator
+    hlm_simulator
+    Qt6::Widgets
 )
 
 # Planned targets added by later tasks (do not create empty targets now):

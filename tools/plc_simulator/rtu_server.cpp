@@ -149,6 +149,18 @@ QModbusResponse RtuRequestHandler::handleWriteSingleCoil(const QModbusRequest &r
         return QModbusExceptionResponse(req.functionCode(),
                                          QModbusExceptionResponse::IllegalDataValue);
 
+    // Conditional-failure injection (spec §14.3 条件失败): a width-adjust
+    // command is accepted (echo response) but always fails its preconditions.
+    // The command is consumed without reaching the model, so positioning can
+    // never start regardless of the current model state.
+    if (m_faults.scenario() == FaultInjector::Scenario::ConditionalFailure
+        && address == 43) {
+        m_model.writeCoil(45, true);
+        m_model.writeCoil(34, false);
+        m_model.writeCoil(44, false);
+        return QModbusResponse(req.functionCode(), address, value);
+    }
+
     m_model.writeCoil(address, value == 0xFF00);
     return QModbusResponse(req.functionCode(), address, value);
 }
