@@ -146,3 +146,18 @@ target_link_libraries(test_database_service PRIVATE
 )
 
 add_test(NAME database_service COMMAND test_database_service)
+
+# --- Task 9: vision adapter (spec §6, §7.4, §13) ----------------------------
+# Guarded by HLM_ENABLE_VISION: with the option OFF the hlm_vision target and
+# this test are simply not built (verified by a scratch configure).
+
+if(HLM_ENABLE_VISION)
+    add_executable(test_vision_adapter test_vision_adapter.cpp)
+    target_link_libraries(test_vision_adapter PRIVATE
+        hlm_vision
+        hlm_simulator
+        Qt6::Test
+    )
+
+    add_test(NAME vision_adapter COMMAND test_vision_adapter)
+endif()

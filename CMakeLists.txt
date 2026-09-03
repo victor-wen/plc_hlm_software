@@ -57,6 +57,7 @@ add_library(hlm_core STATIC
     src/domain/device_snapshot.cpp
     src/domain/password_derivation.cpp
     src/ports/iplc_gateway.cpp
+    src/ports/ivision_service.cpp
 )
 target_include_directories(hlm_core PUBLIC src)
 target_link_libraries(hlm_core PUBLIC
@@ -116,8 +117,24 @@ target_link_libraries(hlm_sqlite PUBLIC
     Qt6::Sql
 )
 
+# hlm_vision: IVisionService OpenCV adapter + version/matrix self-test
+# (spec §6, §7.4, §13). OpenCV is isolated in this target; the port interface
+# (src/ports/ivision_service.h) is OpenCV-free. The self-test runs on the
+# adapter's own worker thread and its failure only marks the vision diagnostic
+# red - PLC control is unaffected (spec §13).
+if(HLM_ENABLE_VISION)
+    add_library(hlm_vision STATIC
+        src/adapters/vision/vision_service.cpp
+    )
+    target_include_directories(hlm_vision PUBLIC src)
+    target_link_libraries(hlm_vision PUBLIC
+        hlm_core
+        Qt6::Core
+        opencv_core
+    )
+endif()
+
 # Planned targets added by later tasks (do not create empty targets now):
-#   hlm_vision    -> OpenCV::core (guarded by HLM_ENABLE_VISION)
 #   hlm_ui        -> Qt6::Widgets
 #   hlm_app       -> all production modules above
 #   plc_simulator -> Qt6::SerialBus Qt6::SerialPort Qt6::Widgets + hlm_simulator
