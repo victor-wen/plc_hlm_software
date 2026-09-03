@@ -32,9 +32,12 @@
 
 #include "adapters/simulator/simulated_plc_gateway.h"
 #include "adapters/sqlite/database_service.h"
+#include "app/application.h"
+#include "app/configuration.h"
 #include "app/lifecycle_controller.h"
 #include "application/control_coordinator.h"
 #include "ui/MainWindow.h"
+#include "ui/pages/recipe_width_page.h"
 #include "ui/pages/users_settings_page.h"
 #include "ui/shell/shell_model.h"
 #include "ui/widgets/hold_button.h"
@@ -132,6 +135,8 @@ private slots:
     void restrictedModeAllowsOnlyStopAndEstop();
     // --- 6. MainWindow offscreen ---------------------------------------------
     void mainWindowOffscreenShell();
+    // --- 7. composition root (Application) adjustWidth convergence ------------
+    void applicationAdjustWidthConverges();
 };
 
 // --- 1. first-run DB + auth + session + role downgrade -----------------------
@@ -666,6 +671,85 @@ void FullFlowTest::mainWindowOffscreenShell()
     QVERIFY(!w.resetButton()->toolTip().isEmpty());
     QVERIFY(!w.estopButton()->isEnabled());
     QVERIFY(!w.estopButton()->toolTip().isEmpty());
+}
+
+// --- 7. composition root (Application) adjustWidth convergence ----------------
+//
+// Regression test for the Task 20 review finding: Application::wireGateway
+// must connect writeCompleted to ControlCoordinator::onWriteCompleted, or the
+// M43 pulse is never sent and every adjustWidth times out with
+// "调宽等待超时". This test drives the real composition root (Application),
+// not a hand-rolled coordinator, so the wiring bug is exercised.
+
+void FullFlowTest::applicationAdjustWidthConverges()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    AppConfig cfg;
+    cfg.useSimulatedGateway = true;
+    cfg.databasePath = dir.filePath(QStringLiteral("app.db"));
+
+    Application app(cfg);
+    app.start();
+    auto *gw = qobject_cast<SimulatedPlcGateway *>(app.gateway());
+    QVERIFY(gw != nullptr);
+    auto *db = app.database();
+    QVERIFY(db != nullptr);
+    auto *coord = app.coordinator();
+    QVERIFY(coord != nullptr);
+    auto *recipePage = app.window()->findChild<RecipeWidthPage *>();
+    QVERIFY(recipePage != nullptr);
+
+    // Wait for the DB worker to be ready (queued worker-thread path).
+    QTRY_VERIFY_WITH_TIMEOUT(!db->isRestricted(), 5000);
+
+    // First run: create the initial admin, then log in as admin.
+    QSignalSpy adminSpy(db, &DatabaseService::initialAdminCreated);
+    QVERIFY(QMetaObject::invokeMethod(
+        db, "createInitialAdmin", Qt::QueuedConnection,
+        Q_ARG(QString, QStringLiteral("admin")),
+        Q_ARG(QString, QStringLiteral("s3cret!"))));
+    QTRY_VERIFY_WITH_TIMEOUT(adminSpy.size() > 0, 5000);
+    QCOMPARE(adminSpy[0][0].toBool(), true);
+
+    QSignalSpy loginSpy(db, &DatabaseService::loginResult);
+    QVERIFY(QMetaObject::invokeMethod(
+        db, "login", Qt::QueuedConnection,
+        Q_ARG(QString, QStringLiteral("admin")),
+        Q_ARG(QString, QStringLiteral("s3cret!"))));
+    QTRY_VERIFY_WITH_TIMEOUT(loginSpy.size() > 0, 5000);
+    QVERIFY(loginSpy[0][0].value<LoginResult>().ok);
+    QCOMPARE(coord->role(), Role::Admin);
+
+    // Home the machine via the raw gateway (M103 pulse + 2 s home return).
+    gw->writeCoil(kM103, true);
+    gw->writeCoil(kM103, false);
+    gw->tick();
+    gw->tick();
+    QVERIFY(gw->lastSnapshot().m9());
+
+    // Drive adjustWidth through the composition root: the recipe page emits
+    // applyAdjustRequested, Application routes it to the coordinator, and the
+    // coordinator's M43 pulse must be fed by writeCompleted (the wiring under
+    // test). Converges on M44 + D130 == 300.
+    QSignalSpy resultSpy(coord, &ControlCoordinator::commandResult);
+    emit recipePage->applyAdjustRequested(300);
+    QCOMPARE(gw->model().readRegister(kD128), quint16(300));
+    gw->tick();
+    QVERIFY(gw->lastSnapshot().m34()); // adjusting
+    for (int i = 0; i < 7; ++i) // ceil(100/15) = 7 s
+        gw->tick();
+    QVERIFY(gw->lastSnapshot().m44());
+    QCOMPARE(gw->lastSnapshot().currentWidth(), quint16(300));
+
+    // The result must arrive via the coordinator -> recipe page path (not a
+    // timeout). commandResult is emitted synchronously from the snapshot feed.
+    QTRY_VERIFY_WITH_TIMEOUT(resultSpy.size() > 0, 5000);
+    QCOMPARE(resultSpy[0][0].value<Command>(), Command::AdjustWidth);
+    QCOMPARE(resultSpy[0][1].toBool(), true);
+    QVERIFY(recipePage->statusText().contains(QStringLiteral("调宽完成")));
+
+    app.shutdown();
 }
 
 QTEST_MAIN(FullFlowTest)

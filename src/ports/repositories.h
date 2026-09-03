@@ -163,7 +163,9 @@ public:
     virtual ~AuditRepository() = default;
 
     virtual bool append(const AuditRecord &a, QString *error = nullptr) = 0;
-    virtual QVector<AuditRecord> recent(int limit) const = 0;
+    // Returns up to `limit` rows starting at `offset` (newest first). Offset
+    // enables 滚动加载 paging (spec §12); default 0 keeps existing callers.
+    virtual QVector<AuditRecord> recent(int limit, int offset = 0) const = 0;
     virtual bool purgeBefore(const QDateTime &cutoff, qint64 *removed = nullptr,
                              QString *error = nullptr) = 0;
 };

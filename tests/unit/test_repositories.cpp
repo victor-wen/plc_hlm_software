@@ -208,6 +208,21 @@ void RepositoryTest::auditAppendAndQuery()
         QCOMPARE(records[0].action, QStringLiteral("recipe.apply"));
         QCOMPARE(records[0].role, Role::Admin);
         QCOMPARE(records[0].result, AuditResult::Success);
+
+        // Offset paging (spec §12 滚动加载): a second row is only visible
+        // from offset 1, not from offset 0 with limit 1.
+        AuditRecord b;
+        b.occurredAt = QDateTime::currentDateTimeUtc();
+        b.username = QStringLiteral("admin");
+        b.role = Role::Admin;
+        b.action = QStringLiteral("auth.login");
+        b.result = AuditResult::Success;
+        QVERIFY2(repo.append(b, &error), qPrintable(error));
+        QCOMPARE(repo.recent(1, 0).size(), 1);
+        QCOMPARE(repo.recent(1, 0)[0].action, QStringLiteral("auth.login")); // newest first
+        QCOMPARE(repo.recent(1, 1).size(), 1);
+        QCOMPARE(repo.recent(1, 1)[0].action, QStringLiteral("recipe.apply"));
+        QCOMPARE(repo.recent(1, 2).size(), 0); // past the end
     }
     QSqlDatabase::removeDatabase(QStringLiteral("repo_test"));
 }

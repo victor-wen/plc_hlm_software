@@ -77,7 +77,7 @@ public:
     explicit SqliteAuditRepository(QSqlDatabase db) : m_db(db) {}
 
     bool append(const AuditRecord &a, QString *error = nullptr) override;
-    QVector<AuditRecord> recent(int limit) const override;
+    QVector<AuditRecord> recent(int limit, int offset = 0) const override;
     bool purgeBefore(const QDateTime &cutoff, qint64 *removed = nullptr,
                      QString *error = nullptr) override;
 

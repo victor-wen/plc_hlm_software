@@ -434,14 +434,15 @@ bool SqliteAuditRepository::append(const AuditRecord &a, QString *error)
     return true;
 }
 
-QVector<AuditRecord> SqliteAuditRepository::recent(int limit) const
+QVector<AuditRecord> SqliteAuditRepository::recent(int limit, int offset) const
 {
     QVector<AuditRecord> out;
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
         "SELECT id, occurred_at, username, role, action, target, redacted_parameters,"
-        " result, reason FROM audit_log ORDER BY occurred_at DESC, id DESC LIMIT ?"));
+        " result, reason FROM audit_log ORDER BY occurred_at DESC, id DESC LIMIT ? OFFSET ?"));
     q.addBindValue(limit);
+    q.addBindValue(offset);
     if (!q.exec())
         return out;
     while (q.next()) {

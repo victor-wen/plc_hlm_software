@@ -324,13 +324,13 @@ void DatabaseService::appendAudit(const AuditRecord &record)
     emit auditAppended(ok, error);
 }
 
-void DatabaseService::listRecentAudit(int limit)
+void DatabaseService::listRecentAudit(int limit, int offset)
 {
     if (!m_audit) {
         emit recentAuditLoaded({});
         return;
     }
-    emit recentAuditLoaded(m_audit->recent(limit));
+    emit recentAuditLoaded(m_audit->recent(limit, offset));
 }
 
 void DatabaseService::runRetentionCleanup()

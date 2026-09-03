@@ -79,7 +79,7 @@ public slots:
     void endHmiAlarm(quint64 sequence);
     void listRecentAlarms(int limit);
     void appendAudit(const AuditRecord &record);
-    void listRecentAudit(int limit);
+    void listRecentAudit(int limit, int offset = 0);
     // Daily retention cleanup (spec §12): purges ended alarms and audit rows
     // older than 365 days. Active alarms are never deleted.
     void runRetentionCleanup();

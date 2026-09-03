@@ -124,9 +124,16 @@ private:
     int m_pendingSerialLoads = 0;
     SerialConfig m_loadedSerialCfg;
 
-    // Parameter write routing: the address of the in-flight D122/D220/D204
-    // write, so writeCompleted can be fed back to setParameterWriteResult.
-    int m_pendingParamAddr = -1;
+    // Idempotency guard: shutdown() runs from aboutToQuit and again from the
+    // destructor; the second call must not re-issue clears against a stopped
+    // gateway (Task 20 review).
+    bool m_shutdownDone = false;
+
+    // Parameter write routing: FIFO of in-flight D122/D220/D204 addresses, so
+    // writeCompleted can be fed back to setParameterWriteResult in order.
+    // A queue (not a single slot) so rapid consecutive writes do not drop the
+    // first result (Task 20 review).
+    QList<int> m_pendingParamAddrs;
     // D204 flow: value waiting for the password verification result.
     bool m_d204Pending = false;
     quint16 m_d204Value = 0;

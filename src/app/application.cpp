@@ -230,7 +230,9 @@ void Application::wireSignals()
         m_db->listRecentAudit(200);
     });
     connect(m_auditPage, &AuditLogPage::requestMore, this, [this]() {
-        m_db->listRecentAudit(200);
+        // 滚动加载: fetch the next page beyond what is already loaded
+        // (spec §12); listRecentAudit(200, offset) pages by offset.
+        m_db->listRecentAudit(200, m_auditLoadedCount);
     });
 
     // --- DatabaseService -> pages / lifecycle ---------------------------------
@@ -318,9 +320,14 @@ void Application::wireGateway(IPlcGateway *gw)
             &ShellModel::setOnline);
     connect(gw, &IPlcGateway::writeCompleted, this,
             &Application::handleWriteCompleted);
+    // The coordinator drives the M43 pulse from writeCompleted (spec §10.3
+    // step 4); without this the adjustWidth flow times out (Task 20 review).
+    connect(gw, &IPlcGateway::writeCompleted, m_coordinator,
+            &ControlCoordinator::onWriteCompleted);
 
     // commStatsChanged exists on both concrete gateway classes; connect via
-    // the concrete pointer (spec §16).
+    // the concrete pointer (spec §16). A third gateway type would need its
+    // own branch here (Task 20 review).
     if (auto *sim = qobject_cast<SimulatedPlcGateway *>(gw)) {
         connect(sim, &SimulatedPlcGateway::commStatsChanged, m_diagPage,
                 [this](quint64 seq, int reconn, int failed) {
@@ -357,6 +364,12 @@ void Application::start()
 
 void Application::shutdown()
 {
+    // Idempotent: aboutToQuit and the destructor both call this; the second
+    // call must not re-issue M42/M106-M111 clears against a stopped gateway
+    // (Task 20 review).
+    if (m_shutdownDone)
+        return;
+    m_shutdownDone = true;
     // Ordered shutdown (spec §13): clear M42/M106-M111 + stop heartbeat, then
     // gateway, database, vision. M100 is never auto-cleared.
     if (m_lifecycle)
@@ -415,8 +428,14 @@ void Application::persistSerialConfig(const SerialConfig &cfg)
 
 void Application::handleSettingLoaded(const std::optional<SettingRecord> &setting)
 {
-    if (!setting)
+    // Count every load (including a missing key) so the echo fires on first
+    // run; otherwise m_pendingSerialLoads never reaches 0 (Task 20 review).
+    --m_pendingSerialLoads;
+    if (!setting) {
+        if (m_pendingSerialLoads <= 0)
+            m_usersPage->setSerialConfig(m_loadedSerialCfg);
         return;
+    }
     const QString &key = setting->key;
     const QString &value = setting->typedValue;
     bool ok = false;
@@ -474,7 +493,7 @@ void Application::handleParameterWrite(quint16 address, quint16 value)
 {
     // Range validation is done by the page; the write goes through the
     // gateway at Normal priority (spec §11.3).
-    m_pendingParamAddr = int(address);
+    m_pendingParamAddrs.append(int(address));
     m_gw->writeRegister(address, value, CommandPriority::Normal);
 }
 
@@ -493,7 +512,7 @@ void Application::handlePasswordVerified(bool ok)
         return;
     m_d204Pending = false;
     if (ok) {
-        m_pendingParamAddr = int(kD204);
+        m_pendingParamAddrs.append(int(kD204));
         m_gw->writeRegister(kD204, m_d204Value, CommandPriority::Normal);
     } else {
         m_usersPage->setParameterWriteResult(false,
@@ -505,9 +524,10 @@ void Application::handleWriteCompleted(quint16 address, bool ok,
                                        const QString &error)
 {
     // Feed the result back to the users page for D122/D220/D204 writes
-    // (spec §11.2: 无乐观状态).
-    if (m_pendingParamAddr >= 0 && quint16(m_pendingParamAddr) == address) {
-        m_pendingParamAddr = -1;
+    // (spec §11.2: 无乐观状态). FIFO: results arrive in write order.
+    if (!m_pendingParamAddrs.isEmpty()
+        && quint16(m_pendingParamAddrs.first()) == address) {
+        m_pendingParamAddrs.removeFirst();
         m_usersPage->setParameterWriteResult(ok, error);
     }
 }
@@ -583,16 +603,13 @@ void Application::handleAlarmsLoaded(const QVector<AlarmEventRecord> &alarms)
 
 void Application::handleAuditLoaded(const QVector<AuditRecord> &records)
 {
-    // 滚动加载: 首次加载替换全部, 后续请求只追加增量 (spec §12).
+    // 滚动加载: 首次加载替换全部, 后续请求 (offset 分页) 追加整页 (spec §12).
     if (m_auditLoadedCount == 0) {
         m_auditPage->setRecords(records);
-    } else if (records.size() > m_auditLoadedCount) {
-        QVector<AuditRecord> delta;
-        for (int i = m_auditLoadedCount; i < records.size(); ++i)
-            delta.append(records.at(i));
-        m_auditPage->appendRecords(delta);
+    } else {
+        m_auditPage->appendRecords(records);
     }
-    m_auditLoadedCount = records.size();
+    m_auditLoadedCount += records.size();
 }
 
 } // namespace hlm

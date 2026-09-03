@@ -353,6 +353,7 @@ void ModbusGatewayWorker::stop()
     // Abort any active pulses (spec §8.5: stop aborts with finished(false),
     // nothing queued) and halt the M112 watchdog.
     m_pulses.reset();
+    m_pulseReadbacks.clear(); // symmetry with enterOffline() (Task 20 review)
     m_watchdog.setOnline(false);
     if (m_transport)
         m_transport->close();
