@@ -232,6 +232,16 @@ target_link_libraries(test_audit_log_page PRIVATE
 
 add_test(NAME audit_log_page COMMAND test_audit_log_page)
 
-set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page PROPERTIES
+# --- Task 16: I/O 与诊断 page (spec §8.2, §9, §11.3, §13) ------------------------
+
+add_executable(test_diagnostics_page test_diagnostics_page.cpp)
+target_link_libraries(test_diagnostics_page PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+
+add_test(NAME diagnostics_page COMMAND test_diagnostics_page)
+
+set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )

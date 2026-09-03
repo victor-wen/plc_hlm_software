@@ -10,6 +10,7 @@
 #include "ui/pages/manual_control_page.h"
 #include "ui/pages/alarm_page.h"
 #include "ui/pages/audit_log_page.h"
+#include "ui/pages/diagnostics_page.h"
 #include "ui/widgets/hold_button.h"
 #include "ui/widgets/permission_button.h"
 
@@ -122,7 +123,8 @@ void MainWindow::createStubPages()
     // is the real RecipeWidthPage (Task 12); index 2 (手动控制) is the real
     // ManualControlPage (Task 13); index 3 (报警) is the real AlarmPage
     // (Task 14); index 4 (操作记录) is the real AuditLogPage (Task 15);
-    // the rest stay stubs until Tasks 16-17.
+    // index 5 (I/O 与诊断) is the real DiagnosticsPage (Task 16);
+    // index 6 stays a stub until Task 17.
     m_pages->addWidget(new OverviewPage(*m_model, this));
     m_pages->addWidget(new RecipeWidthPage(*m_model, this));
     auto *manualPage = new ManualControlPage(*m_model, this);
@@ -133,13 +135,9 @@ void MainWindow::createStubPages()
         registerHoldWidget(hb);
     m_pages->addWidget(new AlarmPage(this));
     m_pages->addWidget(new AuditLogPage(this));
+    m_pages->addWidget(new DiagnosticsPage(*m_model, this));
 
-    const QStringList stubPages = {
-        QStringLiteral("I/O 与诊断"),
-        QStringLiteral("用户与设置"),
-    };
-    for (const QString &title : stubPages)
-        m_pages->addWidget(makeStubPage(title));
+    m_pages->addWidget(makeStubPage(QStringLiteral("用户与设置")));
 }
 
 int MainWindow::navItemCount() const
