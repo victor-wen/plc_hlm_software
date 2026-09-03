@@ -9,6 +9,7 @@
 #include "ui/pages/recipe_width_page.h"
 #include "ui/pages/manual_control_page.h"
 #include "ui/pages/alarm_page.h"
+#include "ui/pages/audit_log_page.h"
 #include "ui/widgets/hold_button.h"
 #include "ui/widgets/permission_button.h"
 
@@ -130,9 +131,9 @@ void MainWindow::createStubPages()
     for (HoldButton *hb : manualPage->findChildren<HoldButton *>())
         registerHoldWidget(hb);
     m_pages->addWidget(new AlarmPage(this));
+    m_pages->addWidget(new AuditLogPage(this));
 
     const QStringList stubPages = {
-        QStringLiteral("操作记录"),
         QStringLiteral("I/O 与诊断"),
         QStringLiteral("用户与设置"),
     };

@@ -153,6 +153,8 @@ add_library(hlm_ui STATIC
     src/ui/pages/manual_control_page.cpp
     src/ui/pages/alarm_model.cpp
     src/ui/pages/alarm_page.cpp
+    src/ui/pages/audit_log_model.cpp
+    src/ui/pages/audit_log_page.cpp
     src/ui/widgets/hold_button.cpp
     src/ui/widgets/status_light.cpp
     src/ui/widgets/value_display.cpp
