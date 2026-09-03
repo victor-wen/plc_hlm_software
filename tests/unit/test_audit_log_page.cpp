@@ -17,6 +17,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QComboBox>
+#include <QDateEdit>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QHeaderView>
@@ -60,9 +61,12 @@ private slots:
     void anonymousUserShowsAnonymous();
     void resultTextMapsSuccessAndFailure();
 
-    // --- model: 筛选 (动作 / 用户 / 结果) --------------------------------------
+    // --- model: 筛选 (时间 / 动作 / 用户 / 角色 / 对象 / 结果) -------------------
+    void filterByDateRange();
     void filterByAction();
     void filterByUser();
+    void filterByRole();
+    void filterByTarget();
     void filterByResult();
     void filterCombination();
 
@@ -80,12 +84,17 @@ private slots:
     // --- page: 渲染 --------------------------------------------------------------
     void pageRendersAllColumns();
     void pageRendersFilteredRows();
+    void pageFiltersByDateRange();
+    void pageFiltersByRole();
+    void pageFiltersByTarget();
 
     // --- page: 敏感字段不渲染 -----------------------------------------------------
     void pageNeverRendersSensitiveValues();
+    void pageRendersRedactedValuesAsIs();
 
     // --- page: 滚动到底部触发 requestMore -----------------------------------------
     void scrollToBottomRequestsMore();
+    void scrollToBottomDedupsRequestMore();
 
     // --- MainWindow integration --------------------------------------------------
     void mainWindowUsesAuditLogPage();
@@ -177,6 +186,107 @@ void AuditLogPageTest::filterByUser()
     QCOMPARE(m.recordAt(0).id, qint64(3));
 
     m.setUserFilter(QString());
+    QCOMPARE(m.rowCount(), 3);
+}
+
+void AuditLogPageTest::filterByDateRange()
+{
+    AuditLogModel m;
+    const QDateTime t1(QDate(2026, 8, 1), QTime(10, 0, 0));
+    const QDateTime t2(QDate(2026, 8, 15), QTime(10, 0, 0));
+    const QDateTime t3(QDate(2026, 8, 31), QTime(10, 0, 0));
+    m.setRecords({
+        record(1, QStringLiteral("admin"), Role::Admin, QStringLiteral("login"),
+               QStringLiteral("admin"), QStringLiteral(""), AuditResult::Success,
+               QStringLiteral(""), t1),
+        record(2, QStringLiteral("admin"), Role::Admin, QStringLiteral("login"),
+               QStringLiteral("admin"), QStringLiteral(""), AuditResult::Success,
+               QStringLiteral(""), t2),
+        record(3, QStringLiteral("operator"), Role::Operator, QStringLiteral("start"),
+               QStringLiteral("M3"), QStringLiteral(""), AuditResult::Success,
+               QStringLiteral(""), t3),
+    });
+    QCOMPARE(m.rowCount(), 3);
+
+    // 只设起始日期: 从该日起 (含当天).
+    m.setDateRange(QDate(2026, 8, 15), std::nullopt);
+    QCOMPARE(m.rowCount(), 2);
+    QCOMPARE(m.recordAt(0).id, qint64(2));
+
+    // 只设结束日期: 到该日止 (含当天).
+    m.setDateRange(std::nullopt, QDate(2026, 8, 15));
+    QCOMPARE(m.rowCount(), 2);
+    QCOMPARE(m.recordAt(0).id, qint64(1));
+
+    // 起止都设: 闭区间.
+    m.setDateRange(QDate(2026, 8, 2), QDate(2026, 8, 30));
+    QCOMPARE(m.rowCount(), 1);
+    QCOMPARE(m.recordAt(0).id, qint64(2));
+
+    // 清空: 全部.
+    m.setDateRange(std::nullopt, std::nullopt);
+    QCOMPARE(m.rowCount(), 3);
+}
+
+void AuditLogPageTest::filterByRole()
+{
+    AuditLogModel m;
+    const QDateTime t = QDateTime::currentDateTime();
+    m.setRecords({
+        record(1, QStringLiteral("admin"), Role::Admin, QStringLiteral("login"),
+               QStringLiteral("admin"), QStringLiteral(""), AuditResult::Success,
+               QStringLiteral(""), t),
+        record(2, QStringLiteral("operator"), Role::Operator, QStringLiteral("start"),
+               QStringLiteral("M3"), QStringLiteral(""), AuditResult::Success,
+               QStringLiteral(""), t),
+        record(3, QStringLiteral("anonymous"), Role::Anonymous, QStringLiteral("view"),
+               QStringLiteral("overview"), QStringLiteral(""), AuditResult::Success,
+               QStringLiteral(""), t),
+    });
+
+    m.setRoleFilter(Role::Admin);
+    QCOMPARE(m.rowCount(), 1);
+    QCOMPARE(m.recordAt(0).id, qint64(1));
+
+    m.setRoleFilter(Role::Operator);
+    QCOMPARE(m.rowCount(), 1);
+    QCOMPARE(m.recordAt(0).id, qint64(2));
+
+    m.setRoleFilter(Role::Anonymous);
+    QCOMPARE(m.rowCount(), 1);
+    QCOMPARE(m.recordAt(0).id, qint64(3));
+
+    m.setRoleFilter(std::nullopt);
+    QCOMPARE(m.rowCount(), 3);
+}
+
+void AuditLogPageTest::filterByTarget()
+{
+    AuditLogModel m;
+    const QDateTime t = QDateTime::currentDateTime();
+    m.setRecords({
+        record(1, QStringLiteral("admin"), Role::Admin, QStringLiteral("login"),
+               QStringLiteral("admin"), QStringLiteral(""), AuditResult::Success,
+               QStringLiteral(""), t),
+        record(2, QStringLiteral("operator"), Role::Operator, QStringLiteral("start"),
+               QStringLiteral("M3"), QStringLiteral(""), AuditResult::Success,
+               QStringLiteral(""), t),
+        record(3, QStringLiteral("operator"), Role::Operator, QStringLiteral("stop"),
+               QStringLiteral("M3"), QStringLiteral(""), AuditResult::Success,
+               QStringLiteral(""), t),
+    });
+
+    // 子串匹配 (不区分大小写).
+    m.setTargetFilter(QStringLiteral("m3"));
+    QCOMPARE(m.rowCount(), 2);
+    QCOMPARE(m.recordAt(0).id, qint64(2));
+    QCOMPARE(m.recordAt(1).id, qint64(3));
+
+    m.setTargetFilter(QStringLiteral("admin"));
+    QCOMPARE(m.rowCount(), 1);
+    QCOMPARE(m.recordAt(0).id, qint64(1));
+
+    m.setTargetFilter(QString());
     QCOMPARE(m.rowCount(), 3);
 }
 
@@ -362,13 +472,122 @@ void AuditLogPageTest::pageRendersFilteredRows()
     QCOMPARE(page.table()->rowCount(), 0);
 }
 
+void AuditLogPageTest::pageFiltersByDateRange()
+{
+    AuditLogPage page;
+    const QDateTime t1(QDate(2026, 8, 1), QTime(10, 0, 0));
+    const QDateTime t2(QDate(2026, 8, 15), QTime(10, 0, 0));
+    const QDateTime t3(QDate(2026, 8, 31), QTime(10, 0, 0));
+    page.setRecords({
+        record(1, QStringLiteral("admin"), Role::Admin, QStringLiteral("login"),
+               QStringLiteral("admin"), QStringLiteral(""), AuditResult::Success,
+               QStringLiteral(""), t1),
+        record(2, QStringLiteral("admin"), Role::Admin, QStringLiteral("login"),
+               QStringLiteral("admin"), QStringLiteral(""), AuditResult::Success,
+               QStringLiteral(""), t2),
+        record(3, QStringLiteral("operator"), Role::Operator, QStringLiteral("start"),
+               QStringLiteral("M3"), QStringLiteral(""), AuditResult::Success,
+               QStringLiteral(""), t3),
+    });
+    QCOMPARE(page.table()->rowCount(), 3);
+
+    // 默认"全部": 哨兵日期显示为"全部", 模型无日期筛选.
+    QCOMPARE(page.dateFromEdit()->text(), QStringLiteral("全部"));
+    QCOMPARE(page.dateToEdit()->text(), QStringLiteral("全部"));
+    QVERIFY(!page.model()->dateFrom().has_value());
+    QVERIFY(!page.model()->dateTo().has_value());
+
+    // 真实用户路径: 日期控件 → 模型 → 表格行.
+    page.dateFromEdit()->setDate(QDate(2026, 8, 15));
+    QCOMPARE(page.table()->rowCount(), 2);
+    QCOMPARE(page.table()->item(0, 0)->text(), QStringLiteral("2026-08-15 10:00:00"));
+
+    page.dateToEdit()->setDate(QDate(2026, 8, 15));
+    QCOMPARE(page.table()->rowCount(), 1);
+
+    // 回到哨兵日期 = 清除该端筛选 (另一端仍生效).
+    page.dateFromEdit()->setDate(page.dateFromEdit()->minimumDate());
+    QCOMPARE(page.table()->rowCount(), 2); // to=8/15 仍生效: 8/1 与 8/15 两条
+    page.dateToEdit()->setDate(page.dateToEdit()->minimumDate());
+    QCOMPARE(page.table()->rowCount(), 3);
+}
+
+void AuditLogPageTest::pageFiltersByRole()
+{
+    AuditLogPage page;
+    const QDateTime t = QDateTime::currentDateTime();
+    page.setRecords({
+        record(1, QStringLiteral("admin"), Role::Admin, QStringLiteral("login"),
+               QStringLiteral("admin"), QStringLiteral(""), AuditResult::Success,
+               QStringLiteral(""), t),
+        record(2, QStringLiteral("operator"), Role::Operator, QStringLiteral("start"),
+               QStringLiteral("M3"), QStringLiteral(""), AuditResult::Success,
+               QStringLiteral(""), t),
+        record(3, QStringLiteral("anonymous"), Role::Anonymous, QStringLiteral("view"),
+               QStringLiteral("overview"), QStringLiteral(""), AuditResult::Success,
+               QStringLiteral(""), t),
+    });
+    QCOMPARE(page.table()->rowCount(), 3);
+
+    // 真实用户路径: 下拉框 → 模型 → 表格行.
+    page.roleFilterCombo()->setCurrentIndex(1); // 管理员
+    QCOMPARE(page.table()->rowCount(), 1);
+    QCOMPARE(page.table()->item(0, 2)->text(), QStringLiteral("管理员"));
+
+    page.roleFilterCombo()->setCurrentIndex(2); // 操作员
+    QCOMPARE(page.table()->rowCount(), 1);
+    QCOMPARE(page.table()->item(0, 2)->text(), QStringLiteral("操作员"));
+
+    page.roleFilterCombo()->setCurrentIndex(3); // 未登录
+    QCOMPARE(page.table()->rowCount(), 1);
+    QCOMPARE(page.table()->item(0, 2)->text(), QStringLiteral("未登录"));
+
+    page.roleFilterCombo()->setCurrentIndex(0); // 全部
+    QCOMPARE(page.table()->rowCount(), 3);
+}
+
+void AuditLogPageTest::pageFiltersByTarget()
+{
+    AuditLogPage page;
+    const QDateTime t = QDateTime::currentDateTime();
+    page.setRecords({
+        record(1, QStringLiteral("admin"), Role::Admin, QStringLiteral("login"),
+               QStringLiteral("admin"), QStringLiteral(""), AuditResult::Success,
+               QStringLiteral(""), t),
+        record(2, QStringLiteral("operator"), Role::Operator, QStringLiteral("start"),
+               QStringLiteral("M3"), QStringLiteral(""), AuditResult::Success,
+               QStringLiteral(""), t),
+        record(3, QStringLiteral("operator"), Role::Operator, QStringLiteral("stop"),
+               QStringLiteral("M3"), QStringLiteral(""), AuditResult::Success,
+               QStringLiteral(""), t),
+    });
+    QCOMPARE(page.table()->rowCount(), 3);
+
+    // 真实用户路径: 输入框 → 模型 → 表格行 (子串匹配).
+    page.targetFilterEdit()->setText(QStringLiteral("m3"));
+    QCOMPARE(page.table()->rowCount(), 2);
+    QCOMPARE(page.table()->item(0, 4)->text(), QStringLiteral("M3"));
+
+    page.targetFilterEdit()->setText(QStringLiteral("admin"));
+    QCOMPARE(page.table()->rowCount(), 1);
+    QCOMPARE(page.table()->item(0, 4)->text(), QStringLiteral("admin"));
+
+    page.targetFilterEdit()->clear();
+    QCOMPARE(page.table()->rowCount(), 3);
+}
+
 // --- page: 敏感字段不渲染 ----------------------------------------------------------------
 
 void AuditLogPageTest::pageNeverRendersSensitiveValues()
 {
     // 页面只显示 redactedParameters (已脱敏), 绝不渲染密码/令牌/未脱敏内容
-    // (spec §12: redacted_parameters 绝不包含密码或令牌). 注入含密码样子的
-    // 记录, 验证页面任何可见文本都不含明文敏感值.
+    // (spec §12: redacted_parameters 绝不包含密码或令牌). 注入含明文密码/令牌
+    // 样子的记录, 验证页面任何可见文本都不含未脱敏来源.
+    //
+    // 信任边界: 页面不自己脱敏, 只渲染应用层 (Task 8) 已脱敏的字段. 因此本测试
+    // 验证的是: 页面渲染的完整文本集合中不含任何未脱敏来源 — AuditRecord 没有
+    // 原始参数字段, 页面只读 redactedParameters, 不会从用户名/target/reason
+    // 等其它字段拼接出敏感值.
     AuditLogPage page;
     const QDateTime t = QDateTime::currentDateTime();
     page.setRecords({
@@ -383,7 +602,8 @@ void AuditLogPageTest::pageNeverRendersSensitiveValues()
     });
     QCOMPARE(page.table()->rowCount(), 2);
 
-    const QStringList sensitive = {
+    // 未脱敏来源: 明文密码/令牌样子. 这些值从未注入任何字段, 页面也不该渲染.
+    const QStringList unredacted = {
         QStringLiteral("P@ssw0rd!"), // 明文密码
         QStringLiteral("secret-token-abc"), // 明文令牌
     };
@@ -397,9 +617,48 @@ void AuditLogPageTest::pageNeverRendersSensitiveValues()
     visibleTexts << page.statusText();
 
     const QString joined = visibleTexts.join(QStringLiteral("|"));
-    for (const QString &s : sensitive)
+    for (const QString &s : unredacted)
         QVERIFY2(!joined.contains(s),
-                 qPrintable(QStringLiteral("sensitive value leaked: ") + s));
+                 qPrintable(QStringLiteral("unredacted value leaked: ") + s));
+}
+
+void AuditLogPageTest::pageRendersRedactedValuesAsIs()
+{
+    // 记录信任边界: 页面不自己脱敏, 只渲染应用层已脱敏的字段. 把含明文密码/
+    // 令牌样子的值注入 redactedParameters (模拟应用层脱敏后的字段仍带敏感字样
+    // 的边界情况), 页面必须按原样渲染 — 页面不负责脱敏, 只负责展示.
+    AuditLogPage page;
+    const QDateTime t = QDateTime::currentDateTime();
+    page.setRecords({
+        record(1, QStringLiteral("admin"), Role::Admin, QStringLiteral("login"),
+               QStringLiteral("admin"),
+               QStringLiteral("username=admin, password=P@ssw0rd!"),
+               AuditResult::Success, QStringLiteral(""), t),
+        record(2, QStringLiteral("admin"), Role::Admin, QStringLiteral("changePassword"),
+               QStringLiteral("admin"),
+               QStringLiteral("token=secret-token-abc"),
+               AuditResult::Success, QStringLiteral(""), t),
+    });
+    QCOMPARE(page.table()->rowCount(), 2);
+
+    // 脱敏字段按原样渲染 (页面不脱敏, 只展示).
+    QCOMPARE(page.table()->item(0, 5)->text(),
+             QStringLiteral("username=admin, password=P@ssw0rd!"));
+    QCOMPARE(page.table()->item(1, 5)->text(),
+             QStringLiteral("token=secret-token-abc"));
+
+    // 敏感值只出现在脱敏参数列 (列 5), 不出现在其它列 (用户名/target/reason 等).
+    for (int r = 0; r < page.table()->rowCount(); ++r) {
+        for (int c = 0; c < page.table()->columnCount(); ++c) {
+            if (c == 5) // ColRedacted
+                continue;
+            const QString text = page.table()->item(r, c)->text();
+            QVERIFY2(!text.contains(QStringLiteral("P@ssw0rd!")),
+                     qPrintable(QStringLiteral("password leaked in column ") + QString::number(c)));
+            QVERIFY2(!text.contains(QStringLiteral("secret-token-abc")),
+                     qPrintable(QStringLiteral("token leaked in column ") + QString::number(c)));
+        }
+    }
 }
 
 // --- page: 滚动到底部触发 requestMore ------------------------------------------------------
@@ -428,6 +687,44 @@ void AuditLogPageTest::scrollToBottomRequestsMore()
     page.table()->verticalScrollBar()->setValue(
         page.table()->verticalScrollBar()->maximum());
     QCOMPARE(spy.count(), 1);
+}
+
+void AuditLogPageTest::scrollToBottomDedupsRequestMore()
+{
+    // 已到底部时 valueChanged 会重复触发; 在下一页数据到达前只发一次
+    // requestMore (review finding: value >= maximum() 重复请求).
+    AuditLogPage page;
+    page.resize(800, 600);
+    page.show(); // 布局生效, 滚动条才有真实范围
+    QTest::qWaitForWindowExposed(&page);
+    QTest::qWait(50); // 让布局/滚动条范围稳定
+    const QDateTime t = QDateTime::currentDateTime();
+    QVector<AuditRecord> many;
+    for (int i = 0; i < 200; ++i) {
+        many.append(record(i, QStringLiteral("admin"), Role::Admin,
+                           QStringLiteral("login"), QStringLiteral("admin"),
+                           QStringLiteral(""), AuditResult::Success,
+                           QStringLiteral(""), t));
+    }
+    page.setRecords(many);
+    QCOMPARE(page.table()->rowCount(), 200);
+    QTest::qWait(50); // 让表格布局/滚动条范围更新
+
+    QSignalSpy spy(&page, &AuditLogPage::requestMore);
+    QScrollBar *bar = page.table()->verticalScrollBar();
+    bar->setValue(bar->maximum());
+    QCOMPARE(spy.count(), 1);
+
+    // 仍在底部再次滚动: 不重复请求.
+    bar->setValue(bar->maximum() - 1);
+    bar->setValue(bar->maximum());
+    QCOMPARE(spy.count(), 1);
+
+    // 新数据到达 (appendRecords): 允许再次请求.
+    page.appendRecords(many);
+    QTest::qWait(50);
+    bar->setValue(bar->maximum());
+    QCOMPARE(spy.count(), 2);
 }
 
 // --- MainWindow integration ----------------------------------------------------------------

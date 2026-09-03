@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QDate>
 #include <QElapsedTimer>
 #include <QWidget>
 #include <QVector>
@@ -7,6 +8,7 @@
 #include "ui/pages/audit_log_model.h"
 
 class QComboBox;
+class QDateEdit;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -15,7 +17,7 @@ class QTableWidget;
 namespace hlm {
 
 // 操作记录 page (spec §11.3, §12): 时间、用户、角色、动作、对象、脱敏参数、
-// 结果和失败原因, 支持动作/用户/结果筛选和滚动加载更多.
+// 结果和失败原因, 支持时间范围/用户/角色/动作/对象/结果筛选和滚动加载更多.
 //
 // Strictly read-only: the page declares exactly TWO signals (requestReload and
 // requestMore) and contains no command widgets — it can never emit a write
@@ -46,8 +48,12 @@ public:
     // --- test/inspection API ---------------------------------------------------
     AuditLogModel *model() { return &m_model; }
     QTableWidget *table() const { return m_table; }
+    QDateEdit *dateFromEdit() const { return m_dateFrom; }
+    QDateEdit *dateToEdit() const { return m_dateTo; }
     QLineEdit *actionFilterEdit() const { return m_actionFilter; }
     QLineEdit *userFilterEdit() const { return m_userFilter; }
+    QComboBox *roleFilterCombo() const { return m_roleFilter; }
+    QLineEdit *targetFilterEdit() const { return m_targetFilter; }
     QComboBox *resultFilterCombo() const { return m_resultFilter; }
     QPushButton *reloadButton() const { return m_reload; }
     QLabel *statusLabel() const { return m_status; }
@@ -79,15 +85,26 @@ private:
     // Re-shows closer than this to the previous reload are deduplicated.
     static constexpr qint64 kReloadDedupMs = 500;
 
+    // Sentinel date shown as "全部" (no date filtering). Any real user-picked
+    // date is mapped to the model; the sentinel maps to std::nullopt so the
+    // displayed value and the model filter always agree (same pattern as
+    // AlarmPage, Task 14).
+    static QDate sentinelDate() { return QDate(1900, 1, 1); }
+
     AuditLogModel m_model;
     QTableWidget *m_table = nullptr;
+    QDateEdit *m_dateFrom = nullptr;
+    QDateEdit *m_dateTo = nullptr;
     QLineEdit *m_actionFilter = nullptr;
     QLineEdit *m_userFilter = nullptr;
+    QComboBox *m_roleFilter = nullptr;
+    QLineEdit *m_targetFilter = nullptr;
     QComboBox *m_resultFilter = nullptr;
     QPushButton *m_reload = nullptr;
     QLabel *m_status = nullptr;
     QElapsedTimer m_timer;
     qint64 m_lastReloadMs = 0;
+    bool m_moreRequested = false;
 };
 
 } // namespace hlm

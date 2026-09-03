@@ -121,7 +121,8 @@ void MainWindow::createStubPages()
     // Index 0 (总览) is the real OverviewPage (Task 11); index 1 (配方与调宽)
     // is the real RecipeWidthPage (Task 12); index 2 (手动控制) is the real
     // ManualControlPage (Task 13); index 3 (报警) is the real AlarmPage
-    // (Task 14); the rest stay stubs until Tasks 15-17.
+    // (Task 14); index 4 (操作记录) is the real AuditLogPage (Task 15);
+    // the rest stay stubs until Tasks 16-17.
     m_pages->addWidget(new OverviewPage(*m_model, this));
     m_pages->addWidget(new RecipeWidthPage(*m_model, this));
     auto *manualPage = new ManualControlPage(*m_model, this);

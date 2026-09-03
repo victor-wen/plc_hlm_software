@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QDate>
 #include <QString>
 #include <QVector>
 
@@ -19,7 +20,8 @@ namespace hlm {
 // - 匿名用户: username "anonymous" 显示"匿名" (spec §12).
 // - 敏感字段: 页面只显示 redactedParameters (已脱敏), 绝不渲染密码/令牌/
 //   未脱敏内容; 脱敏责任在应用层 (Task 8), 页面只展示.
-// - 筛选: 动作 / 用户 / 结果 (成功/失败) (spec §11.3).
+// - 筛选: 时间范围 / 用户 / 角色 / 动作 / 对象 / 结果 (成功/失败)
+//   (spec §11.3). 脱敏参数和失败原因是展示字段, 不做筛选列.
 // - 异步分页/滚动: setRecords 替换全部, appendRecords 追加下一页
 //   (requestMore 由页面发出, Task 20 接 DatabaseService::listRecentAudit);
 //   加载中不阻塞 UI (无阻塞同步调用).
@@ -40,11 +42,19 @@ public:
     QString loadFailureReason() const { return m_failureReason; }
 
     // --- filters ---------------------------------------------------------------
+    void setDateRange(const std::optional<QDate> &from,
+                      const std::optional<QDate> &to);
     void setActionFilter(const QString &text);
     void setUserFilter(const QString &text);
+    void setRoleFilter(const std::optional<Role> &role);
+    void setTargetFilter(const QString &text);
     void setResultFilter(const std::optional<AuditResult> &result);
+    std::optional<QDate> dateFrom() const { return m_from; }
+    std::optional<QDate> dateTo() const { return m_to; }
     QString actionFilter() const { return m_actionFilter; }
     QString userFilter() const { return m_userFilter; }
+    std::optional<Role> roleFilter() const { return m_roleFilter; }
+    QString targetFilter() const { return m_targetFilter; }
     std::optional<AuditResult> resultFilter() const { return m_resultFilter; }
 
     // --- filtered rows -----------------------------------------------------------
@@ -68,8 +78,12 @@ private:
     QVector<AuditRecord> m_filtered;
     LoadState m_state = LoadState::Idle;
     QString m_failureReason;
+    std::optional<QDate> m_from;
+    std::optional<QDate> m_to;
     QString m_actionFilter;
     QString m_userFilter;
+    std::optional<Role> m_roleFilter;
+    QString m_targetFilter;
     std::optional<AuditResult> m_resultFilter;
 };
 
