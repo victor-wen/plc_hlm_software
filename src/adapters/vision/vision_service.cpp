@@ -2,6 +2,8 @@
 
 #include <QThread>
 
+#include <cmath>
+
 #include <opencv2/core.hpp>
 
 namespace hlm {
