@@ -40,9 +40,12 @@ public slots:
     void refresh();
 
 signals:
-    // Emitted for mode switch (manual=false, auto=true), start, stop, reset,
-    // estop set/release. The owner routes to the coordinator.
+    // Emitted for start, stop, reset, estop set/release. The owner routes to
+    // the coordinator.
     void actionRequested(Command cmd);
+    // Emitted for mode switch with the target direction: manual=false,
+    // auto=true. The owner routes to ControlCoordinator::setMode(bool).
+    void modeSwitchRequested(bool autoMode);
     void loginLogoutRequested();
 
 private:

@@ -16,6 +16,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
@@ -148,6 +149,7 @@ add_library(hlm_ui STATIC
     src/ui/widgets/status_light.cpp
     src/ui/widgets/value_display.cpp
     src/ui/widgets/permission_button.cpp
+    src/ui/theme.qrc
 )
 target_include_directories(hlm_ui PUBLIC src)
 target_link_libraries(hlm_ui PUBLIC

@@ -62,9 +62,9 @@ ActionBar::ActionBar(ShellModel &model, QWidget *parent)
     layout->addWidget(m_estop);
 
     connect(m_manual, &QPushButton::clicked, this,
-            [this] { emit actionRequested(Command::ModeSwitch); });
+            [this] { emit modeSwitchRequested(false); });
     connect(m_auto, &QPushButton::clicked, this,
-            [this] { emit actionRequested(Command::ModeSwitch); });
+            [this] { emit modeSwitchRequested(true); });
     connect(m_start, &QPushButton::clicked, this,
             [this] { emit actionRequested(Command::Start); });
     connect(m_stop, &QPushButton::clicked, this,

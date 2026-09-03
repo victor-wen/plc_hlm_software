@@ -65,11 +65,13 @@ public slots:
 signals:
     // The owner (app wiring) connects these to the ControlCoordinator.
     void commandRequested(Command cmd);
+    void modeSwitchRequested(bool autoMode);
     void loginLogoutRequested();
 
 private:
     void buildLayout();
     void createStubPages();
+    void loadTheme();
 
     ShellModel *m_model = nullptr;
     TopBar *m_topBar = nullptr;

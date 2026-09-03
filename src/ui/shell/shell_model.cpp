@@ -103,19 +103,20 @@ QString ShellModel::userName() const
 
 QString ShellModel::activeAlarmText() const
 {
+    // Priority (spec §11.1): estop > latched fault > fault > offline notice.
+    if (m_snapshot.has_value()) {
+        const DeviceSnapshot &s = *m_snapshot;
+        if (s.m0() || s.m100())
+            return QStringLiteral("急停有效");
+        if (s.m14())
+            return QStringLiteral("存在锁存故障");
+        if (s.faultCode() != 0)
+            return s.fault().meaning.isEmpty()
+                ? QStringLiteral("故障 代码 %1").arg(s.faultCode())
+                : s.fault().meaning;
+    }
     if (!m_online)
         return QStringLiteral("通讯中断");
-    if (!m_snapshot.has_value())
-        return QString();
-    const DeviceSnapshot &s = *m_snapshot;
-    if (s.m0() || s.m100())
-        return QStringLiteral("急停有效");
-    if (s.faultCode() != 0)
-        return s.fault().meaning.isEmpty()
-            ? QStringLiteral("故障 代码 %1").arg(s.faultCode())
-            : s.fault().meaning;
-    if (s.m14())
-        return QStringLiteral("存在锁存故障");
     return QString();
 }
 

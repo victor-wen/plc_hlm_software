@@ -13,6 +13,15 @@
 #include <QHBoxLayout>
 #include <QWidget>
 #include <QLabel>
+#include <QFile>
+#include <QDebug>
+
+// Force the theme.qss resource object into the link (static lib). Must be at
+// global scope so Q_INIT_RESOURCE resolves to the un-namespaced symbol.
+static void initThemeResource()
+{
+    Q_INIT_RESOURCE(theme);
+}
 
 namespace hlm {
 
@@ -40,14 +49,29 @@ MainWindow::MainWindow(QWidget *parent)
     // 1920x1080 baseline; layouts adapt to smaller/larger (spec §11.1).
     resize(1920, 1080);
 
+    loadTheme();
+
     buildLayout();
     createStubPages();
 
     connect(m_nav, &NavPanel::pageSelected, this, &MainWindow::setCurrentPage);
     connect(m_actions, &ActionBar::actionRequested, this,
             &MainWindow::commandRequested);
+    connect(m_actions, &ActionBar::modeSwitchRequested, this,
+            &MainWindow::modeSwitchRequested);
     connect(m_actions, &ActionBar::loginLogoutRequested, this,
             &MainWindow::loginLogoutRequested);
+}
+
+void MainWindow::loadTheme()
+{
+    initThemeResource();
+    QFile file(QStringLiteral(":/theme.qss"));
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        qWarning() << "MainWindow: failed to open theme.qss:" << file.errorString();
+        return;
+    }
+    setStyleSheet(QString::fromUtf8(file.readAll()));
 }
 
 MainWindow::~MainWindow()
@@ -154,7 +178,7 @@ void MainWindow::registerHoldWidget(HoldButton *button)
 
 void MainWindow::clearHoldIntents()
 {
-    for (HoldButton *b : qAsConst(m_holdWidgets))
+    for (HoldButton *b : std::as_const(m_holdWidgets))
         b->cancelHold();
 }
 

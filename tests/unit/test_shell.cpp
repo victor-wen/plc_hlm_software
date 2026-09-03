@@ -83,6 +83,9 @@ private slots:
     void actionButtonsEnabledForAdminOnline();
     void noOptimisticStateOnCommand();
 
+    // --- theme ---------------------------------------------------------------
+    void themeStylesheetApplied();
+
     // --- intent clearing -----------------------------------------------------
     void modalDialogTriggerClearsHoldIntents();
 
@@ -166,7 +169,6 @@ void ShellTest::navigationClearsHoldIntents()
     HoldButton held(QStringLiteral("点动"));
     w.registerHoldWidget(&held);
     // Simulate a press (hold active).
-    QTest::keyPress(&held, Qt::Key_Space); // keyboard press does not hold; use mouse
     pressAt(&held);
     QVERIFY(w.hasActiveHolds());
     w.setCurrentPage(2);
@@ -188,9 +190,7 @@ void ShellTest::statusBarReflectsSnapshot()
 
     // Top bar must show text for each status (color is not the only channel).
     QVERIFY(w.topBarText().contains(QStringLiteral("自动")));
-    QVERIFY(w.topBarText().contains(QStringLiteral("admin").isEmpty()
-                                     ? QStringLiteral("未登录")
-                                     : QStringLiteral("未登录")));
+    QVERIFY(w.topBarText().contains(QStringLiteral("未登录")));
 }
 
 void ShellTest::statusBarOfflineShowsDash()
@@ -277,7 +277,19 @@ void ShellTest::noOptimisticStateOnCommand()
     // told a command is pending. Running state must not change.
     model->setCommandPending(Command::Start, true);
     QVERIFY(!w.topBarText().contains(QStringLiteral("运行中")));
-    QVERIFY(w.topBarText() == before || model->hasPendingCommands());
+    QCOMPARE(w.topBarText(), before);
+}
+
+// --- theme -------------------------------------------------------------
+
+void ShellTest::themeStylesheetApplied()
+{
+    // theme.qss must be loaded in the constructor so the nav item height and
+    // table row heights meet the >= 48 px touch target (spec §11.1).
+    MainWindow w;
+    QVERIFY(!w.styleSheet().isEmpty());
+    QVERIFY(w.styleSheet().contains(QStringLiteral("navList")));
+    QVERIFY(w.navItemMinimumHeight() >= 48);
 }
 
 // --- intent clearing ---------------------------------------------------------

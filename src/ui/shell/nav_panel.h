@@ -29,7 +29,6 @@ signals:
 
 private:
     QListWidget *m_list = nullptr;
-    QVector<QString> m_labels;
 };
 
 } // namespace hlm
