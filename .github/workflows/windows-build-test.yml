@@ -53,19 +53,17 @@ jobs:
         with:
           arch: x64
 
-      # USER-REQUESTED CI OPTIMIZATION: run-vcpkg already uses vcpkg binary
+      # USER-REQUESTED CI OPTIMIZATION: run-vcpkg already enables vcpkg binary
       # caching for built packages on GitHub Actions. doNotCache=false also
-      # persists the vcpkg executable/data files, while binaryCachePath keeps
-      # the package cache location stable across Debug/Release/package jobs and
-      # subsequent workflow runs. Cache keys still follow the pinned baseline
-      # and manifest, so changing vcpkg.json/baseline invalidates stale entries.
+      # persists the vcpkg executable/data files. Do not set binaryCachePath
+      # explicitly here: run-vcpkg requires a custom path to exist before the
+      # action starts, so using its managed default avoids fresh-run failures.
       - name: Setup vcpkg (manifest mode, vcpkg.json)
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
           vcpkgJsonGlob: '**/vcpkg.json'
           runVcpkgInstall: true
           doNotCache: false
-          binaryCachePath: '${{ runner.workspace }}/vcpkg-binary-cache'
 
       - name: Configure (HLM_ENABLE_VISION=ON)
         run: |
@@ -119,7 +117,6 @@ jobs:
           vcpkgJsonGlob: '**/vcpkg.json'
           runVcpkgInstall: true
           doNotCache: false
-          binaryCachePath: '${{ runner.workspace }}/vcpkg-binary-cache'
 
       - name: Configure (HLM_ENABLE_VISION=ON, Release)
         run: |
