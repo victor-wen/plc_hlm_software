@@ -114,7 +114,35 @@ jobs:
       # and let the remaining tests continue instead of occupying a runner
       # indefinitely.
       - name: Test (ctest)
-        run: ctest --test-dir build -C ${{ matrix.config }} --parallel 4 --timeout 30 --output-on-failure
+        shell: pwsh
+        run: |
+          # App-local deployment copies linked Qt DLLs beside each test
+          # executable, but it does not copy dynamically loaded plugins.
+          # Point Qt at the matching vcpkg plugin tree (Debug plugins carry
+          # the "d" suffix) and expose plugin dependencies through PATH.
+          $vcpkgPrefix = "build/vcpkg_installed/x64-windows"
+          if ("${{ matrix.config }}" -eq "Debug") {
+            $vcpkgPrefix = Join-Path $vcpkgPrefix "debug"
+          }
+
+          $qtPluginRoot = Join-Path $vcpkgPrefix "Qt6/plugins"
+          $qtPlatformRoot = Join-Path $qtPluginRoot "platforms"
+          $vcpkgBin = Join-Path $vcpkgPrefix "bin"
+          if (-not (Test-Path $qtPluginRoot)) {
+            throw "Qt plugin directory not found: $qtPluginRoot"
+          }
+          if (-not (Test-Path $qtPlatformRoot)) {
+            throw "Qt platform plugin directory not found: $qtPlatformRoot"
+          }
+          if (-not (Test-Path $vcpkgBin)) {
+            throw "vcpkg runtime directory not found: $vcpkgBin"
+          }
+
+          $env:PATH = "$(Resolve-Path $vcpkgBin);$env:PATH"
+          $env:QT_PLUGIN_PATH = (Resolve-Path $qtPluginRoot).Path
+          $env:QT_QPA_PLATFORM_PLUGIN_PATH = (Resolve-Path $qtPlatformRoot).Path
+
+          ctest --test-dir build -C ${{ matrix.config }} --parallel 4 --timeout 30 --output-on-failure
 
       - name: Upload build and test artifacts
         if: always()

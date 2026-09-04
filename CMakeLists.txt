@@ -196,6 +196,11 @@ target_link_libraries(plc_simulator PUBLIC
 add_executable(plc_simulator_exe
     tools/plc_simulator/main.cpp
 )
+# Keep the internal target name distinct from the plc_simulator library while
+# producing the executable name expected by packaging and user documentation.
+set_target_properties(plc_simulator_exe PROPERTIES
+    OUTPUT_NAME plc_simulator
+)
 target_include_directories(plc_simulator_exe PRIVATE src tools ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(plc_simulator_exe PRIVATE
     plc_simulator

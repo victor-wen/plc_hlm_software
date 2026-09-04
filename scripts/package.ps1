@@ -12,7 +12,9 @@
 #     -Version 0.1.0
 #
 # Parameters:
-#   -BuildDir          CMake build directory (contains <Config>/hlm_app.exe).
+#   -BuildDir          CMake build directory. Supports both single-config
+#                      layouts (build/hlm_app.exe) and multi-config layouts
+#                      (build/<Config>/hlm_app.exe).
 #   -OutDir            Output directory for the package and zip.
 #   -Config            Build configuration, default Release.
 #   -VcpkgInstalledDir vcpkg installed tree (installed/x64-windows). Used for
@@ -42,11 +44,23 @@ function Fail([string]$msg) {
 }
 
 # --- Locate binaries ---------------------------------------------------------
+# Visual Studio and Ninja Multi-Config place executables under <Config>/,
+# while the single-config Ninja generator used by CI places them directly in
+# the build directory. Prefer the multi-config layout and fall back to the
+# single-config layout.
 $exeDir = Join-Path $BuildDir $Config
+if (-not (Test-Path (Join-Path $exeDir "hlm_app.exe"))) {
+    $exeDir = $BuildDir
+}
+
 $hlmApp = Join-Path $exeDir "hlm_app.exe"
 $plcSim = Join-Path $exeDir "plc_simulator.exe"
-if (-not (Test-Path $hlmApp)) { Fail "hlm_app.exe not found at $hlmApp" }
-if (-not (Test-Path $plcSim)) { Fail "plc_simulator.exe not found at $plcSim" }
+if (-not (Test-Path $hlmApp)) {
+    Fail "hlm_app.exe not found in $BuildDir or $(Join-Path $BuildDir $Config)"
+}
+if (-not (Test-Path $plcSim)) {
+    Fail "plc_simulator.exe not found in $BuildDir or $(Join-Path $BuildDir $Config)"
+}
 
 # --- Locate windeployqt ------------------------------------------------------
 $windeployqt = $null
