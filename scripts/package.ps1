@@ -22,7 +22,7 @@
 #   -Version           Package version, default 0.1.0 (matches CMake project).
 #   -QtBinDir          Optional Qt bin directory; if omitted, windeployqt is
 #                      located via Get-Command or probed under the vcpkg
-#                      installed tree (tools/qtbase/bin).
+#                      installed tree (tools/Qt6/bin).
 
 param(
     [Parameter(Mandatory = $true)]
@@ -73,8 +73,8 @@ if (-not $windeployqt) {
     if ($cmd) { $windeployqt = $cmd.Source }
 }
 if (-not $windeployqt -and $VcpkgInstalledDir -ne "") {
-    # vcpkg's qtbase installs windeployqt under tools/qtbase/bin (not on PATH).
-    $candidate = Join-Path $VcpkgInstalledDir "tools\qtbase\bin\windeployqt.exe"
+    # Current vcpkg Qt 6 ports install host tools under tools/Qt6/bin.
+    $candidate = Join-Path $VcpkgInstalledDir "tools\Qt6\bin\windeployqt.exe"
     if (Test-Path $candidate) { $windeployqt = $candidate }
 }
 if (-not $windeployqt) { Fail "windeployqt not found (pass -QtBinDir or add Qt bin to PATH)" }
@@ -136,6 +136,8 @@ if (Test-Path $licensesSrc) {
 # --- Zip ---------------------------------------------------------------------
 $zipPath = Join-Path $OutDir "plc-hmi-$Version-win64.zip"
 if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
-Compress-Archive -Path $pkgDir -DestinationPath $zipPath
+# Archive the package contents, not the staging directory itself. The deploy
+# checks and end users should see hlm_app.exe at the archive root after unzip.
+Compress-Archive -Path (Join-Path $pkgDir "*") -DestinationPath $zipPath
 Write-Host "Package created: $zipPath"
 exit 0

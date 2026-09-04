@@ -44,7 +44,7 @@ class MainWindow;
 class IPlcGateway;
 class ControlCoordinator;
 class DatabaseService;
-class VisionService;
+class IVisionService;
 class LifecycleController;
 class UsersSettingsPage;
 class RecipeWidthPage;
@@ -103,7 +103,7 @@ private:
     IPlcGateway *m_gw = nullptr;
     ControlCoordinator *m_coordinator = nullptr;
     DatabaseService *m_db = nullptr;
-    VisionService *m_vision = nullptr; // null when HLM_ENABLE_VISION is off
+    IVisionService *m_vision = nullptr; // null when HLM_ENABLE_VISION is off
     LifecycleController *m_lifecycle = nullptr;
 
     // Page pointers (created inside MainWindow; fetched via findChild).

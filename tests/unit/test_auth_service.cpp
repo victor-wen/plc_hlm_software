@@ -34,6 +34,7 @@ private slots:
     void disabledUserCannotLogin();
     void failedLoginAuditedWithoutPassword();
     void unknownUserRunsDummyDerivation();
+    void initialAdminDerivationFailureDoesNotCreateUser();
     void changePasswordInvalidatesOld();
     void changePasswordDerivationFailureLeavesHashUnchanged();
     void verifyPasswordCorrect();
@@ -343,6 +344,27 @@ void AuthServiceTest::unknownUserRunsDummyDerivation()
         // verification (kDefaultPbkdf2Iterations), keeping timing uniform.
         QCOMPARE(g_deriveCalls, 1);
         QCOMPARE(g_lastIterations, kDefaultPbkdf2Iterations);
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("auth_test"));
+}
+
+void AuthServiceTest::initialAdminDerivationFailureDoesNotCreateUser()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    {
+        QSqlDatabase db = hlm_test::createMigratedDb(dir, QStringLiteral("auth_test"));
+        QVERIFY(db.isOpen());
+        SqliteUserRepository users(db);
+        SqliteAuditRepository audit(db);
+        AuthService auth(&users, &audit, generateSalt, failingDerive);
+
+        QString error;
+        QVERIFY(!auth.createInitialAdmin(QStringLiteral("admin"),
+                                         QStringLiteral("hunter2"), &error));
+        QCOMPARE(error, QStringLiteral("failed to derive password hash"));
+        QCOMPARE(users.countUsers(), qint64(0));
+        QVERIFY(auth.needsInitialAdmin());
     }
     QSqlDatabase::removeDatabase(QStringLiteral("auth_test"));
 }

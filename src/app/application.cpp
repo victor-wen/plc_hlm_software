@@ -9,10 +9,13 @@
 #include "adapters/modbus/qt_modbus_plc_gateway.h"
 #include "adapters/simulator/simulated_plc_gateway.h"
 #include "adapters/sqlite/database_service.h"
+#ifdef HLM_ENABLE_VISION
 #include "adapters/vision/vision_service.h"
+#endif
 #include "app/lifecycle_controller.h"
 #include "application/control_coordinator.h"
 #include "ports/iplc_gateway.h"
+#include "ports/ivision_service.h"
 #include "ui/MainWindow.h"
 #include "ui/pages/alarm_page.h"
 #include "ui/pages/audit_log_page.h"
@@ -287,11 +290,11 @@ void Application::wireSignals()
 
     // --- VisionService -> diagnostics page ------------------------------------
     if (m_vision) {
-        connect(m_vision, &VisionService::selfTestPassed, m_diagPage,
+        connect(m_vision, &IVisionService::selfTestPassed, m_diagPage,
                 [this](const QString &version) {
                     m_diagPage->setVisionStatus(version, true, QString());
                 });
-        connect(m_vision, &VisionService::selfTestFailed, m_diagPage,
+        connect(m_vision, &IVisionService::selfTestFailed, m_diagPage,
                 [this](const QString &reason) {
                     m_diagPage->setVisionStatus(QString(), false, reason);
                 });

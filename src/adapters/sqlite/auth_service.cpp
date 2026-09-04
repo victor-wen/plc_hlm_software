@@ -13,12 +13,14 @@ namespace {
 // std::nullopt if the random salt or key derivation fails (e.g. OpenSSL
 // RAND_bytes failure), so the caller can abort rather than store an empty hash.
 std::optional<UserRecord> makeUserRecord(const QString &username, Role role,
-                                         const QString &password)
+                                         const QString &password,
+                                         SaltGeneratorFn saltGen,
+                                         DeriveKeyFn derive)
 {
-    const QByteArray salt = generateSalt();
+    const QByteArray salt = saltGen();
     if (salt.isEmpty())
         return std::nullopt;
-    const QByteArray derived = derivePasswordKey(password, salt, kDefaultPbkdf2Iterations);
+    const QByteArray derived = derive(password, salt, kDefaultPbkdf2Iterations);
     if (derived.isEmpty())
         return std::nullopt;
     UserRecord u;
@@ -80,7 +82,8 @@ bool AuthService::createInitialAdmin(const QString &username, const QString &pas
             *error = QStringLiteral("users already exist");
         return false;
     }
-    const auto u = makeUserRecord(username, Role::Admin, password);
+    const auto u = makeUserRecord(username, Role::Admin, password,
+                                  m_saltGen, m_derive);
     if (!u) {
         if (error)
             *error = QStringLiteral("failed to derive password hash");
@@ -224,7 +227,7 @@ bool AuthService::createUser(const QString &username, Role role,
             *error = QStringLiteral("username already exists");
         return false;
     }
-    const auto u = makeUserRecord(username, role, password);
+    const auto u = makeUserRecord(username, role, password, m_saltGen, m_derive);
     if (!u) {
         if (error)
             *error = QStringLiteral("failed to derive password hash");

@@ -33,12 +33,12 @@ on:
 permissions:
   contents: read
 
-# USER-REQUESTED CI OPTIMIZATION: when the remote agent pushes a newer commit,
-# the older run for the same branch is obsolete. Cancel it instead of wasting
-# runner time finishing vcpkg/build/test for stale source.
+# Keep the active run alive so a cold vcpkg build can finish and publish its
+# binary cache. A newer commit waits for that run, then restores Qt/OpenCV/
+# OpenSSL packages instead of compiling all third-party dependencies again.
 concurrency:
   group: windows-build-test-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -212,10 +212,12 @@ jobs:
 
       - name: Package (windeployqt + OpenSSL/OpenCV DLLs + LICENSES)
         run: |
-          $vcpkgInstalled = "$env:VCPKG_ROOT/installed/x64-windows"
+          # CMake manifest mode installs this project's dependencies under the
+          # build tree. Prefer that deterministic prefix over any incidental
+          # packages which may exist under the bootstrapped vcpkg checkout.
+          $vcpkgInstalled = "build/vcpkg_installed/x64-windows"
           if (-not (Test-Path $vcpkgInstalled)) {
-            # CMake manifest mode places the installed tree here.
-            $vcpkgInstalled = "build/vcpkg_installed/x64-windows"
+            $vcpkgInstalled = "$env:VCPKG_ROOT/installed/x64-windows"
           }
           if (-not (Test-Path $vcpkgInstalled)) {
             throw "vcpkg installed tree not found (tried VCPKG_ROOT and build/vcpkg_installed)"
@@ -225,7 +227,7 @@ jobs:
             -OutDir dist `
             -Config Release `
             -VcpkgInstalledDir $vcpkgInstalled `
-            -QtBinDir "$vcpkgInstalled/tools/qtbase/bin" `
+            -QtBinDir "$vcpkgInstalled/tools/Qt6/bin" `
             -Version 0.1.0
 
       - name: Check deploy dependencies (positive)
@@ -238,12 +240,8 @@ jobs:
           Expand-Archive -Path dist/plc-hmi-0.1.0-win64.zip -DestinationPath dist/check-negative
           Remove-Item dist/check-negative/sqldrivers/qsqlite.dll
           pwsh -NoProfile -File scripts/check_deploy_deps.ps1 `
-            -PackageDir dist/check-negative
-          if ($LASTEXITCODE -ne 1) {
-            Write-Error "check_deploy_deps did not fail (exit 1) on missing qsqlite.dll"
-            exit 1
-          }
-          Write-Host "Negative test passed: missing qsqlite.dll detected (exit 1)"
+            -PackageDir dist/check-negative `
+            -ExpectMissing sqldrivers/qsqlite.dll
 
       - name: Upload release package artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

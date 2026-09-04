@@ -690,6 +690,11 @@ void FullFlowTest::applicationAdjustWidthConverges()
     cfg.databasePath = dir.filePath(QStringLiteral("app.db"));
 
     Application app(cfg);
+#ifdef HLM_ENABLE_VISION
+    QVERIFY(app.visionEnabled());
+#else
+    QVERIFY(!app.visionEnabled());
+#endif
     app.start();
     auto *gw = qobject_cast<SimulatedPlcGateway *>(app.gateway());
     QVERIFY(gw != nullptr);

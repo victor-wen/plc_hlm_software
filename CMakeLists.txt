@@ -226,6 +226,10 @@ target_link_libraries(hlm_app_core PUBLIC
 )
 if(HLM_ENABLE_VISION)
     target_link_libraries(hlm_app_core PUBLIC hlm_vision)
+    # The CMake option is not automatically visible to the C++ preprocessor.
+    # Application uses this definition to instantiate VisionService only when
+    # its implementation is linked into the composition root.
+    target_compile_definitions(hlm_app_core PUBLIC HLM_ENABLE_VISION=1)
 endif()
 
 # hlm_app: executable entry point (spec §6, §7, §13). The real HMI.
