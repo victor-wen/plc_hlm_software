@@ -1,0 +1,42 @@
+name: Upload corrected v0.1.0 package
+
+on:
+  push:
+    branches:
+      - release-upload/v0.1.0
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download corrected package artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: "9929374372"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: "33852732201"
+          path: artifact
+
+      - name: Verify and prepare the release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          inner="$(find artifact -type f -name 'plc-hmi-0.1.0-win64.zip' -print -quit)"
+          test -n "$inner"
+          for file in             freetype.dll harfbuzz.dll libpng16.dll pcre2-16.dll             double-conversion.dll zlib1.dll jpeg62.dll             brotlicommon.dll brotlidec.dll bz2.dll             msvcp140_1.dll msvcp140_2.dll
+          do
+            unzip -Z1 "$inner" | grep -Fx "$file" >/dev/null
+          done
+          cp "$inner" plc-hmi-0.1.0-win64.zip
+          sha256sum plc-hmi-0.1.0-win64.zip > plc-hmi-0.1.0-win64.zip.sha256
+
+      - name: Replace GitHub Release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload v0.1.0             plc-hmi-0.1.0-win64.zip             plc-hmi-0.1.0-win64.zip.sha256             --clobber             --repo "$GITHUB_REPOSITORY"
