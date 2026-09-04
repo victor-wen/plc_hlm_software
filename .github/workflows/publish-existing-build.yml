@@ -1,0 +1,62 @@
+name: Publish existing Windows build
+
+on:
+  push:
+    branches:
+      - release/v0.1.0
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify the successful source build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_RUN_ID: "33849118468"
+          SOURCE_SHA: "0f1d1ceba67a0aba6b8a1656074b9f42e4813fe3"
+        run: |
+          set -euo pipefail
+          conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" --jq .conclusion)"
+          head_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" --jq .head_sha)"
+          test "$conclusion" = "success"
+          test "$head_sha" = "$SOURCE_SHA"
+
+      - name: Download the verified package without rebuilding
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: "9927892453"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: "33849118468"
+          path: release-files
+
+      - name: Create release archive and checksum
+        run: |
+          set -euo pipefail
+          cd release-files
+          zip -9 -r ../plc-hmi-0.1.0-win64.zip .
+          cd ..
+          sha256sum plc-hmi-0.1.0-win64.zip > plc-hmi-0.1.0-win64.zip.sha256
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: "0f1d1ceba67a0aba6b8a1656074b9f42e4813fe3"
+        run: |
+          set -euo pipefail
+          cat > RELEASE_NOTES.md <<'EOF'
+          Windows x64 release package for PLC HMI v0.1.0.
+
+          Verified by GitHub Actions run #13:
+          - Debug: 32/32 tests passed
+          - Release: 32/32 tests passed
+          - deployment and dependency checks passed
+          - includes Qt plugins, SQLite, OpenCV, OpenSSL, MSVC runtime, and third-party licenses
+
+          Package source commit: 0f1d1ceba67a0aba6b8a1656074b9f42e4813fe3
+          EOF
+          gh release create v0.1.0             plc-hmi-0.1.0-win64.zip             plc-hmi-0.1.0-win64.zip.sha256             --repo "$GITHUB_REPOSITORY"             --target "$SOURCE_SHA"             --title "PLC HMI v0.1.0"             --notes-file RELEASE_NOTES.md
