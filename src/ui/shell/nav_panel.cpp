@@ -2,6 +2,7 @@
 
 #include <QVBoxLayout>
 #include <QListWidget>
+#include <QLabel>
 #include <QStringList>
 
 namespace hlm {
@@ -27,8 +28,12 @@ NavPanel::NavPanel(QWidget *parent)
     setMaximumWidth(176);
 
     auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setContentsMargins(0, 12, 0, 12);
     layout->setSpacing(0);
+
+    auto *title = new QLabel(QStringLiteral("功能导航"), this);
+    title->setObjectName(QStringLiteral("navTitle"));
+    layout->addWidget(title);
 
     m_list = new QListWidget(this);
     m_list->setObjectName(QStringLiteral("navList"));
@@ -39,7 +44,7 @@ NavPanel::NavPanel(QWidget *parent)
     connect(m_list, &QListWidget::currentRowChanged, this,
             [this](int row) { emit pageSelected(row); });
 
-    layout->addWidget(m_list);
+    layout->addWidget(m_list, 1);
     m_list->setCurrentRow(0);
 }
 

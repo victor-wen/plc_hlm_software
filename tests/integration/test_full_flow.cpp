@@ -690,6 +690,8 @@ void FullFlowTest::applicationAdjustWidthConverges()
     cfg.databasePath = dir.filePath(QStringLiteral("app.db"));
 
     Application app(cfg);
+    // Composition root and visible widgets must share one state source.
+    QCOMPARE(app.window()->shellModel(), app.shell());
 #ifdef HLM_ENABLE_VISION
     QVERIFY(app.visionEnabled());
 #else

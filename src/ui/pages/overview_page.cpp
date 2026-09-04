@@ -9,6 +9,7 @@
 #include <QGridLayout>
 #include <QFrame>
 #include <QHash>
+#include <QStringList>
 
 namespace hlm {
 
@@ -62,9 +63,36 @@ void OverviewPage::buildLayout()
     schematic->setFrameShape(QFrame::StyledPanel);
     schematic->setMinimumHeight(180);
     auto *schematicLayout = new QVBoxLayout(schematic);
-    auto *schematicLabel = new QLabel(QStringLiteral("设备示意"), schematic);
-    schematicLabel->setAlignment(Qt::AlignCenter);
+    schematicLayout->setContentsMargins(20, 16, 20, 20);
+    schematicLayout->setSpacing(14);
+    auto *schematicLabel = new QLabel(QStringLiteral("设备流程"), schematic);
+    schematicLabel->setObjectName(QStringLiteral("sectionTitle"));
     schematicLayout->addWidget(schematicLabel);
+
+    auto *flow = new QHBoxLayout();
+    flow->setSpacing(14);
+    const QStringList stages = {
+        QStringLiteral("入口输送\n来料进入"),
+        QStringLiteral("调宽机构\n宽度闭环控制"),
+        QStringLiteral("出口输送\n完成放行"),
+    };
+    for (int i = 0; i < stages.size(); ++i) {
+        auto *node = new QFrame(schematic);
+        node->setObjectName(QStringLiteral("schematicNode"));
+        auto *nodeLayout = new QVBoxLayout(node);
+        auto *nodeLabel = new QLabel(stages[i], node);
+        nodeLabel->setObjectName(QStringLiteral("schematicNodeText"));
+        nodeLabel->setAlignment(Qt::AlignCenter);
+        nodeLayout->addWidget(nodeLabel);
+        flow->addWidget(node, 1);
+        if (i + 1 < stages.size()) {
+            auto *arrow = new QLabel(QStringLiteral("→"), schematic);
+            arrow->setObjectName(QStringLiteral("schematicArrow"));
+            arrow->setAlignment(Qt::AlignCenter);
+            flow->addWidget(arrow);
+        }
+    }
+    schematicLayout->addLayout(flow, 1);
     root->addWidget(schematic, /*stretch=*/1);
 
     // --- value grid -------------------------------------------------------------

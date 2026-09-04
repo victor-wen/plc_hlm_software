@@ -35,7 +35,9 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 
 public:
-    explicit MainWindow(QWidget *parent = nullptr);
+    // Application supplies its shared ShellModel. Tests and standalone users
+    // may omit it, in which case the window owns a private model.
+    explicit MainWindow(QWidget *parent = nullptr, ShellModel *model = nullptr);
     ~MainWindow() override;
 
     ShellModel *shellModel() const { return m_model; }

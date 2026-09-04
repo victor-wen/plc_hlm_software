@@ -28,10 +28,23 @@ QString ValueDisplay::text() const
 void ValueDisplay::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    const QRectF box = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+    p.setPen(QPen(m_valid ? QColor(0xd7, 0xe0, 0xea)
+                          : QColor(0xe2, 0xe8, 0xf0), 1));
+    p.setBrush(m_valid ? QColor(0xff, 0xff, 0xff)
+                       : QColor(0xf1, 0xf5, 0xf9));
+    p.drawRoundedRect(box, 7, 7);
+
     // Invalid/stale: grey + "—" (spec §11.2: 离线/未知/过期 -> 灰色).
     p.setPen(m_valid ? palette().color(QPalette::WindowText)
                      : palette().color(QPalette::Disabled, QPalette::WindowText));
-    p.drawText(rect(), Qt::AlignVCenter | Qt::AlignLeft, text());
+    QFont valueFont = font();
+    valueFont.setBold(true);
+    valueFont.setPointSizeF(valueFont.pointSizeF() + 2.0);
+    p.setFont(valueFont);
+    p.drawText(rect().adjusted(14, 0, -10, 0),
+               Qt::AlignVCenter | Qt::AlignLeft, text());
 }
 
 QSize ValueDisplay::minimumSizeHint() const

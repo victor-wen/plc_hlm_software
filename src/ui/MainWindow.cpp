@@ -48,9 +48,9 @@ QWidget *makeStubPage(const QString &title)
 }
 } // namespace
 
-MainWindow::MainWindow(QWidget *parent)
+MainWindow::MainWindow(QWidget *parent, ShellModel *model)
     : QMainWindow(parent)
-    , m_model(new ShellModel(this))
+    , m_model(model ? model : new ShellModel(this))
 {
     setObjectName(QStringLiteral("mainWindow"));
     setWindowTitle(QStringLiteral("PLC 调宽上位机"));
@@ -92,6 +92,7 @@ MainWindow::~MainWindow()
 void MainWindow::buildLayout()
 {
     auto *central = new QWidget(this);
+    central->setObjectName(QStringLiteral("appSurface"));
     auto *root = new QVBoxLayout(central);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);

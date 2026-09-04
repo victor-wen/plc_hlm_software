@@ -89,7 +89,10 @@ Application::~Application()
 void Application::createObjects()
 {
     m_shell = new ShellModel(this);
-    m_window = new MainWindow;
+    // The window and the application layer must observe the same model.
+    // Previously MainWindow allocated a second ShellModel, so PLC/session
+    // updates were delivered to a model that the visible widgets did not use.
+    m_window = new MainWindow(nullptr, m_shell);
     m_window->setParent(nullptr); // top-level window
 
     // Pages are created inside MainWindow; fetch the pointers (spec §11.3).

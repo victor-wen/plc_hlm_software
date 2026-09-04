@@ -6,6 +6,7 @@
 
 #include <QVBoxLayout>
 #include <QStringList>
+#include <QLabel>
 
 namespace hlm {
 
@@ -33,6 +34,11 @@ ActionBar::ActionBar(ShellModel &model, QWidget *parent)
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(8);
 
+    auto *title = new QLabel(QStringLiteral("设备操作"), this);
+    title->setObjectName(QStringLiteral("actionBarTitle"));
+    title->setAlignment(Qt::AlignCenter);
+    layout->addWidget(title);
+
     auto make = [this, layout](const QString &text) {
         auto *b = new PermissionButton(text, this);
         b->setMinimumHeight(72); // main control buttons >= 72 px (spec §11.1)
@@ -41,11 +47,17 @@ ActionBar::ActionBar(ShellModel &model, QWidget *parent)
     };
 
     m_manual = make(QStringLiteral("手动"));
+    m_manual->setObjectName(QStringLiteral("manualModeButton"));
     m_auto = make(QStringLiteral("自动"));
+    m_auto->setObjectName(QStringLiteral("autoModeButton"));
     m_start = make(QStringLiteral("启动"));
+    m_start->setObjectName(QStringLiteral("startButton"));
     m_stop = make(QStringLiteral("停止"));
+    m_stop->setObjectName(QStringLiteral("stopButton"));
     m_reset = make(QStringLiteral("复位"));
+    m_reset->setObjectName(QStringLiteral("resetButton"));
     m_login = make(QStringLiteral("登录"));
+    m_login->setObjectName(QStringLiteral("loginButton"));
 
     // Software estop: separated from normal actions with a spacer, fixed red
     // danger style (spec §10.6). Any user may set it while online.

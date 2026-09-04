@@ -61,15 +61,17 @@ QWidget *UsersSettingsPage::buildLockedPanel()
 {
     // 未登录/操作员: 锁定面板, 不展示敏感字段 (spec §11.4).
     auto *panel = new QWidget(this);
+    panel->setObjectName(QStringLiteral("lockedPanel"));
     auto *layout = new QVBoxLayout(panel);
     layout->addStretch();
     auto *icon = new QLabel(QStringLiteral("🔒"), panel);
+    icon->setObjectName(QStringLiteral("lockedIcon"));
     icon->setAlignment(Qt::AlignCenter);
     icon->setStyleSheet(QStringLiteral("font-size: 48px;"));
     layout->addWidget(icon);
     auto *title = new QLabel(QStringLiteral("需要管理员登录"), panel);
+    title->setObjectName(QStringLiteral("panelHeroTitle"));
     title->setAlignment(Qt::AlignCenter);
-    title->setStyleSheet(QStringLiteral("font-size: 24px; font-weight: bold;"));
     layout->addWidget(title);
     auto *hint = new QLabel(
         QStringLiteral("用户、通讯和参数设置仅管理员可用。请登录管理员账号后访问。"),
@@ -99,11 +101,12 @@ QWidget *UsersSettingsPage::buildCreateAdminPanel()
 {
     // 首次启动强制创建管理员, 无默认密码 (spec §11.5).
     auto *panel = new QWidget(this);
+    panel->setObjectName(QStringLiteral("createAdminPanel"));
     auto *layout = new QVBoxLayout(panel);
     layout->addStretch();
     auto *title = new QLabel(QStringLiteral("首次启动: 创建管理员账号"), panel);
+    title->setObjectName(QStringLiteral("panelHeroTitle"));
     title->setAlignment(Qt::AlignCenter);
-    title->setStyleSheet(QStringLiteral("font-size: 24px; font-weight: bold;"));
     layout->addWidget(title);
     auto *hint = new QLabel(
         QStringLiteral("系统未检测到任何用户。请创建管理员账号, 密码不会提供默认值。"),
@@ -119,18 +122,21 @@ QWidget *UsersSettingsPage::buildCreateAdminPanel()
     m_adminUsername->setObjectName(QStringLiteral("adminUsername"));
     m_adminUsername->setMinimumHeight(48);
     m_adminUsername->setPlaceholderText(QStringLiteral("管理员用户名"));
+    m_adminUsername->setMaximumWidth(520);
     form->addRow(QStringLiteral("用户名"), m_adminUsername);
     m_adminPassword = new QLineEdit(panel);
     m_adminPassword->setObjectName(QStringLiteral("adminPassword"));
     m_adminPassword->setMinimumHeight(48);
     m_adminPassword->setEchoMode(QLineEdit::Password); // 不回显明文 (spec §11.5)
     m_adminPassword->setPlaceholderText(QStringLiteral("密码"));
+    m_adminPassword->setMaximumWidth(520);
     form->addRow(QStringLiteral("密码"), m_adminPassword);
     m_adminConfirm = new QLineEdit(panel);
     m_adminConfirm->setObjectName(QStringLiteral("adminConfirm"));
     m_adminConfirm->setMinimumHeight(48);
     m_adminConfirm->setEchoMode(QLineEdit::Password);
     m_adminConfirm->setPlaceholderText(QStringLiteral("再次输入密码"));
+    m_adminConfirm->setMaximumWidth(520);
     form->addRow(QStringLiteral("确认密码"), m_adminConfirm);
     layout->addLayout(form);
 

@@ -29,6 +29,7 @@ TopBar::TopBar(ShellModel &model, QWidget *parent)
     layout->addStretch();
 
     m_userLabel = new QLabel(this);
+    m_userLabel->setObjectName(QStringLiteral("userLabel"));
     layout->addWidget(m_userLabel);
 
     m_clockLabel = new QLabel(this);
@@ -117,9 +118,7 @@ void TopBar::refresh()
     else
         m_lights[5]->setState(StatusState::On, QStringLiteral("正常"));
 
-    m_userLabel->setText(m_model.userName().isEmpty()
-                             ? QStringLiteral("未登录")
-                             : m_model.userName());
+    m_userLabel->setText(QStringLiteral("用户 · %1").arg(m_model.userName()));
     m_clockLabel->setText(QDateTime::currentDateTime().toString(
         QStringLiteral("yyyy-MM-dd HH:mm:ss")));
 }
