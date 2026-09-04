@@ -24,4 +24,8 @@ target_link_libraries(test_full_flow PRIVATE
 add_test(NAME full_flow COMMAND test_full_flow)
 set_tests_properties(full_flow PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
+    # Debug PBKDF2 work is deliberately expensive. Running this integration
+    # test beside auth_service under ctest --parallel can starve its 5-second
+    # async waits on shared hosted runners even though the flow is correct.
+    RUN_SERIAL TRUE
 )
