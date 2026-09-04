@@ -1,8 +1,8 @@
 # package.ps1 - Build the Windows release package (spec §17, Task 21).
 #
 # Steps: create out dir -> copy hlm_app.exe + plc_simulator.exe -> run
-# windeployqt on hlm_app.exe -> copy OpenSSL/OpenCV DLLs from the vcpkg
-# installed tree -> copy the MSVC runtime DLLs -> copy LICENSES/ -> Compress-Archive to
+# windeployqt on hlm_app.exe -> copy the complete vcpkg runtime DLL set ->
+# copy the MSVC runtime DLLs -> copy LICENSES/ -> Compress-Archive to
 # plc-hmi-<Version>-win64.zip. Non-zero exit on any failure.
 #
 # Usage:
@@ -18,7 +18,8 @@
 #   -OutDir            Output directory for the package and zip.
 #   -Config            Build configuration, default Release.
 #   -VcpkgInstalledDir vcpkg installed tree (installed/x64-windows). Used for
-#                      OpenSSL and OpenCV DLLs.
+#                      all non-system runtime DLLs, including transitive Qt
+#                      dependencies such as FreeType and HarfBuzz.
 #   -Version           Package version, default 0.1.0 (matches CMake project).
 #   -QtBinDir          Optional Qt bin directory; if omitted, windeployqt is
 #                      located via Get-Command or probed under the vcpkg
@@ -94,33 +95,27 @@ Write-Host "Running windeployqt: $windeployqt"
     (Join-Path $pkgDir "hlm_app.exe")
 if ($LASTEXITCODE -ne 0) { Fail "windeployqt failed with exit code $LASTEXITCODE" }
 
-# --- OpenSSL / OpenCV DLLs from vcpkg installed tree --------------------------
+# --- vcpkg runtime DLLs -------------------------------------------------------
+# windeployqt deploys Qt modules and plugins, but a dynamically linked vcpkg Qt
+# build also depends on non-Qt DLLs (FreeType, HarfBuzz, libpng, PCRE2, zlib,
+# etc.). Some deployed plugins have their own third-party dependencies as well.
+# Copy the release runtime bin as a complete set so no indirect dependency is
+# omitted. Manifest mode keeps this directory scoped to this project's declared
+# dependency graph; debug DLLs live in a separate debug/bin directory.
 if ($VcpkgInstalledDir -ne "") {
     $vcpkgBin = Join-Path $VcpkgInstalledDir "bin"
     if (-not (Test-Path $vcpkgBin)) { Fail "vcpkg bin dir not found: $vcpkgBin" }
 
-    $opensslDlls = @("libcrypto-3-x64.dll", "libssl-3-x64.dll")
-    foreach ($dll in $opensslDlls) {
-        $src = Join-Path $vcpkgBin $dll
-        if (Test-Path $src) {
-            Copy-Item $src $pkgDir
-            Write-Host "Copied $dll"
-        } else {
-            Write-Warning "OpenSSL DLL not found in vcpkg tree: $dll"
-        }
+    $vcpkgRuntimeDlls = Get-ChildItem -Path $vcpkgBin -Filter "*.dll" -File
+    if (-not $vcpkgRuntimeDlls) {
+        Fail "No release runtime DLLs found in vcpkg tree: $vcpkgBin"
     }
-
-    $opencvDlls = Get-ChildItem -Path $vcpkgBin -Filter "opencv_core*.dll" -ErrorAction SilentlyContinue
-    if ($opencvDlls) {
-        foreach ($dll in $opencvDlls) {
-            Copy-Item $dll.FullName $pkgDir
-            Write-Host "Copied $($dll.Name)"
-        }
-    } else {
-        Write-Warning "No opencv_core*.dll found in vcpkg tree: $vcpkgBin"
+    foreach ($dll in $vcpkgRuntimeDlls) {
+        Copy-Item $dll.FullName $pkgDir -Force
+        Write-Host "Copied vcpkg runtime: $($dll.Name)"
     }
 } else {
-    Write-Warning "-VcpkgInstalledDir not provided; OpenSSL/OpenCV DLLs not copied"
+    Fail "-VcpkgInstalledDir is required to deploy transitive runtime DLLs"
 }
 
 # --- MSVC runtime -------------------------------------------------------------
@@ -134,13 +129,16 @@ $msvcCrtDir = Join-Path $env:VCToolsRedistDir "x64\Microsoft.VC143.CRT"
 if (-not (Test-Path $msvcCrtDir)) {
     Fail "MSVC runtime directory not found: $msvcCrtDir"
 }
-foreach ($dll in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")) {
-    $src = Join-Path $msvcCrtDir $dll
-    if (-not (Test-Path $src)) {
-        Fail "MSVC runtime DLL not found: $src"
-    }
-    Copy-Item $src $pkgDir
-    Write-Host "Copied $dll"
+# Qt 6 built by the current MSVC toolset imports msvcp140_1.dll and
+# msvcp140_2.dll in addition to the traditional three files. Copy the complete
+# matching CRT directory to remain correct across runner toolset updates.
+$msvcRuntimeDlls = Get-ChildItem -Path $msvcCrtDir -Filter "*.dll" -File
+if (-not $msvcRuntimeDlls) {
+    Fail "No MSVC runtime DLLs found: $msvcCrtDir"
+}
+foreach ($dll in $msvcRuntimeDlls) {
+    Copy-Item $dll.FullName $pkgDir -Force
+    Write-Host "Copied MSVC runtime: $($dll.Name)"
 }
 
 # --- LICENSES ----------------------------------------------------------------
