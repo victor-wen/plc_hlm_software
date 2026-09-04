@@ -73,6 +73,17 @@ Application::Application(const AppConfig &config, QObject *parent)
 Application::~Application()
 {
     shutdown();
+
+    // These objects intentionally have no QObject parent: the window is a
+    // top-level widget, while the services move to worker threads. Destroy
+    // them explicitly before QObject tears down the parented ShellModel and
+    // other application objects which the window still references.
+    delete m_window;
+    m_window = nullptr;
+    delete m_vision;
+    m_vision = nullptr;
+    delete m_db;
+    m_db = nullptr;
 }
 
 void Application::createObjects()
