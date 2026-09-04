@@ -7,7 +7,8 @@
 #   Qt6SerialBus*.dll, Qt6SerialPort*.dll
 #   libcrypto-3-x64.dll (OpenSSL Crypto)
 #   opencv_core*.dll (OpenCV, HLM_ENABLE_VISION=ON)
-#   vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll (MSVC runtime)
+#   transitive Qt/vcpkg runtime DLLs (FreeType, HarfBuzz, PNG, PCRE2, etc.)
+#   complete VC143 runtime DLL subset imported by Qt
 #   LICENSES/ present and non-empty
 #
 # -ExpectMissing <name>: negative test support. If <name> is missing, the
@@ -54,9 +55,28 @@ Test-Required "libcrypto-3-x64.dll"
 $opencv = Get-ChildItem -Path $PackageDir -Filter "opencv_core*.dll" -ErrorAction SilentlyContinue
 if (-not $opencv) { $missing += "opencv_core*.dll" }
 
+# vcpkg's Qt build links these libraries dynamically. windeployqt does not
+# reliably deploy non-Qt libraries, so explicitly enforce their presence.
+foreach ($dll in @(
+    "brotlicommon.dll",
+    "brotlidec.dll",
+    "bz2.dll",
+    "double-conversion.dll",
+    "freetype.dll",
+    "harfbuzz.dll",
+    "jpeg62.dll",
+    "libpng16.dll",
+    "pcre2-16.dll",
+    "zlib1.dll"
+)) {
+    Test-Required $dll
+}
+
 Test-Required "vcruntime140.dll"
 Test-Required "vcruntime140_1.dll"
 Test-Required "msvcp140.dll"
+Test-Required "msvcp140_1.dll"
+Test-Required "msvcp140_2.dll"
 
 $licensesDir = Join-Path $PackageDir "LICENSES"
 if (-not (Test-Path $licensesDir)) {
