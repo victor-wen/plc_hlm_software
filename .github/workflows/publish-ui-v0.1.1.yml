@@ -39,7 +39,7 @@ jobs:
           test -f package/libssl-3-x64.dll
           test -f package/vcruntime140.dll
           test -f package/msvcp140.dll
-          test -n "$(find package -maxdepth 1 -iname 'opencv_world*.dll' -print -quit)"
+          test -n "$(find package -maxdepth 1 -iname 'opencv_core*.dll' -print -quit)"
 
       - name: Create archive and checksum
         run: |
