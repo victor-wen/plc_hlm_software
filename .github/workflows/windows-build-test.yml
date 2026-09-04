@@ -2,21 +2,26 @@
 # Release packaging, deploy-dependency checks and artifact upload (Task 21).
 #
 # All third-party actions are pinned to reviewed commit SHAs (not tags or
-# branches). Verified 2026-09-02 via the GitHub API:
-#   actions/checkout      v7.0.1  -> 3d3c42e5aac5ba805825da76410c181273ba90b1
-#   ilammy/msvc-dev-cmd   v1.13.0 -> 0b201ec74fa43914dc39ae48a89fd1d8cb592756
-#   lukka/run-vcpkg       v11.6   -> b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
-#   actions/upload-artifact v7.0.1 -> 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+# branches). Verified 2026-09-04 via the GitHub API:
+#   actions/checkout        v7.0.1  -> 3d3c42e5aac5ba805825da76410c181273ba90b1
+#   ilammy/msvc-dev-cmd     v1.13.0 -> 0b201ec74fa43914dc39ae48a89fd1d8cb592756
+#   lukka/run-vcpkg         v11.6   -> b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
+#   actions/cache           v6.1.0  -> 55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+#   actions/upload-artifact v7.0.1  -> 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
 #
 # No virtual COM driver is installed in CI (spec §15.5 acceptance runs on a
 # local Windows machine with com0com; see docs/testing/rtu-simulator-acceptance.md).
 #
 # USER-REQUESTED CI OPTIMIZATION (2026-09-04):
-# Keep vcpkg caches enabled so repeated agent pushes do not rebuild/download
-# Qt, OpenCV, OpenSSL and the rest of the third-party dependency graph from
-# scratch on every fresh GitHub-hosted runner. This is intentionally a CI-only
-# change requested by the repository owner; it is not an application-code
-# change and should be preserved when rebasing/merging agent work.
+# 1) Bootstrap vcpkg only once; do not let run-vcpkg install the manifest and
+#    then let CMake install it a second time into build/vcpkg_installed.
+# 2) Persist vcpkg binary packages with actions/cache + the vcpkg "files"
+#    backend. The old x-gha backend has been removed from current vcpkg, so we
+#    must not rely on run-vcpkg's legacy GitHub Actions binary-cache wiring.
+# 3) Keep parallel tests bounded so a hung Qt/offscreen test cannot hold a
+#    runner indefinitely.
+# These are intentionally CI-only changes requested by the repository owner and
+# should be preserved when rebasing/merging agent work.
 
 name: windows-build-test
 
@@ -53,19 +58,47 @@ jobs:
         with:
           arch: x64
 
-      # USER-REQUESTED CI OPTIMIZATION: run-vcpkg already enables vcpkg binary
-      # caching for built packages on GitHub Actions. doNotCache=false also
-      # persists the vcpkg executable/data files. Do not set binaryCachePath
-      # explicitly here: run-vcpkg requires a custom path to exist before the
-      # action starts, so using its managed default avoids fresh-run failures.
-      - name: Setup vcpkg (manifest mode, vcpkg.json)
+      # Include the compiler/SDK identity in the cache key so a hosted-runner
+      # toolchain update cannot silently feed ABI-incompatible binaries to vcpkg.
+      - name: Capture toolchain cache identity
+        id: toolchain
+        shell: pwsh
+        run: |
+          $sdk = "$env:WindowsSDKVersion".TrimEnd('\')
+          "id=$env:VCToolsVersion-$sdk" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      # USER-REQUESTED CI OPTIMIZATION: this action only bootstraps/restores the
+      # vcpkg tool itself. Manifest installation is deliberately left to CMake
+      # so dependencies are installed exactly once into build/vcpkg_installed.
+      - name: Setup vcpkg (bootstrap only)
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
           vcpkgJsonGlob: '**/vcpkg.json'
-          runVcpkgInstall: true
+          runVcpkgInstall: false
           doNotCache: false
 
+      # USER-REQUESTED CI OPTIMIZATION: current vcpkg removed the x-gha binary
+      # backend. Cache the content-addressed vcpkg binary archives as normal
+      # files instead. Debug/Release use the same x64-windows package set, so
+      # one populated cache can serve both configurations and the package job.
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.workspace }}\vcpkg-binary-cache
+          key: vcpkg-binary-v1-${{ runner.os }}-x64-${{ steps.toolchain.outputs.id }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-binary-v1-${{ runner.os }}-x64-${{ steps.toolchain.outputs.id }}-
+            vcpkg-binary-v1-${{ runner.os }}-x64-
+
+      - name: Ensure vcpkg binary cache directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path "${{ runner.workspace }}\vcpkg-binary-cache" | Out-Null
+
       - name: Configure (HLM_ENABLE_VISION=ON)
+        env:
+          # Override run-vcpkg's obsolete x-gha setting. CMake's manifest-mode
+          # vcpkg install reads/writes binary archives from this cached folder.
+          VCPKG_BINARY_SOURCES: 'clear;files,${{ runner.workspace }}\vcpkg-binary-cache,readwrite'
         run: |
           cmake -S . -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=${{ matrix.config }} `
@@ -108,17 +141,38 @@ jobs:
         with:
           arch: x64
 
-      # Same user-requested vcpkg cache policy as the build matrix. Package
-      # should restore already-built dependency binaries instead of rebuilding
-      # the Qt/OpenCV/OpenSSL graph again after Debug/Release validation.
-      - name: Setup vcpkg (manifest mode, vcpkg.json)
+      - name: Capture toolchain cache identity
+        id: toolchain
+        shell: pwsh
+        run: |
+          $sdk = "$env:WindowsSDKVersion".TrimEnd('\')
+          "id=$env:VCToolsVersion-$sdk" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      # Same user-requested bootstrap-only policy as the build matrix. CMake is
+      # the single owner of manifest installation in this job too.
+      - name: Setup vcpkg (bootstrap only)
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
           vcpkgJsonGlob: '**/vcpkg.json'
-          runVcpkgInstall: true
+          runVcpkgInstall: false
           doNotCache: false
 
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.workspace }}\vcpkg-binary-cache
+          key: vcpkg-binary-v1-${{ runner.os }}-x64-${{ steps.toolchain.outputs.id }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-binary-v1-${{ runner.os }}-x64-${{ steps.toolchain.outputs.id }}-
+            vcpkg-binary-v1-${{ runner.os }}-x64-
+
+      - name: Ensure vcpkg binary cache directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path "${{ runner.workspace }}\vcpkg-binary-cache" | Out-Null
+
       - name: Configure (HLM_ENABLE_VISION=ON, Release)
+        env:
+          VCPKG_BINARY_SOURCES: 'clear;files,${{ runner.workspace }}\vcpkg-binary-cache,readwrite'
         run: |
           cmake -S . -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
@@ -132,7 +186,7 @@ jobs:
         run: |
           $vcpkgInstalled = "$env:VCPKG_ROOT/installed/x64-windows"
           if (-not (Test-Path $vcpkgInstalled)) {
-            # run-vcpkg may place the installed tree under the build dir.
+            # CMake manifest mode places the installed tree here.
             $vcpkgInstalled = "build/vcpkg_installed/x64-windows"
           }
           if (-not (Test-Path $vcpkgInstalled)) {
