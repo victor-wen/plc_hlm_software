@@ -1,0 +1,113 @@
+name: Repackage v0.1.0 without rebuilding
+
+on:
+  push:
+    branches:
+      - release-fix/v0.1.0
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  repackage:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout packaging fix
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Enable MSVC 2022 x64 developer environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+
+      - name: Capture toolchain cache identity
+        id: toolchain
+        shell: pwsh
+        run: |
+          $sdk = "$env:WindowsSDKVersion".TrimEnd('\')
+          "id=$env:VCToolsVersion-$sdk" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
+        with:
+          vcpkgJsonGlob: '**/vcpkg.json'
+          runVcpkgInstall: false
+          doNotCache: false
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.workspace }}\vcpkg-binary-cache
+          key: vcpkg-binary-v1-${{ runner.os }}-x64-${{ steps.toolchain.outputs.id }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-binary-v1-${{ runner.os }}-x64-${{ steps.toolchain.outputs.id }}-
+            vcpkg-binary-v1-${{ runner.os }}-x64-
+
+      - name: Restore dependency tree from binary cache
+        env:
+          VCPKG_BINARY_SOURCES: 'clear;files,${{ runner.workspace }}\vcpkg-binary-cache,readwrite'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "${{ runner.workspace }}\vcpkg-binary-cache" | Out-Null
+          cmake -S . -B deps-build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DHLM_ENABLE_VISION=ON
+
+      - name: Download the verified Release binaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: "9927764476"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: "33849118468"
+          path: previous-build
+
+      - name: Repackage with complete runtime dependencies
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File scripts/package.ps1 `
+            -BuildDir previous-build `
+            -OutDir dist `
+            -Config Release `
+            -VcpkgInstalledDir deps-build/vcpkg_installed/x64-windows `
+            -QtBinDir deps-build/vcpkg_installed/x64-windows/tools/Qt6/bin `
+            -Version 0.1.0
+
+      - name: Verify the corrected deployment
+        shell: pwsh
+        run: |
+          Expand-Archive -Path dist/plc-hmi-0.1.0-win64.zip -DestinationPath dist/check
+          pwsh -NoProfile -File scripts/check_deploy_deps.ps1 -PackageDir dist/check
+          if (-not (Test-Path dist/check/freetype.dll)) {
+            throw "freetype.dll is missing after deployment verification"
+          }
+
+      - name: Create SHA-256 checksum
+        shell: pwsh
+        run: |
+          $name = "plc-hmi-0.1.0-win64.zip"
+          $hash = (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $name" | Set-Content "dist/$name.sha256" -Encoding ascii
+
+      - name: Replace GitHub Release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          gh release upload v0.1.0 `
+            dist/plc-hmi-0.1.0-win64.zip `
+            dist/plc-hmi-0.1.0-win64.zip.sha256 `
+            --clobber `
+            --repo "$env:GITHUB_REPOSITORY"
+
+      - name: Upload corrected package artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: plc-hmi-0.1.0-win64-corrected
+          path: |
+            dist/plc-hmi-0.1.0-win64.zip
+            dist/plc-hmi-0.1.0-win64.zip.sha256
+          if-no-files-found: error
+          retention-days: 30
