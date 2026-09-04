@@ -1,0 +1,50 @@
+name: diagnose full-flow artifact
+
+on:
+  push:
+    branches: [ diagnose-ui-full-flow ]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: windows-2022
+    steps:
+      - name: Download compiled Release artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: plc-hmi-Release
+          path: artifact
+          github-token: ${{ github.token }}
+          repository: victor-wen/plc_hlm_software
+          run-id: 33855731311
+
+      - name: Download packaged Qt runtime
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/victor-wen/plc_hlm_software/releases/download/v0.1.0/plc-hmi-0.1.0-win64.zip" -OutFile runtime.zip
+          Expand-Archive runtime.zip -DestinationPath runtime
+
+      - name: Run only full_flow with verbose QtTest output
+        shell: pwsh
+        run: |
+          $testDir = (Resolve-Path "artifact/tests/integration").Path
+          $platformDll = Get-ChildItem runtime -Recurse -Filter qwindows.dll | Select-Object -First 1
+          if (-not $platformDll) {
+            throw "qwindows.dll was not found in the packaged runtime"
+          }
+          $runtimeRoot = $platformDll.Directory.Parent.FullName
+          $env:PATH = "$testDir;$runtimeRoot;$env:PATH"
+          $env:QT_PLUGIN_PATH = $runtimeRoot
+          $env:QT_QPA_PLATFORM_PLUGIN_PATH = $platformDll.Directory.FullName
+          $env:QT_QPA_PLATFORM = "windows"
+          $output = Join-Path $env:RUNNER_TEMP "full-flow-output.txt"
+          & (Join-Path $testDir "test_full_flow.exe") -v2 -o "$output,txt"
+          $exitCode = $LASTEXITCODE
+          if (Test-Path $output) {
+            Get-Content $output
+          }
+          "test_full_flow exit code: $exitCode"
+          exit $exitCode
