@@ -2,7 +2,7 @@
 #
 # Steps: create out dir -> copy hlm_app.exe + plc_simulator.exe -> run
 # windeployqt on hlm_app.exe -> copy OpenSSL/OpenCV DLLs from the vcpkg
-# installed tree -> copy LICENSES/ -> Compress-Archive to
+# installed tree -> copy the MSVC runtime DLLs -> copy LICENSES/ -> Compress-Archive to
 # plc-hmi-<Version>-win64.zip. Non-zero exit on any failure.
 #
 # Usage:
@@ -121,6 +121,26 @@ if ($VcpkgInstalledDir -ne "") {
     }
 } else {
     Write-Warning "-VcpkgInstalledDir not provided; OpenSSL/OpenCV DLLs not copied"
+}
+
+# --- MSVC runtime -------------------------------------------------------------
+# vcpkg's windeployqt copies vc_redist.x64.exe, but the portable package
+# contract requires the runtime DLLs beside the executables. The MSVC developer
+# environment exposes the matching redistributable root via VCToolsRedistDir.
+if (-not $env:VCToolsRedistDir) {
+    Fail "VCToolsRedistDir is not set; run from an MSVC developer environment"
+}
+$msvcCrtDir = Join-Path $env:VCToolsRedistDir "x64\Microsoft.VC143.CRT"
+if (-not (Test-Path $msvcCrtDir)) {
+    Fail "MSVC runtime directory not found: $msvcCrtDir"
+}
+foreach ($dll in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")) {
+    $src = Join-Path $msvcCrtDir $dll
+    if (-not (Test-Path $src)) {
+        Fail "MSVC runtime DLL not found: $src"
+    }
+    Copy-Item $src $pkgDir
+    Write-Host "Copied $dll"
 }
 
 # --- LICENSES ----------------------------------------------------------------

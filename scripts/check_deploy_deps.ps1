@@ -77,8 +77,10 @@ if ($ExpectMissing -ne "") {
 
 # --- Report ------------------------------------------------------------------
 if ($missing.Count -gt 0) {
-    Write-Error "Deploy dependency check FAILED. Missing:"
-    foreach ($m in $missing) { Write-Error "  - $m" }
+    # Report the complete list before returning failure. Write-Error would
+    # terminate immediately under ErrorActionPreference=Stop.
+    Write-Host "Deploy dependency check FAILED. Missing:"
+    foreach ($m in $missing) { Write-Host "  - $m" }
     exit 1
 }
 
