@@ -26,8 +26,9 @@ add_test(NAME full_flow COMMAND test_full_flow)
 # Qt's offscreen platform plugin is unstable for the Release full-application
 # integration test on the Windows runner.  The exact same compiled executable
 # passes when exercised through the native Windows platform plugin, which is
-# also what production uses.  Keep offscreen for non-Windows CI hosts.
-if(WIN32)
+# also what production uses.  Debug is stable with offscreen, as are the
+# non-Windows CI hosts.
+if(WIN32 AND CMAKE_BUILD_TYPE STREQUAL "Release")
     set(HLM_FULL_FLOW_QPA_PLATFORM windows)
 else()
     set(HLM_FULL_FLOW_QPA_PLATFORM offscreen)
