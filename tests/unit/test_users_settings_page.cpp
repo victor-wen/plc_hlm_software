@@ -16,6 +16,7 @@
 #include <QtTest>
 #include <QSignalSpy>
 #include <QMouseEvent>
+#include <QPointer>
 #include <QLabel>
 #include <QLineEdit>
 #include <QSpinBox>
@@ -478,7 +479,7 @@ void UsersSettingsPageTest::loginDialogStaysOpenOnFailure()
     // 打开登录对话框, 输入凭据.
     clickAt(page.lockedPanel()->findChild<QPushButton *>(
         QStringLiteral("usersLoginButton")));
-    auto *dialog = page.findChild<LoginDialog *>();
+    QPointer<LoginDialog> dialog = page.findChild<LoginDialog *>();
     QVERIFY(dialog != nullptr);
     QVERIFY(dialog->isVisible());
     dialog->usernameEdit()->setText(QStringLiteral("admin"));
@@ -501,7 +502,10 @@ void UsersSettingsPageTest::loginDialogStaysOpenOnFailure()
     ok.user = user(1, QStringLiteral("admin"), Role::Admin);
     page.setLoginResult(ok);
     QApplication::processEvents();
-    QVERIFY(!dialog->isVisible());
+    // LoginDialog uses WA_DeleteOnClose, so accepting it may destroy the
+    // object during processEvents(). A guarded pointer avoids dereferencing
+    // freed storage in Debug builds.
+    QVERIFY(dialog.isNull() || !dialog->isVisible());
 }
 
 // --- page: session expiry re-arms after re-login ------------------------------------------

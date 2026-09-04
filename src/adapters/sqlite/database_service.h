@@ -20,6 +20,8 @@
 #include <QObject>
 #include <QString>
 
+#include <atomic>
+
 #include "ports/repositories.h"
 
 class QSqlDatabase;
@@ -52,7 +54,7 @@ public:
 
     // True once the database is in restricted mode (spec §13). Only meaningful
     // after ready()/databaseRestricted() has been emitted.
-    bool isRestricted() const { return m_restricted; }
+    bool isRestricted() const { return m_restricted.load(); }
 
     // --- async operations (thread-safe; results via signals) ----------------
 
@@ -114,8 +116,12 @@ private slots:
     void openDatabase();
 
 private:
+    template <typename Function>
+    bool queueToWorkerIfNeeded(Function &&function);
+
     QString m_databasePath;
-    bool m_restricted = false;
+    std::atomic_bool m_restricted{false};
+    QThread *m_ownerThread = nullptr;
     QThread *m_thread = nullptr;
 
     // Owned by the worker thread; null when restricted.

@@ -7,6 +7,8 @@
 #include <QThread>
 #include <QVariant>
 
+#include <utility>
+
 #include "adapters/sqlite/alarm_edge_detector.h"
 #include "adapters/sqlite/auth_service.h"
 #include "adapters/sqlite/migration_runner.h"
@@ -22,7 +24,9 @@ inline constexpr int kRetentionDays = 365;
 } // namespace
 
 DatabaseService::DatabaseService(QString databasePath, QObject *parent)
-    : QObject(parent), m_databasePath(std::move(databasePath))
+    : QObject(parent)
+    , m_databasePath(std::move(databasePath))
+    , m_ownerThread(QThread::currentThread())
 {
     qRegisterMetaType<LoginResult>();
     qRegisterMetaType<UserRecord>();
@@ -48,7 +52,8 @@ void DatabaseService::start()
 {
     if (m_thread)
         return;
-    m_thread = new QThread(this);
+    m_restricted.store(false);
+    m_thread = new QThread;
     // The service lives on the worker thread: the connection is created and
     // used only there, and all queued slots run serially on that thread
     // (spec §7.3).
@@ -73,7 +78,10 @@ void DatabaseService::start()
         delete m_users;
         m_users = nullptr;
         QSqlDatabase::removeDatabase(QStringLiteral("hlm_sqlite_worker"));
-    });
+        // Restore the service to its creator thread before the worker object
+        // is destroyed or a later start() creates a replacement worker.
+        moveToThread(m_ownerThread);
+    }, Qt::DirectConnection);
     m_thread->start();
 }
 
@@ -81,10 +89,23 @@ void DatabaseService::stop()
 {
     if (!m_thread)
         return;
-    m_thread->quit();
-    m_thread->wait();
-    delete m_thread;
+    QThread *worker = m_thread;
+    worker->quit();
+    worker->wait();
     m_thread = nullptr;
+    delete worker;
+}
+
+template <typename Function>
+bool DatabaseService::queueToWorkerIfNeeded(Function &&function)
+{
+    if (QThread::currentThread() == thread())
+        return false;
+    if (!QMetaObject::invokeMethod(this, std::forward<Function>(function),
+                                   Qt::QueuedConnection)) {
+        qWarning("DatabaseService: failed to queue operation to worker thread");
+    }
+    return true;
 }
 
 void DatabaseService::openDatabase()
@@ -134,6 +155,9 @@ void DatabaseService::openDatabase()
 
 void DatabaseService::createInitialAdmin(const QString &username, const QString &password)
 {
+    if (queueToWorkerIfNeeded(
+            [this, username, password]() { createInitialAdmin(username, password); }))
+        return;
     if (!m_auth) {
         emit initialAdminCreated(false, QStringLiteral("database restricted"));
         return;
@@ -145,6 +169,8 @@ void DatabaseService::createInitialAdmin(const QString &username, const QString 
 
 void DatabaseService::login(const QString &username, const QString &password)
 {
+    if (queueToWorkerIfNeeded([this, username, password]() { login(username, password); }))
+        return;
     if (!m_auth) {
         emit loginResult({false, QStringLiteral("database restricted"), std::nullopt});
         return;
@@ -154,6 +180,9 @@ void DatabaseService::login(const QString &username, const QString &password)
 
 void DatabaseService::verifyPassword(qint64 userId, const QString &password)
 {
+    if (queueToWorkerIfNeeded(
+            [this, userId, password]() { verifyPassword(userId, password); }))
+        return;
     if (!m_auth) {
         emit passwordVerified(false);
         return;
@@ -163,6 +192,8 @@ void DatabaseService::verifyPassword(qint64 userId, const QString &password)
 
 void DatabaseService::needsInitialAdmin()
 {
+    if (queueToWorkerIfNeeded([this]() { needsInitialAdmin(); }))
+        return;
     if (!m_auth) {
         emit initialAdminNeeded(false);
         return;
@@ -172,6 +203,9 @@ void DatabaseService::needsInitialAdmin()
 
 void DatabaseService::changePassword(qint64 userId, const QString &newPassword)
 {
+    if (queueToWorkerIfNeeded(
+            [this, userId, newPassword]() { changePassword(userId, newPassword); }))
+        return;
     if (!m_auth) {
         emit passwordChanged(false, QStringLiteral("database restricted"));
         return;
@@ -183,6 +217,8 @@ void DatabaseService::changePassword(qint64 userId, const QString &newPassword)
 
 void DatabaseService::listUsers()
 {
+    if (queueToWorkerIfNeeded([this]() { listUsers(); }))
+        return;
     if (!m_users) {
         emit usersLoaded({});
         return;
@@ -193,6 +229,9 @@ void DatabaseService::listUsers()
 void DatabaseService::addUser(const QString &username, Role role,
                               const QString &password)
 {
+    if (queueToWorkerIfNeeded(
+            [this, username, role, password]() { addUser(username, role, password); }))
+        return;
     if (!m_auth) {
         emit userAdded(false, QStringLiteral("database restricted"));
         return;
@@ -204,6 +243,8 @@ void DatabaseService::addUser(const QString &username, Role role,
 
 void DatabaseService::deleteUser(qint64 userId)
 {
+    if (queueToWorkerIfNeeded([this, userId]() { deleteUser(userId); }))
+        return;
     if (!m_auth) {
         emit userDeleted(false, QStringLiteral("database restricted"));
         return;
@@ -215,6 +256,8 @@ void DatabaseService::deleteUser(qint64 userId)
 
 void DatabaseService::saveRecipe(const RecipeRecord &recipe)
 {
+    if (queueToWorkerIfNeeded([this, recipe]() { saveRecipe(recipe); }))
+        return;
     if (!m_recipes) {
         emit recipeSaved(false, QStringLiteral("database restricted"));
         return;
@@ -226,6 +269,8 @@ void DatabaseService::saveRecipe(const RecipeRecord &recipe)
 
 void DatabaseService::deleteRecipe(qint64 id)
 {
+    if (queueToWorkerIfNeeded([this, id]() { deleteRecipe(id); }))
+        return;
     if (!m_recipes) {
         emit recipeDeleted(false, QStringLiteral("database restricted"));
         return;
@@ -237,6 +282,8 @@ void DatabaseService::deleteRecipe(qint64 id)
 
 void DatabaseService::listRecipes()
 {
+    if (queueToWorkerIfNeeded([this]() { listRecipes(); }))
+        return;
     if (!m_recipes) {
         emit recipesLoaded({});
         return;
@@ -246,6 +293,8 @@ void DatabaseService::listRecipes()
 
 void DatabaseService::setSetting(const SettingRecord &setting)
 {
+    if (queueToWorkerIfNeeded([this, setting]() { setSetting(setting); }))
+        return;
     if (!m_settings) {
         emit settingSaved(false, QStringLiteral("database restricted"));
         return;
@@ -257,6 +306,8 @@ void DatabaseService::setSetting(const SettingRecord &setting)
 
 void DatabaseService::getSetting(const QString &key)
 {
+    if (queueToWorkerIfNeeded([this, key]() { getSetting(key); }))
+        return;
     if (!m_settings) {
         emit settingLoaded(std::nullopt);
         return;
@@ -266,6 +317,10 @@ void DatabaseService::getSetting(const QString &key)
 
 void DatabaseService::feedPlcAlarmSnapshot(quint16 d110, bool m14, bool m4, quint64 sequence)
 {
+    if (queueToWorkerIfNeeded([this, d110, m14, m4, sequence]() {
+            feedPlcAlarmSnapshot(d110, m14, m4, sequence);
+        }))
+        return;
     if (!m_alarmDetector) {
         emit alarmSnapshotProcessed(false, QStringLiteral("database restricted"));
         return;
@@ -280,6 +335,10 @@ void DatabaseService::feedPlcAlarmSnapshot(quint16 d110, bool m14, bool m4, quin
 void DatabaseService::startHmiAlarm(const QString &message, AlarmSeverity severity,
                                     quint64 sequence)
 {
+    if (queueToWorkerIfNeeded([this, message, severity, sequence]() {
+            startHmiAlarm(message, severity, sequence);
+        }))
+        return;
     if (!m_alarmDetector) {
         emit hmiAlarmStarted(false, QStringLiteral("database restricted"));
         return;
@@ -293,6 +352,8 @@ void DatabaseService::startHmiAlarm(const QString &message, AlarmSeverity severi
 
 void DatabaseService::endHmiAlarm(quint64 sequence)
 {
+    if (queueToWorkerIfNeeded([this, sequence]() { endHmiAlarm(sequence); }))
+        return;
     if (!m_alarmDetector) {
         emit hmiAlarmEnded(false, QStringLiteral("database restricted"));
         return;
@@ -306,6 +367,8 @@ void DatabaseService::endHmiAlarm(quint64 sequence)
 
 void DatabaseService::listRecentAlarms(int limit)
 {
+    if (queueToWorkerIfNeeded([this, limit]() { listRecentAlarms(limit); }))
+        return;
     if (!m_alarms) {
         emit recentAlarmsLoaded({});
         return;
@@ -315,6 +378,8 @@ void DatabaseService::listRecentAlarms(int limit)
 
 void DatabaseService::appendAudit(const AuditRecord &record)
 {
+    if (queueToWorkerIfNeeded([this, record]() { appendAudit(record); }))
+        return;
     if (!m_audit) {
         emit auditAppended(false, QStringLiteral("database restricted"));
         return;
@@ -326,6 +391,9 @@ void DatabaseService::appendAudit(const AuditRecord &record)
 
 void DatabaseService::listRecentAudit(int limit, int offset)
 {
+    if (queueToWorkerIfNeeded(
+            [this, limit, offset]() { listRecentAudit(limit, offset); }))
+        return;
     if (!m_audit) {
         emit recentAuditLoaded({});
         return;
@@ -335,6 +403,8 @@ void DatabaseService::listRecentAudit(int limit, int offset)
 
 void DatabaseService::runRetentionCleanup()
 {
+    if (queueToWorkerIfNeeded([this]() { runRetentionCleanup(); }))
+        return;
     if (!m_alarms || !m_audit) {
         emit retentionCleanupDone(0, 0);
         return;

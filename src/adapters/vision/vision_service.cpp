@@ -27,7 +27,9 @@ bool runMatrixSelfTest()
 } // namespace
 
 VisionService::VisionService(bool forceSelfTestFailure, QObject *parent)
-    : IVisionService(parent), m_forceFailure(forceSelfTestFailure)
+    : IVisionService(parent)
+    , m_forceFailure(forceSelfTestFailure)
+    , m_ownerThread(QThread::currentThread())
 {
 }
 
@@ -40,12 +42,14 @@ void VisionService::start()
 {
     if (m_thread)
         return;
-    m_thread = new QThread(this);
+    m_thread = new QThread;
     // The self-test runs on the adapter's own worker thread (spec §7.4);
     // future camera capture and algorithm processing must stay here and never
     // enter the PLC control path.
     moveToThread(m_thread);
     connect(m_thread, &QThread::started, this, &VisionService::runSelfTest);
+    connect(m_thread, &QThread::finished, this,
+            [this]() { moveToThread(m_ownerThread); }, Qt::DirectConnection);
     m_thread->start();
 }
 
@@ -53,10 +57,11 @@ void VisionService::stop()
 {
     if (!m_thread)
         return;
-    m_thread->quit();
-    m_thread->wait();
-    delete m_thread;
+    QThread *worker = m_thread;
+    worker->quit();
+    worker->wait();
     m_thread = nullptr;
+    delete worker;
 }
 
 void VisionService::runSelfTest()

@@ -60,6 +60,7 @@ private:
     mutable QMutex m_mutex; // guards m_healthy/m_version (worker vs caller)
     bool m_healthy = false;
     QString m_version;
+    QThread *m_ownerThread = nullptr;
     QThread *m_thread = nullptr;
 };
 

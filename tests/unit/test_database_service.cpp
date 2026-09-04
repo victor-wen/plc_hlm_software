@@ -55,6 +55,7 @@ void DatabaseServiceTest::healthyDatabaseEmitsReady()
     QCOMPARE(restrictedSpy.size(), 0);
     QVERIFY(!service.isRestricted());
     service.stop();
+    QCOMPARE(service.thread(), QThread::currentThread());
 }
 
 // Spec §7.3 / WAL acceptance criterion: a healthy temp-file database must
@@ -99,33 +100,21 @@ void DatabaseServiceTest::healthyServiceRunsOperationsOnWorkerThread()
     // differ from the test thread (§7.3).
     QVERIFY(service.thread() != QThread::currentThread());
 
-    // createInitialAdmin + login via Qt::QueuedConnection: queued to the
-    // worker thread's event loop (the production path).
+    // Plain C++ calls are automatically re-dispatched to the worker thread.
+    // This is the production path used by Application callbacks.
     QSignalSpy adminSpy(&service, &DatabaseService::initialAdminCreated);
-    const bool adminQueued = QMetaObject::invokeMethod(
-        &service, "createInitialAdmin", Qt::QueuedConnection,
-        Q_ARG(QString, QStringLiteral("admin")),
-        Q_ARG(QString, QStringLiteral("s3cret!")));
-    QVERIFY(adminQueued);
+    service.createInitialAdmin(QStringLiteral("admin"), QStringLiteral("s3cret!"));
     QTRY_VERIFY_WITH_TIMEOUT(adminSpy.size() > 0, 5000);
     QCOMPARE(adminSpy[0][0].toBool(), true);
 
     QSignalSpy loginSpy(&service, &DatabaseService::loginResult);
-    const bool loginQueued = QMetaObject::invokeMethod(
-        &service, "login", Qt::QueuedConnection,
-        Q_ARG(QString, QStringLiteral("admin")),
-        Q_ARG(QString, QStringLiteral("s3cret!")));
-    QVERIFY(loginQueued);
+    service.login(QStringLiteral("admin"), QStringLiteral("s3cret!"));
     QTRY_VERIFY_WITH_TIMEOUT(loginSpy.size() > 0, 5000);
     QVERIFY(loginSpy[0][0].value<LoginResult>().ok);
 
     // A wrong password still returns a clean failure through the same path.
     QSignalSpy badLoginSpy(&service, &DatabaseService::loginResult);
-    const bool badQueued = QMetaObject::invokeMethod(
-        &service, "login", Qt::QueuedConnection,
-        Q_ARG(QString, QStringLiteral("admin")),
-        Q_ARG(QString, QStringLiteral("wrong")));
-    QVERIFY(badQueued);
+    service.login(QStringLiteral("admin"), QStringLiteral("wrong"));
     QTRY_VERIFY_WITH_TIMEOUT(badLoginSpy.size() > 0, 5000);
     QCOMPARE(badLoginSpy[0][0].value<LoginResult>().ok, false);
 

@@ -48,6 +48,7 @@ void VisionAdapterTest::selfTestSuccessReportsVersion()
     // The signal carries the same version string the port reports.
     QCOMPARE(passed.first().first().toString(), service.version());
     service.stop();
+    QCOMPARE(service.thread(), QThread::currentThread());
 }
 
 void VisionAdapterTest::selfTestRunsOnWorkerThread()
