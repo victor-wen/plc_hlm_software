@@ -1,0 +1,19 @@
+name: Cancel stale repackage job
+
+on:
+  push:
+    branches:
+      - ci/cancel-stale-repackage
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel superseded run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/33852840306/cancel"
