@@ -29,6 +29,7 @@
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTemporaryDir>
+#include <QListWidget>
 
 #include "adapters/simulator/simulated_plc_gateway.h"
 #include "adapters/sqlite/database_service.h"
@@ -709,6 +710,12 @@ void FullFlowTest::applicationAdjustWidthConverges()
 
     // Wait for the DB worker to be ready (queued worker-thread path).
     QTRY_VERIFY_WITH_TIMEOUT(!db->isRestricted(), 5000);
+    // A clean first launch must expose the administrator bootstrap without
+    // requiring the user to discover it behind navigation/login controls.
+    QTRY_COMPARE_WITH_TIMEOUT(app.window()->currentPageIndex(), 6, 5000);
+    auto *usersPage = app.window()->findChild<UsersSettingsPage *>();
+    QVERIFY(usersPage != nullptr);
+    QCOMPARE(usersPage->currentPanel(), usersPage->createAdminPanel());
 
     // First run: create the initial admin, then log in as admin.
     QSignalSpy adminSpy(db, &DatabaseService::initialAdminCreated);
@@ -727,6 +734,15 @@ void FullFlowTest::applicationAdjustWidthConverges()
     QTRY_VERIFY_WITH_TIMEOUT(loginSpy.size() > 0, 5000);
     QVERIFY(loginSpy[0][0].value<LoginResult>().ok);
     QCOMPARE(coord->role(), Role::Admin);
+
+    // The administrator can add an operator through the real page -> database
+    // wiring, and the confirmed result refreshes the visible list.
+    QSignalSpy userAddedSpy(db, &DatabaseService::userAdded);
+    emit usersPage->addUserRequested(QStringLiteral("operator"), Role::Operator,
+                                     QStringLiteral("operator-pass"));
+    QTRY_VERIFY_WITH_TIMEOUT(userAddedSpy.size() > 0, 5000);
+    QCOMPARE(userAddedSpy[0][0].toBool(), true);
+    QTRY_COMPARE_WITH_TIMEOUT(usersPage->userList()->count(), 2, 5000);
 
     // Home the machine via the raw gateway (M103 pulse + 2 s home return).
     gw->writeCoil(kM103, true);

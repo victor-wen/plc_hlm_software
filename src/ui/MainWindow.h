@@ -8,7 +8,6 @@
 
 class QStackedWidget;
 class QPushButton;
-class QLabel;
 
 namespace hlm {
 
@@ -28,8 +27,7 @@ class HoldButton;
 // through this class, which cancels all registered hold widgets. Pages and
 // dialogs register their HoldButtons via registerHoldWidget().
 //
-// Pages: Tasks 11-17 plug real pages into the registry; for now 7 stub
-// placeholder pages exist so navigation works and is testable.
+// Seven production pages are registered in the same order as NavPanel.
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -46,6 +44,7 @@ public:
     int navItemCount() const;
     int currentPageIndex() const;
     QString topBarText() const;
+    QString currentPageTitle() const;
     QString alarmBannerText() const;
     int navItemMinimumHeight() const;
 
@@ -79,7 +78,7 @@ signals:
 
 private:
     void buildLayout();
-    void createStubPages();
+    void createPages();
     void loadTheme();
 
     ShellModel *m_model = nullptr;

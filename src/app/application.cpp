@@ -257,11 +257,24 @@ void Application::wireSignals()
     connect(m_db, &DatabaseService::databaseRestricted, this,
             [this](const QString &reason) {
                 m_lifecycle->enterRestrictedMode(reason);
+                LoginResult unavailable;
+                unavailable.ok = false;
+                unavailable.reason = QStringLiteral("database restricted");
+                m_usersPage->setLoginResult(unavailable);
+                m_window->setCurrentPage(6);
             });
-    connect(m_db, &DatabaseService::initialAdminNeeded, m_usersPage,
-            &UsersSettingsPage::setNeedsInitialAdmin);
+    connect(m_db, &DatabaseService::initialAdminNeeded, this,
+            [this](bool needed) {
+                m_usersPage->setNeedsInitialAdmin(needed);
+                // First launch must be self-explanatory: take the operator
+                // directly to the mandatory bootstrap card instead of leaving
+                // it hidden behind the last navigation item.
+                if (needed)
+                    m_window->setCurrentPage(6);
+            });
     connect(m_db, &DatabaseService::initialAdminCreated, this,
-            [this](bool ok, const QString &) {
+            [this](bool ok, const QString &error) {
+                m_usersPage->setInitialAdminResult(ok, error);
                 if (ok) {
                     m_usersPage->setNeedsInitialAdmin(false);
                     m_db->listUsers();
@@ -271,6 +284,20 @@ void Application::wireSignals()
             &Application::handleLoginResult);
     connect(m_db, &DatabaseService::usersLoaded, m_usersPage,
             &UsersSettingsPage::setUsers);
+    connect(m_db, &DatabaseService::userAdded, this,
+            [this](bool ok, const QString &error) {
+                m_usersPage->setAddUserResult(ok, error);
+                if (ok)
+                    m_db->listUsers();
+            });
+    connect(m_db, &DatabaseService::userDeleted, this,
+            [this](bool ok, const QString &error) {
+                m_usersPage->setDeleteUserResult(ok, error);
+                if (ok)
+                    m_db->listUsers();
+            });
+    connect(m_db, &DatabaseService::passwordChanged, m_usersPage,
+            &UsersSettingsPage::setPasswordChangeResult);
     connect(m_db, &DatabaseService::recipesLoaded, m_recipePage,
             &RecipeWidthPage::setRecipes);
     connect(m_db, &DatabaseService::recipeSaved, this,

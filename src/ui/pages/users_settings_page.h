@@ -61,6 +61,8 @@ public:
     QSpinBox *readRetriesSpin() const { return m_readRetries; }
     QLabel *serialStatusLabel() const { return m_serialStatus; }
     QLabel *loginStatusLabel() const { return m_loginStatusLabel; }
+    QLabel *createAdminStatusLabel() const { return m_createAdminStatus; }
+    QLabel *userStatusLabel() const { return m_userStatus; }
     QLineEdit *changePasswordUserEdit() const { return m_changePasswordUser; }
     QLineEdit *changePasswordNewEdit() const { return m_changePasswordNew; }
     QLineEdit *changePasswordConfirmEdit() const { return m_changePasswordConfirm; }
@@ -83,9 +85,13 @@ public:
 
     // --- data feeds (wired by the app shell, Task 20) --------------------------
     void setNeedsInitialAdmin(bool needs);
+    void setInitialAdminResult(bool ok, const QString &detail);
     void setLoginResult(const LoginResult &result);
     void setSessionRemainingSec(int seconds);
     void setUsers(const QVector<UserRecord> &users);
+    void setAddUserResult(bool ok, const QString &detail);
+    void setDeleteUserResult(bool ok, const QString &detail);
+    void setPasswordChangeResult(bool ok, const QString &detail);
     void setParameterWriteResult(bool ok, const QString &detail);
     // 回显实际存储的串口配置 (Task 20 接线 DatabaseService::getSetting).
     void setSerialConfig(const SerialConfig &config);
@@ -150,6 +156,7 @@ private:
     QLineEdit *m_adminPassword = nullptr;
     QLineEdit *m_adminConfirm = nullptr;
     QPushButton *m_createAdmin = nullptr;
+    QLabel *m_createAdminStatus = nullptr;
     // Admin panel.
     QLabel *m_sessionLabel = nullptr;
     QLabel *m_loginStatusLabel = nullptr;
@@ -159,6 +166,7 @@ private:
     QLineEdit *m_newUserPassword = nullptr;
     QPushButton *m_addUser = nullptr;
     QPushButton *m_deleteUser = nullptr;
+    QLabel *m_userStatus = nullptr;
     QLineEdit *m_changePasswordUser = nullptr;
     QLineEdit *m_changePasswordNew = nullptr;
     QLineEdit *m_changePasswordConfirm = nullptr;
@@ -183,6 +191,8 @@ private:
     QLabel *m_paramStatus = nullptr;
     QPushButton *m_logout = nullptr;
     QHash<QString, ValueDisplay *> m_paramDisplays;
+
+    QString m_accountStatus;
 
     bool m_sessionExpiredEmitted = false;
     QPointer<AdminPasswordDialog> m_d204Dialog;

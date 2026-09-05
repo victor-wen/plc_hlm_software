@@ -35,10 +35,19 @@ void UsersSettingsModel::setNeedsInitialAdmin(bool needs)
 void UsersSettingsModel::setLoginResult(const LoginResult &result)
 {
     m_loginLocked = !result.ok && result.reason == QStringLiteral("locked");
-    m_loginError = result.ok ? QString()
-                             : (result.reason == QStringLiteral("bad credentials")
-                                    ? QStringLiteral("用户名或密码错误")
-                                    : result.reason);
+    if (result.ok) {
+        m_loginError.clear();
+    } else if (result.reason == QStringLiteral("bad credentials")
+               || result.reason == QStringLiteral("unknown user")) {
+        // Do not disclose whether a username exists.
+        m_loginError = QStringLiteral("用户名或密码错误");
+    } else if (result.reason == QStringLiteral("disabled")) {
+        m_loginError = QStringLiteral("账号已停用，请联系管理员");
+    } else if (result.reason == QStringLiteral("database restricted")) {
+        m_loginError = QStringLiteral("数据库不可用，当前无法登录");
+    } else {
+        m_loginError = result.reason;
+    }
     emit stateChanged();
 }
 

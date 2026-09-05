@@ -67,6 +67,7 @@ private slots:
     // --- MainWindow navigation ----------------------------------------------
     void navigationHasSevenItems();
     void navigationSwitchesPages();
+    void navigationUpdatesVisiblePageTitle();
     void navigationClearsHoldIntents();
 
     // --- MainWindow status bar ----------------------------------------------
@@ -161,6 +162,15 @@ void ShellTest::navigationSwitchesPages()
     QCOMPARE(w.currentPageIndex(), 3);
     w.setCurrentPage(0);
     QCOMPARE(w.currentPageIndex(), 0);
+}
+
+void ShellTest::navigationUpdatesVisiblePageTitle()
+{
+    MainWindow w;
+    QCOMPARE(w.currentPageTitle(), QStringLiteral("总览"));
+    w.setCurrentPage(2);
+    QCOMPARE(w.currentPageTitle(), QStringLiteral("手动控制"));
+    QVERIFY(w.topBarText().contains(QStringLiteral("手动控制")));
 }
 
 void ShellTest::navigationClearsHoldIntents()

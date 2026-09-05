@@ -6,6 +6,8 @@
 #include <QSqlQuery>
 #include <QThread>
 #include <QVariant>
+#include <QDir>
+#include <QFileInfo>
 
 #include <utility>
 
@@ -114,7 +116,15 @@ void DatabaseService::openDatabase()
                                                QStringLiteral("hlm_sqlite_worker"));
     db.setDatabaseName(m_databasePath);
     QString error;
-    if (!db.open()) {
+    // SQLite creates the database file but not missing parent directories.
+    // A clean installation therefore has to create its data directory before
+    // the first administrator can be bootstrapped.
+    const QFileInfo databaseInfo(m_databasePath);
+    if (m_databasePath != QStringLiteral(":memory:")
+        && !QDir().mkpath(databaseInfo.absolutePath())) {
+        error = QStringLiteral("failed to create database directory: %1")
+                    .arg(databaseInfo.absolutePath());
+    } else if (!db.open()) {
         error = db.lastError().text();
     } else {
         // WAL, foreign keys and busy timeout (spec §7.3). A failure here must

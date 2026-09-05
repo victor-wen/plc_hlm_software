@@ -1,6 +1,7 @@
 #include "adapters/sqlite/auth_service.h"
 
 #include <optional>
+#include <algorithm>
 
 #include "domain/password_derivation.h"
 #include "ports/repositories.h"
@@ -242,6 +243,22 @@ bool AuthService::createUser(const QString &username, Role role,
 
 bool AuthService::deleteUser(qint64 id, QString *error)
 {
+    const QVector<UserRecord> users = m_users->allUsers();
+    const auto target = std::find_if(users.cbegin(), users.cend(),
+                                     [id](const UserRecord &u) {
+                                         return u.id == id;
+                                     });
+    if (target != users.cend() && target->role == Role::Admin) {
+        const int remainingEnabledAdmins = std::count_if(
+            users.cbegin(), users.cend(), [id](const UserRecord &u) {
+                return u.id != id && u.role == Role::Admin && u.enabled;
+            });
+        if (remainingEnabledAdmins == 0) {
+            if (error)
+                *error = QStringLiteral("cannot delete the last admin");
+            return false;
+        }
+    }
     if (!m_users->deleteUser(id, error))
         return false;
     audit(m_audit, QStringLiteral("admin"), Role::Admin, QStringLiteral("user.delete"),

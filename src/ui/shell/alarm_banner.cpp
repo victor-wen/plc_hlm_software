@@ -16,9 +16,18 @@ AlarmBanner::AlarmBanner(ShellModel &model, QWidget *parent)
     setMaximumHeight(40);
 
     auto *layout = new QHBoxLayout(this);
-    layout->setContentsMargins(12, 2, 12, 2);
+    layout->setContentsMargins(14, 2, 14, 2);
+    layout->setSpacing(12);
+    auto *tag = new QLabel(QStringLiteral("系统状态"), this);
+    tag->setObjectName(QStringLiteral("alarmBannerTag"));
+    layout->addWidget(tag);
     m_label = new QLabel(this);
+    m_label->setObjectName(QStringLiteral("alarmBannerText"));
     layout->addWidget(m_label);
+    layout->addStretch();
+    auto *source = new QLabel(QStringLiteral("PLC 实时确认"), this);
+    source->setObjectName(QStringLiteral("alarmBannerSource"));
+    layout->addWidget(source);
 
     connect(&m_model, &ShellModel::stateChanged, this, &AlarmBanner::refresh);
     refresh();
