@@ -42,6 +42,10 @@ QWidget#topBar QWidget {
     color: #e7eef6;
 }
 
+QWidget#topBar QWidget#topStatusLight {
+    color: #e7eef6;
+}
+
 QLabel#appName {
     color: #ffffff;
     font-size: 22px;
@@ -163,24 +167,24 @@ QLabel#actionBarTitle {
     color: #293f55;
     font-size: 16px;
     font-weight: 700;
-    padding: 7px 0 5px 0;
+    padding: 4px 0 3px 0;
 }
 
 QLabel#actionGroupLabel {
     color: #65778a;
     font-size: 12px;
     font-weight: 700;
-    padding: 7px 2px 0 2px;
+    padding: 3px 2px 0 2px;
 }
 
 QWidget#actionBar QPushButton {
-    min-height: 66px;
+    min-height: 44px;
     color: #21384e;
     background-color: #f8fbfd;
     border: 1px solid #aebfce;
     border-bottom: 3px solid #9cadbc;
     border-radius: 4px;
-    padding: 7px 10px;
+    padding: 4px 8px;
     font-size: 17px;
     font-weight: 700;
 }
@@ -259,6 +263,13 @@ QLabel#sectionTitle {
     color: #132d46;
     font-size: 18px;
     font-weight: 700;
+}
+
+QLabel#valueFieldTitle {
+    color: #445d73;
+    font-size: 13px;
+    font-weight: 600;
+    padding-left: 2px;
 }
 
 QFrame#schematicNode {

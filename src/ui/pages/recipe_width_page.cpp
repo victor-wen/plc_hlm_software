@@ -14,6 +14,7 @@
 #include <QFrame>
 #include <QHash>
 #include <QHideEvent>
+#include <QSizePolicy>
 
 namespace hlm {
 
@@ -44,6 +45,7 @@ void RecipeWidthPage::buildLayout()
     auto *widthLayout = new QVBoxLayout(widthBox);
     widthLayout->setSpacing(8);
     auto *widthTitle = new QLabel(QStringLiteral("宽度控制"), widthBox);
+    widthTitle->setObjectName(QStringLiteral("sectionTitle"));
     widthLayout->addWidget(widthTitle);
 
     auto *grid = new QGridLayout();
@@ -74,6 +76,7 @@ void RecipeWidthPage::buildLayout()
     auto *recipeLayout = new QVBoxLayout(recipeBox);
     recipeLayout->setSpacing(8);
     auto *recipeTitle = new QLabel(QStringLiteral("配方管理"), recipeBox);
+    recipeTitle->setObjectName(QStringLiteral("sectionTitle"));
     recipeLayout->addWidget(recipeTitle);
 
     m_recipeList = new QListWidget(recipeBox);
@@ -124,9 +127,12 @@ void RecipeWidthPage::buildLayout()
     m_statusLabel->setObjectName(QStringLiteral("adjustStatus"));
     m_statusLabel->setMinimumHeight(48);
     applyRow->addWidget(m_statusLabel, /*stretch=*/1);
+    // Keep the command directly below the measurements it acts on. The
+    // control card uses its compact size hint; the recipe list receives the
+    // remaining height instead of stretching the measurement tiles into large
+    // empty blocks.
+    root->addWidget(widthBox);
     root->addLayout(applyRow);
-
-    root->addWidget(widthBox, /*stretch=*/1);
     root->addWidget(recipeBox, /*stretch=*/1);
 
     // --- wiring -----------------------------------------------------------------
@@ -141,19 +147,27 @@ void RecipeWidthPage::buildLayout()
             [this](int v) { m_pageModel.setEditedWidth(v); });
 }
 
-ValueDisplay *RecipeWidthPage::addField(const QString &key, const QString &title)
+QWidget *RecipeWidthPage::addField(const QString &key, const QString &title)
 {
     auto *titleWrap = new QWidget(this);
+    titleWrap->setObjectName(QStringLiteral("valueField"));
+    titleWrap->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto *layout = new QVBoxLayout(titleWrap);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(2);
     auto *titleLabel = new QLabel(title, titleWrap);
+    titleLabel->setObjectName(QStringLiteral("valueFieldTitle"));
     layout->addWidget(titleLabel);
     auto *display = new ValueDisplay(titleWrap);
     display->setMinimumHeight(48);
+    display->setMaximumHeight(54);
+    display->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     layout->addWidget(display);
     m_displays.insert(key, display);
-    return display;
+    // Insert the complete title + value wrapper into the caller's layout.
+    // Returning only `display` reparents it out of this wrapper and leaves
+    // every title at the page's default (0, 0) position.
+    return titleWrap;
 }
 
 ValueDisplay *RecipeWidthPage::fieldDisplay(const QString &key) const

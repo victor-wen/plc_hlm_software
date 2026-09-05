@@ -86,6 +86,8 @@ private slots:
 
     // --- theme ---------------------------------------------------------------
     void themeStylesheetApplied();
+    void shellContainersPaintTheirStyledBackgrounds();
+    void compactHeightKeepsEveryActionInsideTheRail();
 
     // --- intent clearing -----------------------------------------------------
     void modalDialogTriggerClearsHoldIntents();
@@ -302,6 +304,61 @@ void ShellTest::themeStylesheetApplied()
     QVERIFY(!w.styleSheet().isEmpty());
     QVERIFY(w.styleSheet().contains(QStringLiteral("navList")));
     QVERIFY(w.navItemMinimumHeight() >= 48);
+}
+
+void ShellTest::shellContainersPaintTheirStyledBackgrounds()
+{
+    // Plain QWidget subclasses need WA_StyledBackground on Windows. Without
+    // it the dark header and green/red alarm background can remain transparent,
+    // leaving near-white text on the app's light surface.
+    MainWindow w;
+    w.shellModel()->updateSnapshot(DeviceSnapshot(validSnapshotData()));
+    w.show();
+    QApplication::processEvents();
+
+    auto *top = w.findChild<QWidget *>(QStringLiteral("topBar"));
+    auto *alarm = w.findChild<QWidget *>(QStringLiteral("alarmBannerOk"));
+    auto *actions = w.findChild<QWidget *>(QStringLiteral("actionBar"));
+    QVERIFY(top != nullptr);
+    QVERIFY(alarm != nullptr);
+    QVERIFY(actions != nullptr);
+    QVERIFY(top->testAttribute(Qt::WA_StyledBackground));
+    QVERIFY(alarm->testAttribute(Qt::WA_StyledBackground));
+    QVERIFY(actions->testAttribute(Qt::WA_StyledBackground));
+}
+
+void ShellTest::compactHeightKeepsEveryActionInsideTheRail()
+{
+    // Reproduce a 1280x800 logical workspace (for example a 1600x1000 panel
+    // at 125% scale). Every fixed safety action must remain within the rail;
+    // existence/isVisible alone does not detect geometry clipped below it.
+    MainWindow w;
+    w.resize(1280, 800);
+    w.show();
+    QApplication::processEvents();
+
+    auto *bar = w.findChild<QWidget *>(QStringLiteral("actionBar"));
+    QVERIFY(bar != nullptr);
+    const QList<QPushButton *> buttons = {
+        w.findChild<QPushButton *>(QStringLiteral("manualModeButton")),
+        w.findChild<QPushButton *>(QStringLiteral("autoModeButton")),
+        w.startButton(), w.stopButton(), w.resetButton(),
+        w.findChild<QPushButton *>(QStringLiteral("loginButton")),
+        w.estopButton(),
+    };
+    for (QPushButton *button : buttons) {
+        QVERIFY(button != nullptr);
+        const QRect inBar(button->mapTo(bar, QPoint(0, 0)), button->size());
+        QVERIFY2(bar->rect().contains(inBar),
+                 qPrintable(QStringLiteral("%1 is outside action rail: %2 vs %3")
+                                .arg(button->objectName(),
+                                     QString::fromLatin1("%1,%2 %3x%4")
+                                         .arg(inBar.x()).arg(inBar.y())
+                                         .arg(inBar.width()).arg(inBar.height()),
+                                     QString::fromLatin1("%1x%2")
+                                         .arg(bar->width()).arg(bar->height()))));
+        QVERIFY(button->height() >= 48);
+    }
 }
 
 // --- intent clearing ---------------------------------------------------------

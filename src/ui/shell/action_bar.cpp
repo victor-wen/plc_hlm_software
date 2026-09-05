@@ -40,12 +40,13 @@ ActionBar::ActionBar(ShellModel &model, QWidget *parent)
     , m_model(model)
 {
     setObjectName(QStringLiteral("actionBar"));
+    setAttribute(Qt::WA_StyledBackground, true);
     setMinimumWidth(192);
     setMaximumWidth(192);
 
     auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(8, 8, 8, 8);
-    layout->setSpacing(8);
+    layout->setContentsMargins(6, 6, 6, 6);
+    layout->setSpacing(6);
 
     auto *title = new QLabel(QStringLiteral("设备操作"), this);
     title->setObjectName(QStringLiteral("actionBarTitle"));
@@ -54,7 +55,9 @@ ActionBar::ActionBar(ShellModel &model, QWidget *parent)
 
     auto make = [this, layout](const QString &text) {
         auto *b = new PermissionButton(text, this);
-        b->setMinimumHeight(72); // main control buttons >= 72 px (spec §11.1)
+        // 56 logical px remains a large touch target while keeping every
+        // safety control visible on a 768 px-high / 125%-scaled display.
+        b->setMinimumHeight(56);
         layout->addWidget(b);
         return b;
     };
@@ -89,7 +92,7 @@ ActionBar::ActionBar(ShellModel &model, QWidget *parent)
     m_estop = new PermissionButton(QStringLiteral("软件急停"), this);
     m_estop->setObjectName(QStringLiteral("estopButton"));
     m_estop->setProperty("danger", true);
-    m_estop->setMinimumHeight(96);
+    m_estop->setMinimumHeight(80);
     m_estop->setStyleSheet(
         QStringLiteral("QPushButton#estopButton { background-color: #c42b2b;"
                        " color: white; font-weight: bold; border: 3px solid #7a1010;"

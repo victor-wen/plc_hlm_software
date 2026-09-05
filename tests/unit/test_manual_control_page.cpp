@@ -780,6 +780,9 @@ void ManualControlPageTest::mainWindowUsesManualControlPage()
     QVERIFY(page->isVisible());
     QCOMPARE(page->fieldDisplay(QStringLiteral("widthSpeed"))->text(),
              QStringLiteral("15 mm/s"));
+    QCOMPARE(page->fieldDisplay(QStringLiteral("widthSpeed"))
+                 ->parentWidget()->objectName(),
+             QStringLiteral("valueField"));
 }
 
 QTEST_MAIN(ManualControlPageTest)

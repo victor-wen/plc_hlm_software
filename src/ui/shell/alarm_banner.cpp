@@ -12,6 +12,9 @@ AlarmBanner::AlarmBanner(ShellModel &model, QWidget *parent)
     , m_model(model)
 {
     setObjectName(QStringLiteral("alarmBanner"));
+    // Ensure the green/red status background is painted by this QWidget
+    // subclass on the Windows style engine.
+    setAttribute(Qt::WA_StyledBackground, true);
     setMinimumHeight(40);
     setMaximumHeight(40);
 

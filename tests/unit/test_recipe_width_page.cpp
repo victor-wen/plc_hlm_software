@@ -118,6 +118,7 @@ private slots:
     void pageShowsStatusAndDisplays();
     void operatorSeesDisabledApplyWithReason();
     void editorControlsMeetTouchTargetSize();
+    void fieldCardsStayIntactAndDoNotOverlap();
 
     // --- MainWindow integration ------------------------------------------------
     void mainWindowUsesRecipeWidthPage();
@@ -605,6 +606,43 @@ void RecipeWidthPageTest::editorControlsMeetTouchTargetSize()
 
     QVERIFY(page.nameEdit()->minimumHeight() >= 48);
     QVERIFY(page.widthSpin()->minimumHeight() >= 48);
+}
+
+void RecipeWidthPageTest::fieldCardsStayIntactAndDoNotOverlap()
+{
+    // Regression: addField() once returned the inner ValueDisplay instead of
+    // its title+value wrapper. Qt reparented the display into the grid and left
+    // all five title wrappers at the page origin, visibly stacked together.
+    ShellModel model;
+    RecipeWidthPage page(model);
+    page.resize(1100, 720);
+    page.show();
+    QApplication::processEvents();
+
+    const QStringList keys = {
+        QStringLiteral("targetWidth"), QStringLiteral("currentWidth"),
+        QStringLiteral("widthDelta"), QStringLiteral("pulsePerMm"),
+        QStringLiteral("widthSpeed"),
+    };
+    QVector<QRect> globalRects;
+    for (const QString &key : keys) {
+        ValueDisplay *display = page.fieldDisplay(key);
+        QVERIFY(display != nullptr);
+        QWidget *wrapper = display->parentWidget();
+        QVERIFY(wrapper != nullptr);
+        QCOMPARE(wrapper->objectName(), QStringLiteral("valueField"));
+        auto *title = wrapper->findChild<QLabel *>(
+            QStringLiteral("valueFieldTitle"), Qt::FindDirectChildrenOnly);
+        QVERIFY(title != nullptr);
+        QVERIFY(wrapper->rect().contains(title->geometry()));
+        QVERIFY(wrapper->rect().contains(display->geometry()));
+        globalRects.append(QRect(wrapper->mapToGlobal(QPoint(0, 0)),
+                                 wrapper->size()));
+    }
+    for (qsizetype i = 0; i < globalRects.size(); ++i) {
+        for (qsizetype j = i + 1; j < globalRects.size(); ++j)
+            QVERIFY(!globalRects[i].intersects(globalRects[j]));
+    }
 }
 
 // --- MainWindow integration ------------------------------------------------------

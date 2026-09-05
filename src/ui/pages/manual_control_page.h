@@ -71,7 +71,7 @@ protected:
 
 private:
     void buildLayout();
-    ValueDisplay *addField(const QString &key, const QString &title);
+    QWidget *addField(const QString &key, const QString &title);
     void onStopGateClicked();
     void onShieldClicked(PermissionButton *button, quint16 address);
     void disarmShield(PermissionButton *button, quint16 address);

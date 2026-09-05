@@ -70,7 +70,7 @@ protected:
 
 private:
     void buildLayout();
-    ValueDisplay *addField(const QString &key, const QString &title);
+    QWidget *addField(const QString &key, const QString &title);
     void onApplyClicked();
     void onRecipeSelected(int row);
     void onSaveClicked();

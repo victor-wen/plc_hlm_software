@@ -5,6 +5,8 @@
 #include <QHBoxLayout>
 #include <QTimer>
 #include <QDateTime>
+#include <QPalette>
+#include <QColor>
 
 namespace hlm {
 
@@ -13,8 +15,11 @@ TopBar::TopBar(ShellModel &model, QWidget *parent)
     , m_model(model)
 {
     setObjectName(QStringLiteral("topBar"));
-    setMinimumHeight(72);
-    setMaximumHeight(72);
+    // Plain QWidget subclasses may otherwise stay transparent on Windows
+    // even when QSS supplies a background color.
+    setAttribute(Qt::WA_StyledBackground, true);
+    setMinimumHeight(64);
+    setMaximumHeight(64);
 
     auto *layout = new QHBoxLayout(this);
     layout->setContentsMargins(12, 4, 12, 4);
@@ -63,6 +68,12 @@ void TopBar::buildLights()
     };
     for (const QString &name : names) {
         auto *light = new StatusLight(this);
+        light->setObjectName(QStringLiteral("topStatusLight"));
+        QPalette palette = light->palette();
+        palette.setColor(QPalette::WindowText, QColor(QStringLiteral("#e7eef6")));
+        palette.setColor(QPalette::Disabled, QPalette::WindowText,
+                         QColor(QStringLiteral("#aab9c7")));
+        light->setPalette(palette);
         light->setState(StatusState::Unknown, name + QStringLiteral(" —"));
         m_lights.append(light);
         layout()->addWidget(light);
