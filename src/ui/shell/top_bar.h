@@ -24,15 +24,18 @@ public:
 
     // Aggregated text of all status chips (for tests).
     QString text() const;
+    QString pageTitle() const;
 
 public slots:
     void refresh();
+    void setPageTitle(const QString &title);
 
 private:
     void buildLights();
 
     ShellModel &m_model;
     QLabel *m_appName = nullptr;
+    QLabel *m_pageTitle = nullptr;
     QLabel *m_userLabel = nullptr;
     QLabel *m_clockLabel = nullptr;
     QVector<StatusLight *> m_lights; // online, mode, running, homed, ready, fault

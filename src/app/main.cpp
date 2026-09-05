@@ -5,6 +5,7 @@
 
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QDir>
 #include <QStandardPaths>
 #include <QString>
 
@@ -44,10 +45,13 @@ int main(int argc, char *argv[])
     } else {
         // Default machine-level data directory (spec §12): %ProgramData%\PLC-HLM\
         // on Windows, ~/.local/share/PLC-HLM/ elsewhere.
-        const QString dataDir = QStandardPaths::writableLocation(
-            QStandardPaths::AppDataLocation);
-        if (!dataDir.isEmpty())
-            cfg.databasePath = dataDir + QStringLiteral("/app.db");
+        const QString dataRoot = QStandardPaths::writableLocation(
+            QStandardPaths::GenericDataLocation);
+        if (!dataRoot.isEmpty()) {
+            const QString dataDir =
+                QDir(dataRoot).filePath(QStringLiteral("PLC-HLM"));
+            cfg.databasePath = QDir(dataDir).filePath(QStringLiteral("app.db"));
+        }
     }
 
     hlm::Application application(cfg);

@@ -2,6 +2,7 @@
 
 #include <QWidget>
 #include <QVector>
+#include <QString>
 
 class QListWidget;
 class QListWidgetItem;
@@ -20,6 +21,7 @@ public:
     int itemCount() const;
     int currentItem() const;
     int itemMinimumHeight() const;
+    QString pageTitle(int index) const;
 
 public slots:
     void setCurrent(int index);

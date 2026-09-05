@@ -7,6 +7,8 @@
 #include <QVBoxLayout>
 #include <QStringList>
 #include <QLabel>
+#include <QStyle>
+#include <QVariant>
 
 namespace hlm {
 
@@ -19,6 +21,17 @@ QString combinedReason(const PermissionResult &p, const InterlockResult &i)
         reasons.append(p.reason);
     reasons.append(i.unmet);
     return reasons.join(QStringLiteral("；"));
+}
+
+void setActiveState(QWidget *widget, bool active)
+{
+    const QVariant current = widget->property("active");
+    if (current.isValid() && current.toBool() == active)
+        return;
+    widget->setProperty("active", active);
+    widget->style()->unpolish(widget);
+    widget->style()->polish(widget);
+    widget->update();
 }
 } // namespace
 
@@ -46,16 +59,27 @@ ActionBar::ActionBar(ShellModel &model, QWidget *parent)
         return b;
     };
 
+    auto addGroupLabel = [this, layout](const QString &text) {
+        auto *label = new QLabel(text, this);
+        label->setObjectName(QStringLiteral("actionGroupLabel"));
+        layout->addWidget(label);
+    };
+
+    addGroupLabel(QStringLiteral("运行模式"));
     m_manual = make(QStringLiteral("手动"));
     m_manual->setObjectName(QStringLiteral("manualModeButton"));
     m_auto = make(QStringLiteral("自动"));
     m_auto->setObjectName(QStringLiteral("autoModeButton"));
+
+    addGroupLabel(QStringLiteral("流程控制"));
     m_start = make(QStringLiteral("启动"));
     m_start->setObjectName(QStringLiteral("startButton"));
     m_stop = make(QStringLiteral("停止"));
     m_stop->setObjectName(QStringLiteral("stopButton"));
     m_reset = make(QStringLiteral("复位"));
     m_reset->setObjectName(QStringLiteral("resetButton"));
+
+    addGroupLabel(QStringLiteral("当前账户"));
     m_login = make(QStringLiteral("登录"));
     m_login->setObjectName(QStringLiteral("loginButton"));
 
@@ -97,6 +121,14 @@ void ActionBar::refresh()
     const DeviceSnapshot &s = m_model.snapshot();
     const bool online = m_model.online();
     const Role role = m_model.role();
+
+    // Active colors come exclusively from the last confirmed PLC snapshot.
+    // A click must never make the mode/run state look successful before the
+    // corresponding snapshot arrives (spec §11.2).
+    setActiveState(m_manual, m_model.modeKnown() && !m_model.isAutoMode());
+    setActiveState(m_auto, m_model.modeKnown() && m_model.isAutoMode());
+    setActiveState(m_start, m_model.modeKnown() && m_model.isRunning());
+    setActiveState(m_stop, m_model.modeKnown() && !m_model.isRunning());
 
     // Mode switch: admin only (spec §11.4).
     {

@@ -1,186 +1,132 @@
-/* PLC HMI industrial theme (spec §11.1, §11.2).
+/* PLC-HLM industrial touch theme.
  *
- * Design rules:
- * - High contrast, large touch targets (>= 48 px), main control buttons
- *   >= 72 px high, table rows >= 48 px.
- * - Status colors (§11.2): green=online/ready, blue=auto/sending,
- *   amber=manual/warning, red=fault/estop, gray=offline/unknown.
- * - Color is never the only channel; widgets always pair color with text.
+ * The visual hierarchy follows the supplied shop-floor HMI references:
+ * permanent status at the top, alarm strip below it, fixed navigation and
+ * action rails, and a quiet high-contrast work area. All controls retain a
+ * minimum 48 px touch target and every state is also expressed as text.
  */
 
-QMainWindow#mainWindow {
-    background-color: #eceff3;
-}
-
-/* --- top status bar (~72 px) --- */
-QWidget#topBar {
-    background-color: #24303e;
-}
-
-QLabel#appName {
-    color: white;
-    font-size: 22px;
-    font-weight: bold;
-}
-
-QLabel#clockLabel {
-    color: #cfd8e0;
-    font-size: 16px;
-}
-
-/* --- alarm banner (~40 px) --- */
-QWidget#alarmBannerOk {
-    background-color: #2e9e4f; /* green 无报警 (spec §11.1) */
-}
-
-QWidget#alarmBannerActive {
-    background-color: #c42b2b; /* red active alarm */
-}
-
-QWidget#alarmBannerOk QLabel,
-QWidget#alarmBannerActive QLabel {
-    color: white;
-    font-size: 18px;
-    font-weight: bold;
-}
-
-/* --- left navigation (~176 px) --- */
-QWidget#navPanel {
-    background-color: #2c3a49;
-}
-
-QListWidget#navList {
-    background-color: #2c3a49;
-    color: #e6edf3;
-    border: none;
-    outline: none;
-    font-size: 17px;
-}
-
-QListWidget#navList::item {
-    height: 64px; /* >= 48 px touch target (spec §11.1) */
-    padding-left: 16px;
-    border-bottom: 1px solid #22303d;
-}
-
-QListWidget#navList::item:selected {
-    background-color: #2f6fd0;
-    color: white;
-}
-
-QListWidget#navList::item:hover:!selected {
-    background-color: #3a4c5f;
-}
-
-/* --- right action bar (~192 px) --- */
-QWidget#actionBar {
-    background-color: #dfe5ec;
-}
-
-QWidget#actionBar QPushButton {
-    font-size: 18px;
-    font-weight: bold;
-    border: 1px solid #b6c0cc;
-    border-radius: 6px;
-    background-color: #f4f7fa;
-}
-
-QWidget#actionBar QPushButton:pressed {
-    background-color: #cfe0f5;
-}
-
-/* --- shared widgets --- */
-QPushButton {
-    min-height: 48px; /* touch target (spec §11.1) */
-    padding: 8px 16px;
-}
-
-QTableView {
-    alternate-background-color: #f6f8fa;
-    gridline-color: #c8d0d9;
-}
-
-QTableView QHeaderView::section {
-    min-height: 48px; /* table rows >= 48 px (spec §11.1) */
-    background-color: #d5dce4;
-    border: 1px solid #b6c0cc;
-    font-weight: bold;
-}
-
-QDialog {
-    background-color: #eceff3;
-}
-
-/* --- 2026 visual refresh -------------------------------------------------- */
 * {
     font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
     font-size: 15px;
-    color: #1e293b;
+    color: #17283b;
 }
 
 QMainWindow#mainWindow,
-QWidget#appSurface {
-    background-color: #f1f5f9;
+QWidget#appSurface,
+QWidget#overviewPage,
+QWidget#recipeWidthPage,
+QWidget#manualControlPage,
+QWidget#alarmPage,
+QWidget#auditLogPage,
+QWidget#diagnosticsPage,
+QWidget#usersSettingsPage,
+QWidget#adminSettingsContent,
+QScrollArea#adminSettingsScroll {
+    background-color: #edf2f6;
 }
 
+QScrollArea#adminSettingsScroll {
+    border: none;
+}
+
+/* --- permanent status header --------------------------------------------- */
 QWidget#topBar {
-    background-color: #0f1e32;
-    border-bottom: 1px solid #20354e;
+    background-color: #0b1d30;
+    border-bottom: 1px solid #213a55;
     color: #f8fafc;
 }
 
 QWidget#topBar QLabel,
 QWidget#topBar QWidget {
-    color: #e8eef6;
+    color: #e7eef6;
 }
 
 QLabel#appName {
     color: #ffffff;
+    font-size: 22px;
+    font-weight: 700;
+    padding-right: 2px;
+}
+
+QLabel#topBarDivider {
+    color: #526b84;
     font-size: 23px;
+}
+
+QLabel#pageTitle {
+    color: #7fc9ff;
+    font-size: 19px;
     font-weight: 700;
     padding-right: 10px;
 }
 
 QLabel#userLabel {
-    color: #dbeafe;
-    background-color: #18304c;
-    border: 1px solid #2b4a6c;
-    border-radius: 16px;
-    padding: 7px 13px;
-    font-weight: 600;
+    color: #eaf4ff;
+    background-color: #173451;
+    border: 1px solid #315573;
+    border-radius: 4px;
+    padding: 8px 13px;
+    font-weight: 700;
 }
 
 QLabel#clockLabel {
-    color: #b9c8da;
-    font-size: 15px;
+    color: #b8c8d8;
+    font-size: 14px;
     padding-left: 4px;
 }
 
+/* --- alarm/status strip --------------------------------------------------- */
 QWidget#alarmBannerOk {
-    background-color: #18864b;
-    border-bottom: 1px solid #11683a;
+    background-color: #18814a;
+    border-bottom: 2px solid #0e6236;
 }
 
 QWidget#alarmBannerActive {
-    background-color: #c62828;
-    border-bottom: 1px solid #8f1d1d;
+    background-color: #c52b31;
+    border-bottom: 2px solid #8f1920;
 }
 
+QWidget#alarmBannerOk QLabel,
+QWidget#alarmBannerActive QLabel {
+    color: #ffffff;
+}
+
+QLabel#alarmBannerTag {
+    background-color: rgba(0, 0, 0, 35);
+    border: 1px solid rgba(255, 255, 255, 75);
+    border-radius: 3px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+QLabel#alarmBannerText {
+    font-size: 17px;
+    font-weight: 700;
+}
+
+QLabel#alarmBannerSource {
+    color: rgba(255, 255, 255, 190);
+    font-size: 12px;
+}
+
+/* --- left navigation rail ------------------------------------------------- */
 QWidget#navPanel {
-    background-color: #14253a;
-    border-right: 1px solid #20354e;
+    background-color: #10263d;
+    border-right: 1px solid #203c57;
 }
 
 QLabel#navTitle {
-    color: #8297af;
+    color: #839bb2;
     font-size: 12px;
     font-weight: 700;
-    padding: 7px 17px 12px 17px;
+    padding: 8px 17px 12px 17px;
 }
 
 QListWidget#navList {
-    background-color: #14253a;
-    color: #dbe5f0;
+    background-color: #10263d;
+    color: #dbe7f1;
     border: none;
     outline: none;
     font-size: 16px;
@@ -188,70 +134,111 @@ QListWidget#navList {
 
 QListWidget#navList::item {
     height: 62px;
-    padding-left: 17px;
-    margin: 2px 9px;
+    padding-left: 16px;
+    margin: 2px 8px;
+    border: 1px solid transparent;
     border-radius: 3px;
 }
 
 QListWidget#navList::item:selected {
-    background-color: #2563b8;
     color: #ffffff;
+    background-color: #0878b8;
+    border-left: 4px solid #64d5ff;
     font-weight: 700;
-    border-left: 4px solid #77b7ff;
 }
 
 QListWidget#navList::item:hover:!selected {
-    background-color: #203854;
     color: #ffffff;
+    background-color: #1c3b57;
+    border-color: #2a4b68;
 }
 
+/* --- right action rail ---------------------------------------------------- */
 QWidget#actionBar {
-    background-color: #e8eef5;
-    border-left: 1px solid #cbd5e1;
+    background-color: #dde6ee;
+    border-left: 1px solid #bdcad6;
 }
 
 QLabel#actionBarTitle {
-    color: #5b6b7e;
-    font-size: 13px;
+    color: #293f55;
+    font-size: 16px;
     font-weight: 700;
-    padding: 8px 0 3px 0;
+    padding: 7px 0 5px 0;
+}
+
+QLabel#actionGroupLabel {
+    color: #65778a;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 7px 2px 0 2px;
 }
 
 QWidget#actionBar QPushButton {
     min-height: 66px;
+    color: #21384e;
+    background-color: #f8fbfd;
+    border: 1px solid #aebfce;
+    border-bottom: 3px solid #9cadbc;
+    border-radius: 4px;
+    padding: 7px 10px;
     font-size: 17px;
     font-weight: 700;
-    color: #1f344c;
-    border: 1px solid #b9c7d6;
-    border-radius: 4px;
-    background-color: #ffffff;
-    padding: 7px 10px;
 }
 
 QWidget#actionBar QPushButton:hover:enabled {
-    border: 2px solid #3b82d0;
-    background-color: #f8fbff;
+    background-color: #ffffff;
+    border-color: #438ac2;
+    border-bottom-color: #2879b7;
 }
 
-QPushButton#startButton {
-    background-color: #e6f7ed;
-    border-color: #77bc91;
-    color: #17663a;
+QPushButton#manualModeButton[active="true"] {
+    color: #ffffff;
+    background-color: #c47a0a;
+    border-color: #9b5d02;
+    border-bottom-color: #794801;
 }
 
-QPushButton#stopButton {
-    background-color: #fff7df;
-    border-color: #e1b84a;
-    color: #78580a;
+QPushButton#autoModeButton[active="true"] {
+    color: #ffffff;
+    background-color: #0878b8;
+    border-color: #075f91;
+    border-bottom-color: #064b73;
+}
+
+QPushButton#startButton[active="true"] {
+    color: #ffffff;
+    background-color: #17834a;
+    border-color: #0f6939;
+    border-bottom-color: #0b4e2b;
+}
+
+QPushButton#stopButton[active="true"] {
+    color: #ffffff;
+    background-color: #b76a08;
+    border-color: #925304;
+    border-bottom-color: #6f3e01;
+}
+
+QPushButton#startButton[active="false"] {
+    color: #17633b;
+    background-color: #e8f6ed;
+    border-color: #7fb795;
 }
 
 QPushButton#resetButton,
-QPushButton#autoModeButton {
-    background-color: #eaf3ff;
-    border-color: #8ab4e8;
-    color: #174f8c;
+QPushButton#autoModeButton[active="false"] {
+    color: #145083;
+    background-color: #e8f3fc;
+    border-color: #80acd0;
 }
 
+QPushButton#stopButton[active="false"] {
+    color: #755107;
+    background-color: #fff5d9;
+    border-color: #d6ae48;
+}
+
+/* --- cards and process schematic ----------------------------------------- */
 QFrame#overviewSchematic,
 QFrame#recipeWidthPanel,
 QFrame#recipePanel,
@@ -260,32 +247,35 @@ QFrame#bypassPanel,
 QFrame#userPanel,
 QFrame#serialPanel,
 QFrame#parameterPanel,
-QFrame#loginCard {
+QFrame#loginCard,
+QFrame#bootstrapCard,
+QFrame#lockedCard {
     background-color: #ffffff;
-    border: 1px solid #d7e0ea;
-    border-radius: 4px;
+    border: 1px solid #ccd8e3;
+    border-radius: 5px;
 }
 
 QLabel#sectionTitle {
-    color: #172b43;
+    color: #132d46;
     font-size: 18px;
     font-weight: 700;
 }
 
 QFrame#schematicNode {
-    background-color: #f8fbff;
-    border: 1px solid #b9cee5;
-    border-radius: 3px;
+    background-color: #edf7fc;
+    border: 1px solid #9fc8de;
+    border-bottom: 3px solid #6eabc9;
+    border-radius: 4px;
 }
 
 QLabel#schematicNodeText {
-    color: #234568;
+    color: #174668;
     font-size: 17px;
     font-weight: 700;
 }
 
 QLabel#schematicArrow {
-    color: #2f74bd;
+    color: #0878b8;
     font-size: 30px;
     font-weight: 700;
 }
@@ -293,146 +283,52 @@ QLabel#schematicArrow {
 QLabel#overviewAlarm,
 QLabel#shieldBanner,
 QLabel#d204Warning {
-    background-color: #fff7df;
-    color: #754f00;
-    border: 1px solid #efcc70;
+    color: #6e4a00;
+    background-color: #fff2c7;
+    border: 1px solid #e1b94c;
+    border-left: 5px solid #d49300;
     border-radius: 3px;
-    padding: 8px 12px;
+    padding: 9px 12px;
     font-weight: 700;
 }
 
-QLabel#panelHeroTitle {
-    color: #14253a;
+/* --- bootstrap / login ---------------------------------------------------- */
+QLabel#setupEyebrow,
+QLabel#loginEyebrow {
+    color: #0878b8;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+QLabel#panelHeroTitle,
+QLabel#loginTitle {
+    color: #102941;
     font-size: 26px;
     font-weight: 700;
-    margin-bottom: 4px;
+    margin-bottom: 3px;
 }
 
-QLabel#lockedIcon {
-    color: #2f74bd;
-    font-size: 48px;
-}
-
-QPushButton {
-    min-height: 48px;
-    padding: 8px 16px;
-    color: #19324d;
-    background-color: #ffffff;
-    border: 1px solid #b9c7d6;
-    border-radius: 4px;
-    font-weight: 600;
-}
-
-QPushButton:hover:enabled {
-    background-color: #f0f7ff;
-    border-color: #4d8dd0;
-}
-
-QPushButton:pressed:enabled {
-    background-color: #dcecff;
-}
-
-QPushButton:focus {
-    border: 2px solid #2f74bd;
-}
-
-QPushButton:disabled {
-    color: #94a3b8;
-    background-color: #e9eef4;
-    border-color: #d5dde6;
-}
-
-QPushButton#loginOk,
-QPushButton#usersLoginButton,
-QPushButton#createAdminButton,
-QPushButton#saveSerialButton,
-QPushButton#applyWidthButton,
-QPushButton#recipeSaveButton {
-    color: #ffffff;
-    background-color: #246bb3;
-    border-color: #1e5c9b;
-}
-
-QPushButton#deleteUserButton,
-QPushButton#recipeDeleteButton {
-    color: #a52222;
-    border-color: #e2aaaa;
-    background-color: #fff7f7;
-}
-
-QLineEdit,
-QSpinBox,
-QComboBox,
-QDateEdit {
-    min-height: 46px;
-    color: #172b43;
-    background-color: #ffffff;
-    border: 1px solid #b8c6d5;
-    border-radius: 3px;
-    padding: 0 11px;
-    selection-background-color: #2f74bd;
-}
-
-QLineEdit:focus,
-QSpinBox:focus,
-QComboBox:focus,
-QDateEdit:focus {
-    border: 2px solid #2f74bd;
-    background-color: #fbfdff;
-}
-
-QLineEdit:disabled,
-QSpinBox:disabled,
-QComboBox:disabled,
-QDateEdit:disabled {
-    color: #94a3b8;
-    background-color: #e9eef4;
-}
-
-QListWidget#userList,
-QListWidget#recipeList,
-QTableView {
-    background-color: #ffffff;
-    alternate-background-color: #f6f9fc;
-    border: 1px solid #d2dce7;
-    border-radius: 3px;
-    gridline-color: #e1e7ee;
-    selection-background-color: #dbeafe;
-    selection-color: #163d67;
-}
-
-QHeaderView::section {
-    min-height: 46px;
-    color: #33475e;
-    background-color: #e8eef5;
-    border: none;
-    border-right: 1px solid #ccd7e2;
-    border-bottom: 1px solid #c4d0dc;
-    padding: 5px 8px;
-    font-weight: 700;
-}
-
-QDialog {
-    background-color: #eef3f8;
-}
-
-QLabel#loginEyebrow {
-    color: #2f74bd;
-    font-size: 12px;
-    font-weight: 800;
-}
-
-QLabel#loginTitle {
-    color: #10243b;
-    font-size: 27px;
-    font-weight: 700;
-}
-
+QLabel#setupHint,
 QLabel#loginSubtitle {
-    color: #64748b;
+    color: #627488;
     font-size: 14px;
 }
 
+QLabel#setupStep {
+    color: #27445f;
+    background-color: #eef6fb;
+    border: 1px solid #d0e2ee;
+    border-radius: 3px;
+    padding: 9px 12px;
+}
+
+QLabel#lockedIcon {
+    color: #0878b8;
+    font-size: 48px;
+}
+
+QLabel#createAdminStatus[status="error"],
+QLabel#userStatus[status="error"],
 QLabel#loginStatus,
 QLabel#adminPasswordStatus,
 QLabel#changePasswordStatus,
@@ -442,13 +338,169 @@ QLabel#adjustStatus,
 QLabel#manualStatus,
 QLabel#auditStatus,
 QLabel#alarmStatus {
-    color: #a52222;
-    padding: 3px 1px;
+    color: #aa252b;
+    padding: 4px 2px;
+}
+
+QLabel#createAdminStatus[status="success"],
+QLabel#userStatus[status="success"],
+QLabel#loginStatus[status="success"],
+QLabel#changePasswordStatus[status="success"] {
+    color: #14723f;
+    padding: 4px 2px;
+}
+
+/* --- controls ------------------------------------------------------------- */
+QPushButton {
+    min-height: 48px;
+    color: #19344d;
+    background-color: #ffffff;
+    border: 1px solid #aebfce;
+    border-bottom: 2px solid #96aaba;
+    border-radius: 4px;
+    padding: 8px 16px;
+    font-weight: 600;
+}
+
+QPushButton:hover:enabled {
+    background-color: #f2f9fe;
+    border-color: #3f8fc7;
+}
+
+QPushButton:pressed:enabled {
+    background-color: #dceefa;
+    border-bottom-width: 1px;
+}
+
+QPushButton:focus {
+    border: 2px solid #0878b8;
+}
+
+QPushButton:disabled {
+    color: #8998a7;
+    background-color: #e4eaf0;
+    border-color: #cdd6df;
+}
+
+QPushButton#loginOk,
+QPushButton#usersLoginButton,
+QPushButton#createAdminButton,
+QPushButton#addUserButton,
+QPushButton#saveSerialButton,
+QPushButton#applyWidthButton,
+QPushButton#recipeSaveButton {
+    color: #ffffff;
+    background-color: #0878b8;
+    border-color: #076599;
+    border-bottom-color: #064d76;
+}
+
+QPushButton#deleteUserButton,
+QPushButton#recipeDeleteButton {
+    color: #a52228;
+    background-color: #fff5f5;
+    border-color: #dea4a7;
+}
+
+QLineEdit,
+QSpinBox,
+QComboBox,
+QDateEdit {
+    min-height: 46px;
+    color: #172d42;
+    background-color: #ffffff;
+    border: 1px solid #aebfce;
+    border-radius: 3px;
+    padding: 0 11px;
+    selection-background-color: #0878b8;
+}
+
+QLineEdit:focus,
+QSpinBox:focus,
+QComboBox:focus,
+QDateEdit:focus {
+    background-color: #fbfdff;
+    border: 2px solid #0878b8;
+}
+
+QLineEdit:disabled,
+QSpinBox:disabled,
+QComboBox:disabled,
+QDateEdit:disabled {
+    color: #8b98a5;
+    background-color: #e8edf2;
+}
+
+QCheckBox {
+    spacing: 9px;
+}
+
+QCheckBox::indicator {
+    width: 22px;
+    height: 22px;
+}
+
+/* --- lists and tables ----------------------------------------------------- */
+QListWidget#userList,
+QListWidget#recipeList,
+QTableView {
+    color: #21374c;
+    background-color: #ffffff;
+    alternate-background-color: #f3f7fa;
+    border: 1px solid #c8d4df;
+    border-radius: 3px;
+    gridline-color: #dbe3ea;
+    selection-background-color: #d7effc;
+    selection-color: #0e456c;
+}
+
+QListWidget#userList::item,
+QListWidget#recipeList::item {
+    min-height: 48px;
+    padding: 3px 9px;
+    border-bottom: 1px solid #e1e7ed;
+}
+
+QHeaderView::section {
+    min-height: 46px;
+    color: #30475d;
+    background-color: #dfe8f0;
+    border: none;
+    border-right: 1px solid #c5d1dc;
+    border-bottom: 1px solid #b9c8d5;
+    padding: 6px 8px;
+    font-weight: 700;
+}
+
+QTableView::item {
+    padding: 7px;
+}
+
+QScrollBar:vertical {
+    width: 18px;
+    background-color: #dfe7ee;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical {
+    min-height: 40px;
+    background-color: #91a8bb;
+    border: 3px solid #dfe7ee;
+    border-radius: 7px;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0;
+}
+
+QDialog {
+    background-color: #edf2f6;
 }
 
 QToolTip {
     color: #ffffff;
-    background-color: #172b43;
-    border: 1px solid #334b65;
+    background-color: #152c42;
+    border: 1px solid #39546e;
     padding: 7px;
 }

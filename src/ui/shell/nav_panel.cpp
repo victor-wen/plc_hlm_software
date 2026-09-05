@@ -65,6 +65,13 @@ int NavPanel::itemMinimumHeight() const
     return qMax(m_list->sizeHintForRow(0), 48);
 }
 
+QString NavPanel::pageTitle(int index) const
+{
+    if (index < 0 || index >= m_list->count())
+        return QString();
+    return m_list->item(index)->text();
+}
+
 void NavPanel::setCurrent(int index)
 {
     if (index < 0 || index >= m_list->count())

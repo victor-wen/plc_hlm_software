@@ -24,6 +24,14 @@ TopBar::TopBar(ShellModel &model, QWidget *parent)
     m_appName->setObjectName(QStringLiteral("appName"));
     layout->addWidget(m_appName);
 
+    auto *divider = new QLabel(QStringLiteral("/"), this);
+    divider->setObjectName(QStringLiteral("topBarDivider"));
+    layout->addWidget(divider);
+
+    m_pageTitle = new QLabel(QStringLiteral("总览"), this);
+    m_pageTitle->setObjectName(QStringLiteral("pageTitle"));
+    layout->addWidget(m_pageTitle);
+
     buildLights();
 
     layout->addStretch();
@@ -65,10 +73,22 @@ QString TopBar::text() const
 {
     QStringList parts;
     parts.append(m_appName->text());
+    parts.append(m_pageTitle->text());
     for (const StatusLight *light : m_lights)
         parts.append(light->text());
     parts.append(m_userLabel->text());
     return parts.join(QLatin1Char(' '));
+}
+
+QString TopBar::pageTitle() const
+{
+    return m_pageTitle ? m_pageTitle->text() : QString();
+}
+
+void TopBar::setPageTitle(const QString &title)
+{
+    if (m_pageTitle)
+        m_pageTitle->setText(title);
 }
 
 void TopBar::refresh()

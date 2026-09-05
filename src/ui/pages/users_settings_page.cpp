@@ -19,6 +19,9 @@
 #include <QFormLayout>
 #include <QFrame>
 #include <QMessageBox>
+#include <QCheckBox>
+#include <QStyle>
+#include <QScrollArea>
 
 namespace hlm {
 
@@ -26,6 +29,36 @@ namespace {
 constexpr quint16 kD122 = 122; // 皮带速度
 constexpr quint16 kD204 = 204; // 脉冲当量
 constexpr quint16 kD220 = 220; // 调宽速度
+
+QString friendlyAccountError(const QString &detail)
+{
+    if (detail == QStringLiteral("username must not be empty"))
+        return QStringLiteral("用户名不能为空");
+    if (detail == QStringLiteral("password must not be empty"))
+        return QStringLiteral("密码不能为空");
+    if (detail == QStringLiteral("username already exists"))
+        return QStringLiteral("该用户名已存在");
+    if (detail == QStringLiteral("users already exist"))
+        return QStringLiteral("系统已存在用户，不能重复创建初始管理员");
+    if (detail == QStringLiteral("user not found"))
+        return QStringLiteral("未找到该用户");
+    if (detail == QStringLiteral("cannot delete the last admin"))
+        return QStringLiteral("不能删除系统中的最后一个管理员");
+    if (detail == QStringLiteral("database restricted"))
+        return QStringLiteral("数据库不可用，请检查数据目录权限");
+    if (detail == QStringLiteral("failed to derive password hash"))
+        return QStringLiteral("密码安全处理失败，请重试");
+    return detail;
+}
+
+void showStatus(QLabel *label, const QString &text, bool ok)
+{
+    label->setText(text);
+    label->setProperty("status", ok ? QStringLiteral("success")
+                                     : QStringLiteral("error"));
+    label->style()->unpolish(label);
+    label->style()->polish(label);
+}
 } // namespace
 
 UsersSettingsPage::UsersSettingsPage(ShellModel &model, QWidget *parent)
@@ -64,33 +97,47 @@ QWidget *UsersSettingsPage::buildLockedPanel()
     panel->setObjectName(QStringLiteral("lockedPanel"));
     auto *layout = new QVBoxLayout(panel);
     layout->addStretch();
-    auto *icon = new QLabel(QStringLiteral("🔒"), panel);
+
+    auto *card = new QFrame(panel);
+    card->setObjectName(QStringLiteral("lockedCard"));
+    card->setMaximumWidth(720);
+    auto *cardLayout = new QVBoxLayout(card);
+    cardLayout->setContentsMargins(42, 34, 42, 38);
+    cardLayout->setSpacing(12);
+
+    auto *eyebrow = new QLabel(QStringLiteral("账户与权限"), card);
+    eyebrow->setObjectName(QStringLiteral("setupEyebrow"));
+    eyebrow->setAlignment(Qt::AlignCenter);
+    cardLayout->addWidget(eyebrow);
+    auto *icon = new QLabel(QStringLiteral("🔒"), card);
     icon->setObjectName(QStringLiteral("lockedIcon"));
     icon->setAlignment(Qt::AlignCenter);
-    icon->setStyleSheet(QStringLiteral("font-size: 48px;"));
-    layout->addWidget(icon);
-    auto *title = new QLabel(QStringLiteral("需要管理员登录"), panel);
+    cardLayout->addWidget(icon);
+    auto *title = new QLabel(QStringLiteral("需要管理员登录"), card);
     title->setObjectName(QStringLiteral("panelHeroTitle"));
     title->setAlignment(Qt::AlignCenter);
-    layout->addWidget(title);
+    cardLayout->addWidget(title);
     auto *hint = new QLabel(
         QStringLiteral("用户、通讯和参数设置仅管理员可用。请登录管理员账号后访问。"),
-        panel);
+        card);
+    hint->setObjectName(QStringLiteral("setupHint"));
     hint->setAlignment(Qt::AlignCenter);
     hint->setWordWrap(true);
-    layout->addWidget(hint);
+    cardLayout->addWidget(hint);
     // 登录失败/锁定原因显示在锁定面板上, 用户始终可见 (spec §11.5).
-    m_loginStatusLabel = new QLabel(panel);
+    m_loginStatusLabel = new QLabel(card);
     m_loginStatusLabel->setObjectName(QStringLiteral("loginStatus"));
     m_loginStatusLabel->setMinimumHeight(32);
     m_loginStatusLabel->setWordWrap(true);
     m_loginStatusLabel->setAlignment(Qt::AlignCenter);
-    layout->addWidget(m_loginStatusLabel);
-    m_loginButton = new QPushButton(QStringLiteral("登录"), panel);
+    cardLayout->addWidget(m_loginStatusLabel);
+    m_loginButton = new QPushButton(QStringLiteral("登录管理员账号"), card);
     m_loginButton->setObjectName(QStringLiteral("usersLoginButton"));
     m_loginButton->setMinimumHeight(48); // touch target >= 48 px (spec §11.1)
-    m_loginButton->setMaximumWidth(240);
-    layout->addWidget(m_loginButton, 0, Qt::AlignHCenter);
+    m_loginButton->setMaximumWidth(280);
+    cardLayout->addWidget(m_loginButton, 0, Qt::AlignHCenter);
+
+    layout->addWidget(card, 0, Qt::AlignHCenter);
     layout->addStretch();
     connect(m_loginButton, &QPushButton::clicked, this,
             &UsersSettingsPage::onLoginClicked);
@@ -104,56 +151,100 @@ QWidget *UsersSettingsPage::buildCreateAdminPanel()
     panel->setObjectName(QStringLiteral("createAdminPanel"));
     auto *layout = new QVBoxLayout(panel);
     layout->addStretch();
-    auto *title = new QLabel(QStringLiteral("首次启动: 创建管理员账号"), panel);
+
+    auto *card = new QFrame(panel);
+    card->setObjectName(QStringLiteral("bootstrapCard"));
+    card->setMaximumWidth(760);
+    auto *cardLayout = new QVBoxLayout(card);
+    cardLayout->setContentsMargins(42, 32, 42, 36);
+    cardLayout->setSpacing(12);
+
+    auto *eyebrow = new QLabel(QStringLiteral("首次配置 · 1 / 1"), card);
+    eyebrow->setObjectName(QStringLiteral("setupEyebrow"));
+    cardLayout->addWidget(eyebrow);
+    auto *title = new QLabel(QStringLiteral("创建首位管理员"), card);
     title->setObjectName(QStringLiteral("panelHeroTitle"));
-    title->setAlignment(Qt::AlignCenter);
-    layout->addWidget(title);
+    cardLayout->addWidget(title);
     auto *hint = new QLabel(
-        QStringLiteral("系统未检测到任何用户。请创建管理员账号, 密码不会提供默认值。"),
-        panel);
-    hint->setAlignment(Qt::AlignCenter);
+        QStringLiteral("系统未检测到用户。该账号用于后续创建操作员、配置串口和修改设备参数。"),
+        card);
+    hint->setObjectName(QStringLiteral("setupHint"));
     hint->setWordWrap(true);
-    layout->addWidget(hint);
+    cardLayout->addWidget(hint);
+
+    auto *step = new QLabel(
+        QStringLiteral("请自行设置用户名和密码；系统没有默认账号，也不会保存明文密码。"),
+        card);
+    step->setObjectName(QStringLiteral("setupStep"));
+    step->setWordWrap(true);
+    cardLayout->addWidget(step);
 
     auto *form = new QFormLayout();
     form->setHorizontalSpacing(16);
-    form->setVerticalSpacing(8);
-    m_adminUsername = new QLineEdit(panel);
+    form->setVerticalSpacing(10);
+    m_adminUsername = new QLineEdit(card);
     m_adminUsername->setObjectName(QStringLiteral("adminUsername"));
     m_adminUsername->setMinimumHeight(48);
     m_adminUsername->setPlaceholderText(QStringLiteral("管理员用户名"));
-    m_adminUsername->setMaximumWidth(520);
     form->addRow(QStringLiteral("用户名"), m_adminUsername);
-    m_adminPassword = new QLineEdit(panel);
+    m_adminPassword = new QLineEdit(card);
     m_adminPassword->setObjectName(QStringLiteral("adminPassword"));
     m_adminPassword->setMinimumHeight(48);
     m_adminPassword->setEchoMode(QLineEdit::Password); // 不回显明文 (spec §11.5)
     m_adminPassword->setPlaceholderText(QStringLiteral("密码"));
-    m_adminPassword->setMaximumWidth(520);
     form->addRow(QStringLiteral("密码"), m_adminPassword);
-    m_adminConfirm = new QLineEdit(panel);
+    m_adminConfirm = new QLineEdit(card);
     m_adminConfirm->setObjectName(QStringLiteral("adminConfirm"));
     m_adminConfirm->setMinimumHeight(48);
     m_adminConfirm->setEchoMode(QLineEdit::Password);
     m_adminConfirm->setPlaceholderText(QStringLiteral("再次输入密码"));
-    m_adminConfirm->setMaximumWidth(520);
     form->addRow(QStringLiteral("确认密码"), m_adminConfirm);
-    layout->addLayout(form);
+    cardLayout->addLayout(form);
 
-    m_createAdmin = new QPushButton(QStringLiteral("创建管理员"), panel);
+    auto *showPassword = new QCheckBox(QStringLiteral("显示密码"), card);
+    connect(showPassword, &QCheckBox::toggled, this, [this](bool show) {
+        const auto mode = show ? QLineEdit::Normal : QLineEdit::Password;
+        m_adminPassword->setEchoMode(mode);
+        m_adminConfirm->setEchoMode(mode);
+    });
+    cardLayout->addWidget(showPassword, 0, Qt::AlignRight);
+
+    m_createAdminStatus = new QLabel(card);
+    m_createAdminStatus->setObjectName(QStringLiteral("createAdminStatus"));
+    m_createAdminStatus->setMinimumHeight(32);
+    m_createAdminStatus->setWordWrap(true);
+    cardLayout->addWidget(m_createAdminStatus);
+
+    m_createAdmin = new QPushButton(QStringLiteral("创建管理员"), card);
     m_createAdmin->setObjectName(QStringLiteral("createAdminButton"));
     m_createAdmin->setMinimumHeight(48);
-    m_createAdmin->setMaximumWidth(240);
-    layout->addWidget(m_createAdmin, 0, Qt::AlignHCenter);
+    m_createAdmin->setMaximumWidth(280);
+    cardLayout->addWidget(m_createAdmin, 0, Qt::AlignRight);
+
+    layout->addWidget(card, 0, Qt::AlignHCenter);
     layout->addStretch();
     connect(m_createAdmin, &QPushButton::clicked, this,
+            &UsersSettingsPage::onCreateAdminClicked);
+    connect(m_adminUsername, &QLineEdit::returnPressed, m_adminPassword,
+            qOverload<>(&QWidget::setFocus));
+    connect(m_adminPassword, &QLineEdit::returnPressed, m_adminConfirm,
+            qOverload<>(&QWidget::setFocus));
+    connect(m_adminConfirm, &QLineEdit::returnPressed, this,
             &UsersSettingsPage::onCreateAdminClicked);
     return panel;
 }
 
 QWidget *UsersSettingsPage::buildAdminPanel()
 {
-    auto *panel = new QWidget(this);
+    auto *scroll = new QScrollArea(this);
+    scroll->setObjectName(QStringLiteral("adminSettingsScroll"));
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+
+    auto *panel = new QWidget(scroll);
+    panel->setObjectName(QStringLiteral("adminSettingsContent"));
     auto *root = new QVBoxLayout(panel);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(12);
@@ -179,7 +270,8 @@ QWidget *UsersSettingsPage::buildAdminPanel()
     root->addLayout(columns, /*stretch=*/1);
 
     connect(m_logout, &QPushButton::clicked, this, &UsersSettingsPage::onLogoutClicked);
-    return panel;
+    scroll->setWidget(panel);
+    return scroll;
 }
 
 QWidget *UsersSettingsPage::buildUserSection()
@@ -189,7 +281,9 @@ QWidget *UsersSettingsPage::buildUserSection()
     box->setFrameShape(QFrame::StyledPanel);
     auto *layout = new QVBoxLayout(box);
     layout->setSpacing(8);
-    layout->addWidget(new QLabel(QStringLiteral("用户管理"), box));
+    auto *title = new QLabel(QStringLiteral("用户管理"), box);
+    title->setObjectName(QStringLiteral("sectionTitle"));
+    layout->addWidget(title);
 
     m_userList = new QListWidget(box);
     m_userList->setObjectName(QStringLiteral("userList"));
@@ -234,6 +328,12 @@ QWidget *UsersSettingsPage::buildUserSection()
     buttons->addStretch();
     layout->addLayout(buttons);
 
+    m_userStatus = new QLabel(box);
+    m_userStatus->setObjectName(QStringLiteral("userStatus"));
+    m_userStatus->setMinimumHeight(32);
+    m_userStatus->setWordWrap(true);
+    layout->addWidget(m_userStatus);
+
     // 改密 (brief: 用户增删改密): 选择用户 -> 新密码 -> 确认密码, 密码框不回显明文.
     auto *changeForm = new QFormLayout();
     changeForm->setHorizontalSpacing(8);
@@ -272,6 +372,10 @@ QWidget *UsersSettingsPage::buildUserSection()
             &UsersSettingsPage::onDeleteUserClicked);
     connect(m_changePassword, &QPushButton::clicked, this,
             &UsersSettingsPage::onChangePasswordClicked);
+    connect(m_userList, &QListWidget::currentRowChanged, this, [this](int row) {
+        if (row >= 0 && row < m_pageModel.users().size())
+            m_changePasswordUser->setText(m_pageModel.users().at(row).username);
+    });
     return box;
 }
 
@@ -282,7 +386,9 @@ QWidget *UsersSettingsPage::buildSerialSection()
     box->setFrameShape(QFrame::StyledPanel);
     auto *layout = new QVBoxLayout(box);
     layout->setSpacing(8);
-    layout->addWidget(new QLabel(QStringLiteral("串口配置"), box));
+    auto *title = new QLabel(QStringLiteral("串口配置"), box);
+    title->setObjectName(QStringLiteral("sectionTitle"));
+    layout->addWidget(title);
 
     auto *form = new QFormLayout();
     form->setHorizontalSpacing(8);
@@ -354,7 +460,9 @@ QWidget *UsersSettingsPage::buildParameterSection()
     box->setFrameShape(QFrame::StyledPanel);
     auto *layout = new QVBoxLayout(box);
     layout->setSpacing(8);
-    layout->addWidget(new QLabel(QStringLiteral("管理员参数"), box));
+    auto *title = new QLabel(QStringLiteral("管理员参数"), box);
+    title->setObjectName(QStringLiteral("sectionTitle"));
+    layout->addWidget(title);
 
     // 参数值显示来自快照 (D122/D204/D220), 无乐观更新 (spec §11.2).
     layout->addWidget(addParamDisplay(QStringLiteral("d122"),
@@ -463,11 +571,31 @@ void UsersSettingsPage::setNeedsInitialAdmin(bool needs)
 {
     m_pageModel.setNeedsInitialAdmin(needs);
     refresh();
+    if (needs)
+        m_adminUsername->setFocus(Qt::OtherFocusReason);
+}
+
+void UsersSettingsPage::setInitialAdminResult(bool ok, const QString &detail)
+{
+    m_createAdmin->setEnabled(true);
+    m_createAdmin->setText(QStringLiteral("创建管理员"));
+    if (ok) {
+        showStatus(m_createAdminStatus, QStringLiteral("管理员创建成功"), true);
+        m_accountStatus = QStringLiteral("管理员已创建，请使用刚才设置的账号登录");
+        m_adminPassword->clear();
+        m_adminConfirm->clear();
+    } else {
+        showStatus(m_createAdminStatus,
+                   QStringLiteral("创建失败：%1").arg(friendlyAccountError(detail)),
+                   false);
+    }
 }
 
 void UsersSettingsPage::setLoginResult(const LoginResult &result)
 {
     m_pageModel.setLoginResult(result);
+    if (result.ok)
+        m_accountStatus.clear();
     // 登录对话框: 失败显示原因, 成功关闭 (spec §11.5).
     emit loginResultShown(m_pageModel.loginStatusText());
     refresh();
@@ -502,6 +630,44 @@ void UsersSettingsPage::setUsers(const QVector<UserRecord> &users)
         item->setSizeHint(QSize(0, 48));
     }
     refresh();
+}
+
+void UsersSettingsPage::setAddUserResult(bool ok, const QString &detail)
+{
+    m_addUser->setEnabled(true);
+    showStatus(m_userStatus,
+               ok ? QStringLiteral("用户创建成功")
+                  : QStringLiteral("用户创建失败：%1")
+                        .arg(friendlyAccountError(detail)),
+               ok);
+    if (ok) {
+        m_newUserName->clear();
+        m_newUserPassword->clear();
+    }
+}
+
+void UsersSettingsPage::setDeleteUserResult(bool ok, const QString &detail)
+{
+    m_deleteUser->setEnabled(true);
+    showStatus(m_userStatus,
+               ok ? QStringLiteral("用户删除成功")
+                  : QStringLiteral("用户删除失败：%1")
+                        .arg(friendlyAccountError(detail)),
+               ok);
+}
+
+void UsersSettingsPage::setPasswordChangeResult(bool ok, const QString &detail)
+{
+    m_changePassword->setEnabled(true);
+    showStatus(m_changePasswordStatus,
+               ok ? QStringLiteral("密码修改成功")
+                  : QStringLiteral("密码修改失败：%1")
+                        .arg(friendlyAccountError(detail)),
+               ok);
+    if (ok) {
+        m_changePasswordNew->clear();
+        m_changePasswordConfirm->clear();
+    }
 }
 
 void UsersSettingsPage::setParameterWriteResult(bool ok, const QString &detail)
@@ -563,22 +729,31 @@ void UsersSettingsPage::onLoginClicked()
 
 void UsersSettingsPage::onCreateAdminClicked()
 {
+    if (!m_createAdmin->isEnabled())
+        return;
     const QString username = m_adminUsername->text().trimmed();
     const QString password = m_adminPassword->text();
     const QString confirm = m_adminConfirm->text();
     if (username.isEmpty()) {
-        m_adminUsername->setPlaceholderText(QStringLiteral("请输入用户名"));
+        showStatus(m_createAdminStatus, QStringLiteral("请输入管理员用户名"), false);
+        m_adminUsername->setFocus(Qt::OtherFocusReason);
         return;
     }
     if (password.isEmpty()) {
-        m_adminPassword->setPlaceholderText(QStringLiteral("密码不能为空"));
+        showStatus(m_createAdminStatus, QStringLiteral("密码不能为空"), false);
+        m_adminPassword->setFocus(Qt::OtherFocusReason);
         return;
     }
     if (password != confirm) {
-        m_adminConfirm->setPlaceholderText(QStringLiteral("两次输入的密码不一致"));
+        showStatus(m_createAdminStatus, QStringLiteral("两次输入的密码不一致"), false);
+        m_adminConfirm->selectAll();
+        m_adminConfirm->setFocus(Qt::OtherFocusReason);
         return;
     }
     // 无默认密码: 只把用户输入的密码交给应用层 (spec §11.5).
+    showStatus(m_createAdminStatus, QStringLiteral("正在安全创建管理员…"), true);
+    m_createAdmin->setEnabled(false);
+    m_createAdmin->setText(QStringLiteral("正在创建…"));
     emit createInitialAdminRequested(username, password);
 }
 
@@ -648,12 +823,20 @@ void UsersSettingsPage::onAddUserClicked()
 {
     const QString username = m_newUserName->text().trimmed();
     const QString password = m_newUserPassword->text();
-    if (username.isEmpty() || password.isEmpty())
+    if (username.isEmpty()) {
+        showStatus(m_userStatus, QStringLiteral("请输入新用户的用户名"), false);
+        m_newUserName->setFocus(Qt::OtherFocusReason);
         return;
+    }
+    if (password.isEmpty()) {
+        showStatus(m_userStatus, QStringLiteral("新用户密码不能为空"), false);
+        m_newUserPassword->setFocus(Qt::OtherFocusReason);
+        return;
+    }
     const Role role = Role(m_newUserRole->currentData().toInt());
+    showStatus(m_userStatus, QStringLiteral("正在创建用户…"), true);
+    m_addUser->setEnabled(false);
     emit addUserRequested(username, role, password);
-    m_newUserName->clear();
-    m_newUserPassword->clear();
 }
 
 void UsersSettingsPage::onDeleteUserClicked()
@@ -662,6 +845,12 @@ void UsersSettingsPage::onDeleteUserClicked()
     if (row < 0 || row >= m_pageModel.users().size())
         return;
     const UserRecord &target = m_pageModel.users().at(row);
+    if (target.username == m_model.userName()) {
+        showStatus(m_userStatus,
+                   QStringLiteral("不能删除当前正在登录的账号，请先使用其他管理员登录"),
+                   false);
+        return;
+    }
     // 删除用户需确认, 防止误删 (spec §11.5).
     const auto answer = QMessageBox::question(
         this, QStringLiteral("删除用户"),
@@ -670,6 +859,8 @@ void UsersSettingsPage::onDeleteUserClicked()
         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
     if (answer != QMessageBox::Yes)
         return;
+    showStatus(m_userStatus, QStringLiteral("正在删除用户…"), true);
+    m_deleteUser->setEnabled(false);
     emit deleteUserRequested(target.id);
 }
 
@@ -679,15 +870,17 @@ void UsersSettingsPage::onChangePasswordClicked()
     const QString newPassword = m_changePasswordNew->text();
     const QString confirm = m_changePasswordConfirm->text();
     if (username.isEmpty()) {
-        m_changePasswordStatus->setText(QStringLiteral("请输入要改密的用户名"));
+        showStatus(m_changePasswordStatus,
+                   QStringLiteral("请输入要改密的用户名"), false);
         return;
     }
     if (newPassword.isEmpty()) {
-        m_changePasswordStatus->setText(QStringLiteral("新密码不能为空"));
+        showStatus(m_changePasswordStatus, QStringLiteral("新密码不能为空"), false);
         return;
     }
     if (newPassword != confirm) {
-        m_changePasswordStatus->setText(QStringLiteral("两次输入的新密码不一致"));
+        showStatus(m_changePasswordStatus,
+                   QStringLiteral("两次输入的新密码不一致"), false);
         return;
     }
     // 按用户名匹配用户 (改密对象来自用户列表, 不回显明文, spec §11.5).
@@ -699,13 +892,12 @@ void UsersSettingsPage::onChangePasswordClicked()
         }
     }
     if (userId < 0) {
-        m_changePasswordStatus->setText(QStringLiteral("未找到该用户"));
+        showStatus(m_changePasswordStatus, QStringLiteral("未找到该用户"), false);
         return;
     }
+    showStatus(m_changePasswordStatus, QStringLiteral("正在修改密码…"), true);
+    m_changePassword->setEnabled(false);
     emit changePasswordRequested(userId, newPassword);
-    m_changePasswordStatus->setText(QStringLiteral("已请求修改密码"));
-    m_changePasswordNew->clear();
-    m_changePasswordConfirm->clear();
 }
 
 void UsersSettingsPage::onSaveSerialClicked()
@@ -745,7 +937,11 @@ void UsersSettingsPage::refresh()
     } else {
         m_stack->setCurrentWidget(m_lockedPanel);
         // 登录失败/锁定原因显示在锁定面板上 (spec §11.5).
-        m_loginStatusLabel->setText(m_pageModel.loginStatusText());
+        const QString loginStatus = m_pageModel.loginStatusText();
+        if (loginStatus.isEmpty() && !m_accountStatus.isEmpty())
+            showStatus(m_loginStatusLabel, m_accountStatus, true);
+        else
+            showStatus(m_loginStatusLabel, loginStatus, false);
         return;
     }
 

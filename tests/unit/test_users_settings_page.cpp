@@ -123,6 +123,7 @@ private slots:
     // --- page: change password UI (brief: 用户增删改密) ------------------------
     void changePasswordEmitsRequestWithUserId();
     void changePasswordRejectsMismatchAndUnknownUser();
+    void accountOperationResultsAreExplicit();
 
     // --- page: user list row height >= 48 px (spec §11.1) ---------------------
     void userListRowHeightMeetsTouchTarget();
@@ -224,6 +225,12 @@ void UsersSettingsPageTest::badCredentialsShowsError()
 
     QVERIFY(!m.loginLocked());
     QVERIFY(m.loginStatusText().contains(QStringLiteral("用户名或密码错误")));
+
+    LoginResult unknown;
+    unknown.ok = false;
+    unknown.reason = QStringLiteral("unknown user");
+    m.setLoginResult(unknown);
+    QCOMPARE(m.loginStatusText(), QStringLiteral("用户名或密码错误"));
 }
 
 // --- model: session countdown ------------------------------------------------------
@@ -450,7 +457,7 @@ void UsersSettingsPageTest::loginFailureShownOnLockedPanel()
     // 未登录: 锁定面板可见, 登录状态标签位于锁定面板上 (spec §11.5).
     QCOMPARE(page.currentPanel(), page.lockedPanel());
     QVERIFY(page.loginStatusLabel() != nullptr);
-    QVERIFY(page.loginStatusLabel()->parentWidget() == page.lockedPanel());
+    QVERIFY(page.lockedPanel()->isAncestorOf(page.loginStatusLabel()));
 
     // 锁定 30 秒提示必须显示在锁定面板上, 用户始终可见.
     LoginResult locked;
@@ -611,6 +618,31 @@ void UsersSettingsPageTest::changePasswordRejectsMismatchAndUnknownUser()
     QCOMPARE(spy.count(), 0);
     QVERIFY(page.changePasswordStatusLabel()->text().contains(
         QStringLiteral("未找到")));
+}
+
+void UsersSettingsPageTest::accountOperationResultsAreExplicit()
+{
+    ShellModel model;
+    UsersSettingsPage page(model);
+
+    page.setNeedsInitialAdmin(true);
+    page.setInitialAdminResult(false, QStringLiteral("username already exists"));
+    QVERIFY(page.createAdminStatusLabel()->text().contains(QStringLiteral("已存在")));
+    QVERIFY(page.createAdminButton()->isEnabled());
+
+    page.setInitialAdminResult(true, QString());
+    page.setNeedsInitialAdmin(false);
+    QVERIFY(page.loginStatusLabel()->text().contains(QStringLiteral("请使用")));
+
+    model.setUser(QStringLiteral("admin"), Role::Admin);
+    page.setAddUserResult(false, QStringLiteral("username already exists"));
+    QVERIFY(page.userStatusLabel()->text().contains(QStringLiteral("已存在")));
+    page.setAddUserResult(true, QString());
+    QVERIFY(page.userStatusLabel()->text().contains(QStringLiteral("创建成功")));
+
+    page.setPasswordChangeResult(true, QString());
+    QVERIFY(page.changePasswordStatusLabel()->text().contains(
+        QStringLiteral("修改成功")));
 }
 
 // --- page: user list row height --------------------------------------------------------------
