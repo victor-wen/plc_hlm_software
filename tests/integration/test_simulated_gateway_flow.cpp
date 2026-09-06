@@ -97,6 +97,8 @@ void SimulatedGatewayFlowTest::startPublishesSnapshotAndGoesOnline()
     QCOMPARE(s.heartbeat(), quint16(0));
     QCOMPARE(s.currentWidth(), quint16(200));
     QCOMPARE(s.targetWidth(), quint16(200));
+    QCOMPARE(s.beltSpeed(), quint16(1000));
+    QCOMPARE(s.overallQuality(), DataQuality::Valid);
     QVERIFY(s.m1()); // manual mode default
     QVERIFY(!s.m2());
     QVERIFY(!s.m3());

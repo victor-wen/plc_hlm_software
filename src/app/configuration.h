@@ -29,9 +29,16 @@ struct AppConfig {
     int resetTimeoutSec = 120; // HMI 防御性复位超时 30-600
 
     // --- gateway selection -----------------------------------------------------
-    // True: in-process SimulatedPlcGateway (dev / integration tests, spec
-    // §14.2). False: real QtModbusPlcGateway over the serial port (production).
-    bool useSimulatedGateway = true;
+    // True: in-process SimulatedPlcGateway (only when explicitly requested
+    // with --sim). False: real QtModbusPlcGateway over the serial port.
+    // Production is deliberately the default: absence of a physical/virtual
+    // PLC connection must never be presented as "online".
+    bool useSimulatedGateway = false;
+
+    // The application advances the in-process simulator in real time so
+    // --sim is usable interactively. Set to 0 in deterministic tests that
+    // advance SimulatedPlcGateway::tick() explicitly.
+    int simulatedTickIntervalMs = 1000;
 };
 
 } // namespace hlm

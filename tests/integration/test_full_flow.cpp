@@ -117,6 +117,8 @@ class FullFlowTest : public QObject
     Q_OBJECT
 
 private slots:
+    // Production startup must not silently substitute an online simulator.
+    void defaultConfigurationUsesRealGateway();
     // --- 1. first-run DB + auth + session + role downgrade -------------------
     void firstRunAdminLoginLockoutSessionTimeout();
     // --- 2. full control flow ------------------------------------------------
@@ -139,6 +141,12 @@ private slots:
     // --- 7. composition root (Application) adjustWidth convergence ------------
     void applicationAdjustWidthConverges();
 };
+
+void FullFlowTest::defaultConfigurationUsesRealGateway()
+{
+    const AppConfig cfg;
+    QVERIFY(!cfg.useSimulatedGateway);
+}
 
 // --- 1. first-run DB + auth + session + role downgrade -----------------------
 
@@ -688,6 +696,7 @@ void FullFlowTest::applicationAdjustWidthConverges()
     QVERIFY(dir.isValid());
     AppConfig cfg;
     cfg.useSimulatedGateway = true;
+    cfg.simulatedTickIntervalMs = 0;
     cfg.databasePath = dir.filePath(QStringLiteral("app.db"));
 
     Application app(cfg);

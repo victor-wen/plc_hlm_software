@@ -25,9 +25,9 @@ int main(int argc, char *argv[])
     parser.addHelpOption();
     parser.addVersionOption();
     QCommandLineOption simOption(QStringLiteral("sim"),
-                                 QStringLiteral("use the in-process simulated PLC gateway (default)"));
+                                 QStringLiteral("use the in-process simulated PLC gateway"));
     QCommandLineOption realOption(QStringLiteral("real"),
-                                  QStringLiteral("use the real Modbus RTU gateway over the serial port"));
+                                  QStringLiteral("use the real Modbus RTU gateway over the serial port (default)"));
     QCommandLineOption dbOption(QStringLiteral("db"),
                                 QStringLiteral("override the database path"), QStringLiteral("path"));
     parser.addOption(simOption);

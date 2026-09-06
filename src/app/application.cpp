@@ -5,6 +5,7 @@
 #include <QMessageBox>
 #include <QSerialPort>
 #include <QThread>
+#include <QTimer>
 
 #include "adapters/modbus/qt_modbus_plc_gateway.h"
 #include "adapters/simulator/simulated_plc_gateway.h"
@@ -103,14 +104,24 @@ void Application::createObjects()
     m_auditPage = m_window->findChild<AuditLogPage *>();
     m_diagPage = m_window->findChild<DiagnosticsPage *>();
 
-    // Gateway: in-process simulator by default, real Modbus with --real
-    // (spec §14.2). The concrete pointer is kept so commStatsChanged (which
-    // exists only on the concrete classes) can be wired.
+    // Gateway: real Modbus by default. The in-process simulator is enabled
+    // only by the explicit --sim command-line option (spec §14.2). This keeps
+    // a missing physical/virtual PLC from being reported as online.
     if (m_cfg.useSimulatedGateway) {
         m_gw = new SimulatedPlcGateway(this);
     } else {
         m_gw = new QtModbusPlcGateway(toModbusConfig(m_cfg.serial), this);
     }
+
+    // SimulatedPlcGateway itself remains deterministic for unit/integration
+    // tests. The composition root supplies the real-time clock only for the
+    // interactive --sim application mode.
+    m_simulationTimer = new QTimer(this);
+    m_simulationTimer->setInterval(qMax(1, m_cfg.simulatedTickIntervalMs));
+    connect(m_simulationTimer, &QTimer::timeout, this, [this]() {
+        if (auto *sim = qobject_cast<SimulatedPlcGateway *>(m_gw))
+            sim->tick();
+    });
 
     // Coordinator: PulseTransport routes into the gateway (spec §8.5).
     ControlCoordinator::PulseTransport transport;
@@ -400,6 +411,8 @@ void Application::start()
     // Startup order (spec §13): database -> gateway -> vision -> session.
     m_db->start();
     m_gw->start();
+    if (m_cfg.useSimulatedGateway && m_cfg.simulatedTickIntervalMs > 0)
+        m_simulationTimer->start();
     if (m_vision)
         m_vision->start();
     m_lifecycle->startSessionTimer();
@@ -414,6 +427,8 @@ void Application::shutdown()
     if (m_shutdownDone)
         return;
     m_shutdownDone = true;
+    if (m_simulationTimer)
+        m_simulationTimer->stop();
     // Ordered shutdown (spec §13): clear M42/M106-M111 + stop heartbeat, then
     // gateway, database, vision. M100 is never auto-cleared.
     if (m_lifecycle)

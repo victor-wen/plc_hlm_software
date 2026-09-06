@@ -7,7 +7,7 @@
 //
 // Responsibilities:
 //  - Assemble ShellModel, MainWindow (pages created inside), the PLC gateway
-//    (SimulatedPlcGateway by default, QtModbusPlcGateway with --real),
+//    (QtModbusPlcGateway by default, SimulatedPlcGateway with --sim),
 //    ControlCoordinator, DatabaseService, VisionService (when enabled) and
 //    LifecycleController.
 //  - Wire every signal: gateway -> coordinator/shell/database/diagnostics,
@@ -36,6 +36,7 @@
 #include "ports/repositories.h" // SettingRecord, UserRecord
 
 class QMainWindow;
+class QTimer;
 
 namespace hlm {
 
@@ -105,6 +106,7 @@ private:
     DatabaseService *m_db = nullptr;
     IVisionService *m_vision = nullptr; // null when HLM_ENABLE_VISION is off
     LifecycleController *m_lifecycle = nullptr;
+    QTimer *m_simulationTimer = nullptr;
 
     // Page pointers (created inside MainWindow; fetched via findChild).
     UsersSettingsPage *m_usersPage = nullptr;
