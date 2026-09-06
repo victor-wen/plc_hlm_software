@@ -19,7 +19,6 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QWidget>
-#include <QLabel>
 #include <QFile>
 #include <QDebug>
 #include <QEvent>
@@ -33,21 +32,6 @@ static void initThemeResource()
 
 namespace hlm {
 
-namespace {
-// Stub page: placeholder for Tasks 11-17. Shows the page name centered.
-QWidget *makeStubPage(const QString &title)
-{
-    auto *w = new QWidget;
-    auto *layout = new QVBoxLayout(w);
-    layout->addStretch();
-    auto *label = new QLabel(title, w);
-    label->setAlignment(Qt::AlignCenter);
-    layout->addWidget(label);
-    layout->addStretch();
-    return w;
-}
-} // namespace
-
 MainWindow::MainWindow(QWidget *parent, ShellModel *model)
     : QMainWindow(parent)
     , m_model(model ? model : new ShellModel(this))
@@ -60,7 +44,7 @@ MainWindow::MainWindow(QWidget *parent, ShellModel *model)
     loadTheme();
 
     buildLayout();
-    createStubPages();
+    createPages();
 
     connect(m_nav, &NavPanel::pageSelected, this, &MainWindow::setCurrentPage);
     connect(m_actions, &ActionBar::actionRequested, this,
@@ -69,6 +53,7 @@ MainWindow::MainWindow(QWidget *parent, ShellModel *model)
             &MainWindow::modeSwitchRequested);
     connect(m_actions, &ActionBar::loginLogoutRequested, this,
             &MainWindow::loginLogoutRequested);
+    setCurrentPage(0);
 }
 
 void MainWindow::loadTheme()
@@ -118,15 +103,9 @@ void MainWindow::buildLayout()
     setCentralWidget(central);
 }
 
-void MainWindow::createStubPages()
+void MainWindow::createPages()
 {
     // Order must match NavPanel's 7 items (spec §11.1, §11.3).
-    // Index 0 (总览) is the real OverviewPage (Task 11); index 1 (配方与调宽)
-    // is the real RecipeWidthPage (Task 12); index 2 (手动控制) is the real
-    // ManualControlPage (Task 13); index 3 (报警) is the real AlarmPage
-    // (Task 14); index 4 (操作记录) is the real AuditLogPage (Task 15);
-    // index 5 (I/O 与诊断) is the real DiagnosticsPage (Task 16);
-    // index 6 stays a stub until Task 17.
     m_pages->addWidget(new OverviewPage(*m_model, this));
     m_pages->addWidget(new RecipeWidthPage(*m_model, this));
     auto *manualPage = new ManualControlPage(*m_model, this);
@@ -154,6 +133,11 @@ int MainWindow::currentPageIndex() const
 QString MainWindow::topBarText() const
 {
     return m_topBar->text();
+}
+
+QString MainWindow::currentPageTitle() const
+{
+    return m_topBar->pageTitle();
 }
 
 QString MainWindow::alarmBannerText() const
@@ -219,10 +203,13 @@ bool MainWindow::event(QEvent *event)
 
 void MainWindow::setCurrentPage(int index)
 {
+    if (index < 0 || index >= m_pages->count())
+        return;
     // Page switch clears continuous-command intents (spec §10.7).
     clearHoldIntents();
     m_nav->setCurrent(index);
     m_pages->setCurrentIndex(index);
+    m_topBar->setPageTitle(m_nav->pageTitle(index));
 }
 
 } // namespace hlm

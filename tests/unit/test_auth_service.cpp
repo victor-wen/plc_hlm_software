@@ -37,6 +37,7 @@ private slots:
     void initialAdminDerivationFailureDoesNotCreateUser();
     void changePasswordInvalidatesOld();
     void changePasswordDerivationFailureLeavesHashUnchanged();
+    void cannotDeleteLastAdministrator();
     void verifyPasswordCorrect();
     void verifyPasswordIncorrect();
     void verifyPasswordUnknownUser();
@@ -429,6 +430,35 @@ void AuthServiceTest::changePasswordDerivationFailureLeavesHashUnchanged()
 
         // The original password still works after both failed attempts.
         QVERIFY(auth.login(QStringLiteral("admin"), QStringLiteral("hunter2")).ok);
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("auth_test"));
+}
+
+void AuthServiceTest::cannotDeleteLastAdministrator()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    {
+        QSqlDatabase db = hlm_test::createMigratedDb(dir, QStringLiteral("auth_test"));
+        QVERIFY(db.isOpen());
+        SqliteUserRepository users(db);
+        SqliteAuditRepository audit(db);
+        AuthService auth(&users, &audit);
+        QString error;
+        QVERIFY(auth.createInitialAdmin(QStringLiteral("admin"),
+                                        QStringLiteral("hunter2"), &error));
+
+        const auto firstAdmin = users.findByName(QStringLiteral("admin"));
+        QVERIFY(firstAdmin.has_value());
+        QVERIFY(!auth.deleteUser(firstAdmin->id, &error));
+        QCOMPARE(error, QStringLiteral("cannot delete the last admin"));
+        QVERIFY(users.findByName(QStringLiteral("admin")).has_value());
+
+        QVERIFY(auth.createUser(QStringLiteral("backup-admin"), Role::Admin,
+                                QStringLiteral("backup-pass"), &error));
+        QVERIFY2(auth.deleteUser(firstAdmin->id, &error), qPrintable(error));
+        QVERIFY(!users.findByName(QStringLiteral("admin")).has_value());
+        QVERIFY(users.findByName(QStringLiteral("backup-admin")).has_value());
     }
     QSqlDatabase::removeDatabase(QStringLiteral("auth_test"));
 }

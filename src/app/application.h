@@ -7,7 +7,7 @@
 //
 // Responsibilities:
 //  - Assemble ShellModel, MainWindow (pages created inside), the PLC gateway
-//    (SimulatedPlcGateway by default, QtModbusPlcGateway with --real),
+//    (QtModbusPlcGateway by default, SimulatedPlcGateway with --sim),
 //    ControlCoordinator, DatabaseService, VisionService (when enabled) and
 //    LifecycleController.
 //  - Wire every signal: gateway -> coordinator/shell/database/diagnostics,
@@ -21,8 +21,9 @@
 //    new configuration and re-wires all gateway signals.
 //  - D204 write (spec §11.3): the admin password is re-verified via
 //    DatabaseService::verifyPassword before the register write is issued.
-//  - Startup order (spec §13): db.start() -> gw.start() -> vision.start() ->
-//    lifecycle.startSessionTimer() -> window.show().
+//  - Startup order (spec §13): db.start() -> load persisted serial settings ->
+//    gw.start() -> vision.start() -> lifecycle.startSessionTimer() ->
+//    window.show(). Restricted DB mode starts the configured fallback gateway.
 //  - Shutdown (spec §13): lifecycle.shutdown() (clears M42/M106-M111, stops
 //    heartbeat) -> gw.stop() -> db.stop() -> vision.stop(). M100 is never
 //    auto-cleared.
@@ -36,6 +37,7 @@
 #include "ports/repositories.h" // SettingRecord, UserRecord
 
 class QMainWindow;
+class QTimer;
 
 namespace hlm {
 
@@ -81,13 +83,17 @@ private:
     void createObjects();
     void wireSignals();
     void wireGateway(IPlcGateway *gw);
+    void startGatewayIfNeeded();
     void rebuildGateway(const SerialConfig &cfg);
     void persistSerialConfig(const SerialConfig &cfg);
     void handleSettingLoaded(const std::optional<SettingRecord> &setting);
     void handleWriteCompleted(quint16 address, bool ok, const QString &error);
     void handleParameterWrite(quint16 address, quint16 value);
+    bool validateParameterWrite(quint16 address, quint16 value,
+                                QString *error) const;
     void handleD204Write(quint16 value, const QString &adminPassword);
     void handlePasswordVerified(bool ok);
+    void handleLogoutRequested();
     void handleLoginResult(const LoginResult &result);
     void handleAuditLoaded(const QVector<AuditRecord> &records);
     void handleAlarmsLoaded(const QVector<AlarmEventRecord> &alarms);
@@ -105,6 +111,8 @@ private:
     DatabaseService *m_db = nullptr;
     IVisionService *m_vision = nullptr; // null when HLM_ENABLE_VISION is off
     LifecycleController *m_lifecycle = nullptr;
+    QTimer *m_simulationTimer = nullptr;
+    bool m_gatewayStarted = false;
 
     // Page pointers (created inside MainWindow; fetched via findChild).
     UsersSettingsPage *m_usersPage = nullptr;
@@ -136,6 +144,8 @@ private:
     QList<int> m_pendingParamAddrs;
     // D204 flow: value waiting for the password verification result.
     bool m_d204Pending = false;
+    bool m_d204Cancelled = false;
+    qint64 m_d204PendingUserId = -1;
     quint16 m_d204Value = 0;
 
     // Audit paging bookkeeping (spec §12 滚动加载).

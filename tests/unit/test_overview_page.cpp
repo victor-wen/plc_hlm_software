@@ -373,6 +373,9 @@ void OverviewPageTest::mainInfoFitsOneScreen()
         ValueDisplay *display = page->fieldDisplay(key);
         QVERIFY2(display->isVisible(),
                  qPrintable(QStringLiteral("display %1 not visible").arg(key)));
+        QVERIFY(display->parentWidget() != nullptr);
+        QCOMPARE(display->parentWidget()->objectName(),
+                 QStringLiteral("valueField"));
     }
     QVERIFY(page->latestAlarmLabel()->isVisible());
 }

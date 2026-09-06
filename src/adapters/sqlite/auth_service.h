@@ -75,7 +75,7 @@ public:
                     QString *error = nullptr);
 
     // Deletes a user by id (admin action, spec §11.3). Returns false if the
-    // user does not exist.
+    // user does not exist or deleting it would leave no enabled administrator.
     bool deleteUser(qint64 id, QString *error = nullptr);
 
     // Overrides the lockout window (seconds). Test hook; default 30 (spec §11.5).

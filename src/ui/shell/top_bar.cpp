@@ -5,6 +5,8 @@
 #include <QHBoxLayout>
 #include <QTimer>
 #include <QDateTime>
+#include <QPalette>
+#include <QColor>
 
 namespace hlm {
 
@@ -13,8 +15,11 @@ TopBar::TopBar(ShellModel &model, QWidget *parent)
     , m_model(model)
 {
     setObjectName(QStringLiteral("topBar"));
-    setMinimumHeight(72);
-    setMaximumHeight(72);
+    // Plain QWidget subclasses may otherwise stay transparent on Windows
+    // even when QSS supplies a background color.
+    setAttribute(Qt::WA_StyledBackground, true);
+    setMinimumHeight(64);
+    setMaximumHeight(64);
 
     auto *layout = new QHBoxLayout(this);
     layout->setContentsMargins(12, 4, 12, 4);
@@ -23,6 +28,14 @@ TopBar::TopBar(ShellModel &model, QWidget *parent)
     m_appName = new QLabel(QStringLiteral("PLC 调宽上位机"), this);
     m_appName->setObjectName(QStringLiteral("appName"));
     layout->addWidget(m_appName);
+
+    auto *divider = new QLabel(QStringLiteral("/"), this);
+    divider->setObjectName(QStringLiteral("topBarDivider"));
+    layout->addWidget(divider);
+
+    m_pageTitle = new QLabel(QStringLiteral("总览"), this);
+    m_pageTitle->setObjectName(QStringLiteral("pageTitle"));
+    layout->addWidget(m_pageTitle);
 
     buildLights();
 
@@ -55,6 +68,12 @@ void TopBar::buildLights()
     };
     for (const QString &name : names) {
         auto *light = new StatusLight(this);
+        light->setObjectName(QStringLiteral("topStatusLight"));
+        QPalette palette = light->palette();
+        palette.setColor(QPalette::WindowText, QColor(QStringLiteral("#e7eef6")));
+        palette.setColor(QPalette::Disabled, QPalette::WindowText,
+                         QColor(QStringLiteral("#aab9c7")));
+        light->setPalette(palette);
         light->setState(StatusState::Unknown, name + QStringLiteral(" —"));
         m_lights.append(light);
         layout()->addWidget(light);
@@ -65,10 +84,22 @@ QString TopBar::text() const
 {
     QStringList parts;
     parts.append(m_appName->text());
+    parts.append(m_pageTitle->text());
     for (const StatusLight *light : m_lights)
         parts.append(light->text());
     parts.append(m_userLabel->text());
     return parts.join(QLatin1Char(' '));
+}
+
+QString TopBar::pageTitle() const
+{
+    return m_pageTitle ? m_pageTitle->text() : QString();
+}
+
+void TopBar::setPageTitle(const QString &title)
+{
+    if (m_pageTitle)
+        m_pageTitle->setText(title);
 }
 
 void TopBar::refresh()

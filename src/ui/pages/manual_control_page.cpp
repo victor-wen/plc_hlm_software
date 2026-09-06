@@ -11,6 +11,7 @@
 #include <QGridLayout>
 #include <QFrame>
 #include <QHideEvent>
+#include <QSizePolicy>
 
 namespace hlm {
 
@@ -158,19 +159,24 @@ void ManualControlPage::buildLayout()
             [this] { onShieldClicked(m_doorShield, kM111); });
 }
 
-ValueDisplay *ManualControlPage::addField(const QString &key, const QString &title)
+QWidget *ManualControlPage::addField(const QString &key, const QString &title)
 {
     auto *titleWrap = new QWidget(this);
+    titleWrap->setObjectName(QStringLiteral("valueField"));
+    titleWrap->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto *layout = new QVBoxLayout(titleWrap);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(2);
     auto *titleLabel = new QLabel(title, titleWrap);
+    titleLabel->setObjectName(QStringLiteral("valueFieldTitle"));
     layout->addWidget(titleLabel);
     auto *display = new ValueDisplay(titleWrap);
     display->setMinimumHeight(48);
+    display->setMaximumHeight(54);
+    display->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     layout->addWidget(display);
     m_displays.insert(key, display);
-    return display;
+    return titleWrap;
 }
 
 ValueDisplay *ManualControlPage::fieldDisplay(const QString &key) const

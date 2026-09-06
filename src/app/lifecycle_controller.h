@@ -5,7 +5,9 @@
 // Owned by the UI main thread (like every QWidget and the coordinator,
 // spec §7.1). Responsibilities:
 //  - Session countdown: 15 分钟无操作自动注销, 提前 60 秒提示 (spec §11.5).
-//    A QTimer drives one tick per second; the remaining seconds are fed to
+//    An application-wide input filter resets the countdown on keyboard,
+//    pointer, wheel, touch and tablet activity; active holds also keep the
+//    session alive. A QTimer drives idle ticks; remaining seconds are fed to
 //    UsersSettingsPage::setSessionRemainingSec, which emits the logout +
 //    M42/M106-M111 clear requests on expiry. The tick is exposed as a public
 //    method so integration tests drive the countdown deterministically.
@@ -26,6 +28,7 @@
 #include "ports/repositories.h"
 
 class QTimer;
+class QEvent;
 
 namespace hlm {
 
@@ -75,6 +78,9 @@ public:
 
     // --- shutdown (spec §13) ----------------------------------------------------
     void shutdown();
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void doLogout();

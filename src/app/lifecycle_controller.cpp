@@ -1,5 +1,7 @@
 #include "app/lifecycle_controller.h"
 
+#include <QCoreApplication>
+#include <QEvent>
 #include <QTimer>
 
 #include "application/control_coordinator.h"
@@ -27,6 +29,8 @@ LifecycleController::LifecycleController(
     m_sessionTimer->setInterval(1000);
     connect(m_sessionTimer, &QTimer::timeout, this,
             &LifecycleController::onSessionTick);
+    if (QCoreApplication::instance())
+        QCoreApplication::instance()->installEventFilter(this);
 }
 
 void LifecycleController::startSessionTimer()
@@ -60,6 +64,11 @@ void LifecycleController::onSessionTick()
 {
     if (m_remainingSec <= 0)
         return; // already expired; the page emitted the logout requests once
+    // A continuous hold is active operation even when the pointer is stationary.
+    if (!m_username.isEmpty() && m_window && m_window->hasActiveHolds()) {
+        resetSessionTimer();
+        return;
+    }
     --m_remainingSec;
     if (m_usersPage)
         m_usersPage->setSessionRemainingSec(m_remainingSec);
@@ -68,6 +77,26 @@ void LifecycleController::onSessionTick()
         // (spec §11.5); the timer keeps ticking but stays at 0.
         m_sessionTimer->stop();
     }
+}
+
+bool LifecycleController::eventFilter(QObject *watched, QEvent *event)
+{
+    Q_UNUSED(watched);
+    if (!m_username.isEmpty()) {
+        switch (event->type()) {
+        case QEvent::KeyPress:
+        case QEvent::MouseButtonPress:
+        case QEvent::MouseButtonDblClick:
+        case QEvent::Wheel:
+        case QEvent::TouchBegin:
+        case QEvent::TabletPress:
+            resetSessionTimer();
+            break;
+        default:
+            break;
+        }
+    }
+    return QObject::eventFilter(watched, event);
 }
 
 void LifecycleController::onLoginSucceeded(const UserRecord &user)

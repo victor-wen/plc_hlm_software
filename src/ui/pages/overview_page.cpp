@@ -9,6 +9,7 @@
 #include <QGridLayout>
 #include <QFrame>
 #include <QHash>
+#include <QSizePolicy>
 #include <QStringList>
 
 namespace hlm {
@@ -102,17 +103,17 @@ void OverviewPage::buildLayout()
     auto *leftColumn = new QVBoxLayout();
     auto *rightColumn = new QVBoxLayout();
     leftColumn->addWidget(addField(QStringLiteral("step"),
-                                   QStringLiteral("当前步骤 (D120)"), nullptr));
+                                   QStringLiteral("当前步骤 (D120)")));
     leftColumn->addWidget(addField(QStringLiteral("targetWidth"),
-                                   QStringLiteral("目标宽度 (D128)"), nullptr));
+                                   QStringLiteral("目标宽度 (D128)")));
     leftColumn->addWidget(addField(QStringLiteral("currentWidth"),
-                                   QStringLiteral("当前宽度 (D130)"), nullptr));
+                                   QStringLiteral("当前宽度 (D130)")));
     rightColumn->addWidget(addField(QStringLiteral("widthDelta"),
-                                    QStringLiteral("调宽差值 (D210)"), nullptr));
+                                    QStringLiteral("调宽差值 (D210)")));
     rightColumn->addWidget(addField(QStringLiteral("beltSpeed"),
-                                    QStringLiteral("皮带速度 (D122)"), nullptr));
+                                    QStringLiteral("皮带速度 (D122)")));
     rightColumn->addWidget(addField(QStringLiteral("productionCount"),
-                                    QStringLiteral("累计产量 (D138)"), nullptr));
+                                    QStringLiteral("累计产量 (D138)")));
     grid->addLayout(leftColumn, 0, 0);
     grid->addLayout(rightColumn, 0, 1);
     grid->setColumnStretch(0, 1);
@@ -126,21 +127,24 @@ void OverviewPage::buildLayout()
     root->addWidget(m_alarmLabel);
 }
 
-ValueDisplay *OverviewPage::addField(const QString &key, const QString &title,
-                                     QVBoxLayout *column)
+QWidget *OverviewPage::addField(const QString &key, const QString &title)
 {
-    Q_UNUSED(column);
     auto *titleWrap = new QWidget(this);
+    titleWrap->setObjectName(QStringLiteral("valueField"));
+    titleWrap->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto *layout = new QVBoxLayout(titleWrap);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(2);
     auto *titleLabel = new QLabel(title, titleWrap);
+    titleLabel->setObjectName(QStringLiteral("valueFieldTitle"));
     layout->addWidget(titleLabel);
     auto *display = new ValueDisplay(titleWrap);
     display->setMinimumHeight(48);
+    display->setMaximumHeight(54);
+    display->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     layout->addWidget(display);
     m_displays.insert(key, display);
-    return display;
+    return titleWrap;
 }
 
 ValueDisplay *OverviewPage::fieldDisplay(const QString &key) const

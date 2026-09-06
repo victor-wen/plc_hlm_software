@@ -34,6 +34,7 @@ constexpr quint16 kM111 = 111; // door bypass
 constexpr quint16 kM112 = 112; // HMI watchdog
 
 constexpr quint16 kD110 = 110; // fault code
+constexpr quint16 kD122 = 122; // belt speed
 constexpr quint16 kD126 = 126; // width frequency low word
 constexpr quint16 kD127 = 127; // width frequency high word
 constexpr quint16 kD128 = 128; // target width
@@ -67,6 +68,7 @@ H3uSimulationModel::H3uSimulationModel(SimulationClock &clock)
     m_coils[kM1] = true; // manual mode
     m_regs[kD130] = 200;
     m_regs[kD128] = 200;
+    m_regs[kD122] = 1000;
     m_regs[kD204] = 1280;
     m_regs[kD220] = 15;
     updateD126();

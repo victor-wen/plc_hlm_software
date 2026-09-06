@@ -41,8 +41,7 @@ public slots:
 
 private:
     void buildLayout();
-    ValueDisplay *addField(const QString &key, const QString &title,
-                           QVBoxLayout *column);
+    QWidget *addField(const QString &key, const QString &title);
 
     ShellModel &m_model;
     OverviewModel m_pageModel;

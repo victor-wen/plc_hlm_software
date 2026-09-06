@@ -22,6 +22,7 @@
 
 #include <QtTest>
 #include <QSignalSpy>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QFile>
@@ -29,7 +30,9 @@
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTemporaryDir>
+#include <QListWidget>
 
+#include "adapters/modbus/qt_modbus_plc_gateway.h"
 #include "adapters/simulator/simulated_plc_gateway.h"
 #include "adapters/sqlite/database_service.h"
 #include "app/application.h"
@@ -116,6 +119,9 @@ class FullFlowTest : public QObject
     Q_OBJECT
 
 private slots:
+    // Production startup must not silently substitute an online simulator.
+    void defaultConfigurationUsesRealGateway();
+    void persistedSerialConfigAppliedBeforeRealGatewayStarts();
     // --- 1. first-run DB + auth + session + role downgrade -------------------
     void firstRunAdminLoginLockoutSessionTimeout();
     // --- 2. full control flow ------------------------------------------------
@@ -139,7 +145,65 @@ private slots:
     void applicationAdjustWidthConverges();
 };
 
+void FullFlowTest::defaultConfigurationUsesRealGateway()
+{
+    const AppConfig cfg;
+    QVERIFY(!cfg.useSimulatedGateway);
+}
+
 // --- 1. first-run DB + auth + session + role downgrade -----------------------
+
+void FullFlowTest::persistedSerialConfigAppliedBeforeRealGatewayStarts()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString databasePath = dir.filePath(QStringLiteral("app.db"));
+
+    DatabaseService seed(databasePath);
+    QSignalSpy readySpy(&seed, &DatabaseService::ready);
+    seed.start();
+    QTRY_COMPARE_WITH_TIMEOUT(readySpy.count(), 1, 5000);
+
+    const QVector<QPair<QString, QString>> settings{
+        {QStringLiteral("serial.comPort"), QStringLiteral("COM247")},
+        {QStringLiteral("serial.station"), QStringLiteral("7")},
+        {QStringLiteral("serial.baudRate"), QStringLiteral("19200")},
+        {QStringLiteral("serial.stopBits"), QStringLiteral("2")},
+        {QStringLiteral("serial.parity"), QStringLiteral("偶")},
+        {QStringLiteral("serial.timeoutMs"), QStringLiteral("750")},
+        {QStringLiteral("serial.readRetries"), QStringLiteral("3")},
+    };
+    QSignalSpy savedSpy(&seed, &DatabaseService::settingSaved);
+    for (const auto &entry : settings) {
+        SettingRecord setting;
+        setting.key = entry.first;
+        setting.typedValue = entry.second;
+        setting.updatedBy = QStringLiteral("test");
+        seed.setSetting(setting);
+    }
+    QTRY_COMPARE_WITH_TIMEOUT(savedSpy.count(), int(settings.size()), 5000);
+    seed.stop();
+
+    AppConfig cfg;
+    cfg.databasePath = databasePath;
+    cfg.useSimulatedGateway = false;
+    Application app(cfg);
+    IPlcGateway *initialGateway = app.gateway();
+    app.start();
+
+    QTRY_VERIFY_WITH_TIMEOUT(app.gateway() != initialGateway, 5000);
+    auto *gateway = qobject_cast<QtModbusPlcGateway *>(app.gateway());
+    QVERIFY(gateway != nullptr);
+    const QtModbusPlcGateway::Config applied = gateway->configuration();
+    QCOMPARE(applied.portName, QStringLiteral("COM247"));
+    QCOMPARE(applied.station, quint8(7));
+    QCOMPARE(applied.baudRate, 19200);
+    QCOMPARE(applied.stopBits, QSerialPort::TwoStop);
+    QCOMPARE(applied.parity, QSerialPort::EvenParity);
+    QCOMPARE(applied.timeoutMs, 750);
+    QCOMPARE(applied.readRetries, 3);
+    app.shutdown();
+}
 
 void FullFlowTest::firstRunAdminLoginLockoutSessionTimeout()
 {
@@ -215,9 +279,15 @@ void FullFlowTest::firstRunAdminLoginLockoutSessionTimeout()
     QCOMPARE(coord->role(), Role::Admin);
     QCOMPARE(shell.role(), Role::Admin);
 
-    // Drive the countdown to expiry deterministically.
+    // Drive the countdown deterministically. Real user input resets an
+    // authenticated session; the next three idle ticks then expire it.
     lc.setSessionTimeoutSec(3);
     lc.startSessionTimer();
+    lc.onSessionTick();
+    QCOMPARE(lc.sessionRemainingSec(), 2);
+    QKeyEvent activity(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier);
+    QApplication::sendEvent(&window, &activity);
+    QCOMPARE(lc.sessionRemainingSec(), 3);
     lc.onSessionTick();
     lc.onSessionTick();
     lc.onSessionTick();
@@ -687,6 +757,7 @@ void FullFlowTest::applicationAdjustWidthConverges()
     QVERIFY(dir.isValid());
     AppConfig cfg;
     cfg.useSimulatedGateway = true;
+    cfg.simulatedTickIntervalMs = 0;
     cfg.databasePath = dir.filePath(QStringLiteral("app.db"));
 
     Application app(cfg);
@@ -709,6 +780,12 @@ void FullFlowTest::applicationAdjustWidthConverges()
 
     // Wait for the DB worker to be ready (queued worker-thread path).
     QTRY_VERIFY_WITH_TIMEOUT(!db->isRestricted(), 5000);
+    // A clean first launch must expose the administrator bootstrap without
+    // requiring the user to discover it behind navigation/login controls.
+    QTRY_COMPARE_WITH_TIMEOUT(app.window()->currentPageIndex(), 6, 5000);
+    auto *usersPage = app.window()->findChild<UsersSettingsPage *>();
+    QVERIFY(usersPage != nullptr);
+    QCOMPARE(usersPage->currentPanel(), usersPage->createAdminPanel());
 
     // First run: create the initial admin, then log in as admin.
     QSignalSpy adminSpy(db, &DatabaseService::initialAdminCreated);
@@ -727,6 +804,46 @@ void FullFlowTest::applicationAdjustWidthConverges()
     QTRY_VERIFY_WITH_TIMEOUT(loginSpy.size() > 0, 5000);
     QVERIFY(loginSpy[0][0].value<LoginResult>().ok);
     QCOMPARE(coord->role(), Role::Admin);
+
+    // D204 re-auth is single-flight and bound to the current session. A second
+    // request cannot replace the value protected by the first verification.
+    QSignalSpy passwordSpy(db, &DatabaseService::passwordVerified);
+    emit usersPage->d204WriteRequested(5000, QStringLiteral("s3cret!"));
+    emit usersPage->d204WriteRequested(6000, QStringLiteral("wrong"));
+    QTRY_COMPARE_WITH_TIMEOUT(passwordSpy.count(), 1, 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(gw->model().readRegister(kD204), quint16(5000), 5000);
+
+    // Product validation uses the confirmed D220=15, so 20000*15 is rejected
+    // before a password verification or PLC write is attempted.
+    emit usersPage->d204WriteRequested(20000, QStringLiteral("s3cret!"));
+    QCOMPARE(passwordSpy.count(), 1);
+    QCOMPARE(gw->model().readRegister(kD204), quint16(5000));
+
+    // Logout cancels an in-flight verification. Its successful result must not
+    // write after the role has been downgraded.
+    emit usersPage->d204WriteRequested(6000, QStringLiteral("s3cret!"));
+    emit usersPage->logoutRequested();
+    QTRY_COMPARE_WITH_TIMEOUT(passwordSpy.count(), 2, 5000);
+    QCOMPARE(gw->model().readRegister(kD204), quint16(5000));
+    QCOMPARE(coord->role(), Role::Anonymous);
+
+    loginSpy.clear();
+    QVERIFY(QMetaObject::invokeMethod(
+        db, "login", Qt::QueuedConnection,
+        Q_ARG(QString, QStringLiteral("admin")),
+        Q_ARG(QString, QStringLiteral("s3cret!"))));
+    QTRY_VERIFY_WITH_TIMEOUT(loginSpy.size() > 0, 5000);
+    QVERIFY(loginSpy[0][0].value<LoginResult>().ok);
+    QCOMPARE(coord->role(), Role::Admin);
+
+    // The administrator can add an operator through the real page -> database
+    // wiring, and the confirmed result refreshes the visible list.
+    QSignalSpy userAddedSpy(db, &DatabaseService::userAdded);
+    emit usersPage->addUserRequested(QStringLiteral("operator"), Role::Operator,
+                                     QStringLiteral("operator-pass"));
+    QTRY_VERIFY_WITH_TIMEOUT(userAddedSpy.size() > 0, 5000);
+    QCOMPARE(userAddedSpy[0][0].toBool(), true);
+    QTRY_COMPARE_WITH_TIMEOUT(usersPage->userList()->count(), 2, 5000);
 
     // Home the machine via the raw gateway (M103 pulse + 2 s home return).
     gw->writeCoil(kM103, true);

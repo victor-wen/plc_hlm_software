@@ -27,6 +27,7 @@ class DatabaseServiceTest : public QObject
 private slots:
     void initTestCase();
     void healthyDatabaseEmitsReady();
+    void firstLaunchCreatesDatabaseDirectory();
     void healthyDatabaseUsesWalJournalMode();
     void healthyServiceRunsOperationsOnWorkerThread();
     void unopenableDatabaseEntersRestrictedMode();
@@ -56,6 +57,25 @@ void DatabaseServiceTest::healthyDatabaseEmitsReady()
     QVERIFY(!service.isRestricted());
     service.stop();
     QCOMPARE(service.thread(), QThread::currentThread());
+}
+
+void DatabaseServiceTest::firstLaunchCreatesDatabaseDirectory()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString databasePath =
+        dir.filePath(QStringLiteral("PLC-HLM/data/app.db"));
+    QVERIFY(!QFile::exists(databasePath));
+
+    DatabaseService service(databasePath);
+    QSignalSpy readySpy(&service, &DatabaseService::ready);
+    QSignalSpy restrictedSpy(&service, &DatabaseService::databaseRestricted);
+    service.start();
+    QTRY_VERIFY_WITH_TIMEOUT(readySpy.size() > 0, 5000);
+    QCOMPARE(restrictedSpy.size(), 0);
+    QVERIFY(!service.isRestricted());
+    service.stop();
+    QVERIFY(QFile::exists(databasePath));
 }
 
 // Spec §7.3 / WAL acceptance criterion: a healthy temp-file database must
@@ -125,8 +145,9 @@ void DatabaseServiceTest::unopenableDatabaseEntersRestrictedMode()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
-    // A path inside a non-existent directory cannot be opened.
-    DatabaseService service(dir.filePath(QStringLiteral("no/such/dir/app.db")));
+    // A directory itself cannot be opened as an SQLite database file. Missing
+    // parent directories are created deliberately for clean first launches.
+    DatabaseService service(dir.path());
     QSignalSpy readySpy(&service, &DatabaseService::ready);
     QSignalSpy restrictedSpy(&service, &DatabaseService::databaseRestricted);
     service.start();
@@ -140,7 +161,7 @@ void DatabaseServiceTest::restrictedServiceRejectsOperations()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
-    DatabaseService service(dir.filePath(QStringLiteral("no/such/dir/app.db")));
+    DatabaseService service(dir.path());
     QSignalSpy restrictedSpy(&service, &DatabaseService::databaseRestricted);
     service.start();
     QTRY_VERIFY_WITH_TIMEOUT(restrictedSpy.size() > 0, 5000);
