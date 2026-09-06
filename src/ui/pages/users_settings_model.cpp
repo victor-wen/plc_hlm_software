@@ -38,11 +38,13 @@ void UsersSettingsModel::setLoginResult(const LoginResult &result)
     if (result.ok) {
         m_loginError.clear();
     } else if (result.reason == QStringLiteral("bad credentials")
-               || result.reason == QStringLiteral("unknown user")) {
-        // Do not disclose whether a username exists.
-        m_loginError = QStringLiteral("用户名或密码错误");
-    } else if (result.reason == QStringLiteral("disabled")) {
-        m_loginError = QStringLiteral("账号已停用，请联系管理员");
+               || result.reason == QStringLiteral("unknown user")
+               || result.reason == QStringLiteral("locked")
+               || result.reason == QStringLiteral("disabled")) {
+        // Unknown, wrong, locked and disabled accounts must be externally
+        // indistinguishable; detailed reasons remain in the audit log.
+        m_loginError =
+            QStringLiteral("用户名或密码错误；连续失败的账号可能暂时锁定");
     } else if (result.reason == QStringLiteral("database restricted")) {
         m_loginError = QStringLiteral("数据库不可用，当前无法登录");
     } else {
@@ -53,8 +55,6 @@ void UsersSettingsModel::setLoginResult(const LoginResult &result)
 
 QString UsersSettingsModel::loginStatusText() const
 {
-    if (m_loginLocked)
-        return QStringLiteral("登录失败次数过多, 账号已锁定 30 秒");
     return m_loginError;
 }
 

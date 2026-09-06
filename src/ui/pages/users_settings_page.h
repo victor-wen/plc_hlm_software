@@ -60,6 +60,7 @@ public:
     QSpinBox *timeoutSpin() const { return m_timeout; }
     QSpinBox *readRetriesSpin() const { return m_readRetries; }
     QLabel *serialStatusLabel() const { return m_serialStatus; }
+    QPushButton *saveSerialButton() const { return m_saveSerial; }
     QLabel *loginStatusLabel() const { return m_loginStatusLabel; }
     QLabel *createAdminStatusLabel() const { return m_createAdminStatus; }
     QLabel *userStatusLabel() const { return m_userStatus; }

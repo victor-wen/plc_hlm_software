@@ -3,7 +3,7 @@
 // Coverage required by the task brief:
 // - 未登录/操作员锁定: 敏感字段 (用户列表/密码/通讯配置/参数值) 不渲染, 只显示
 //   锁定面板和"需要管理员登录"提示 (spec §11.4).
-// - 三次失败锁定: LoginResult.reason=="locked" 显示锁定提示 (spec §11.5).
+// - 登录失败统一提示: unknown/bad/locked/disabled 不暴露账号是否存在.
 // - 会话超时: setSessionRemainingSec 倒计时提示, 提前 60 秒警告, 超时发出
 //   注销 + 清零请求 (spec §11.5).
 // - D122 100-20000 范围校验.
@@ -102,9 +102,11 @@ private slots:
 
     // --- model: D204/D220 and product validation (spec §10.3) -----------------
     void d204D220ProductValidation();
+    void parameterProductUsesSnapshotCounterpart();
 
     // --- model: serial config validation (spec §8.1) --------------------------
     void serialConfigValidation();
+    void serialSaveDisablesUntilResult();
 
     // --- page: D204 re-auth dialog (spec §11.3) -------------------------------
     void d204RequiresReauthDialog();
@@ -202,7 +204,8 @@ void UsersSettingsPageTest::lockedResultShowsLockoutMessage()
     m.setLoginResult(locked);
 
     QVERIFY(m.loginLocked());
-    QVERIFY(m.loginStatusText().contains(QStringLiteral("锁定")));
+    QCOMPARE(m.loginStatusText(),
+             QStringLiteral("用户名或密码错误；连续失败的账号可能暂时锁定"));
 
     // A later successful login clears the lockout display.
     LoginResult ok;
@@ -224,13 +227,21 @@ void UsersSettingsPageTest::badCredentialsShowsError()
     m.setLoginResult(bad);
 
     QVERIFY(!m.loginLocked());
-    QVERIFY(m.loginStatusText().contains(QStringLiteral("用户名或密码错误")));
+    const QString generic =
+        QStringLiteral("用户名或密码错误；连续失败的账号可能暂时锁定");
+    QCOMPARE(m.loginStatusText(), generic);
 
     LoginResult unknown;
     unknown.ok = false;
     unknown.reason = QStringLiteral("unknown user");
     m.setLoginResult(unknown);
-    QCOMPARE(m.loginStatusText(), QStringLiteral("用户名或密码错误"));
+    QCOMPARE(m.loginStatusText(), generic);
+
+    LoginResult disabled;
+    disabled.ok = false;
+    disabled.reason = QStringLiteral("disabled");
+    m.setLoginResult(disabled);
+    QCOMPARE(m.loginStatusText(), generic);
 }
 
 // --- model: session countdown ------------------------------------------------------
@@ -348,6 +359,33 @@ void UsersSettingsPageTest::d204D220ProductValidation()
 
 // --- model: serial config validation -----------------------------------------------------
 
+void UsersSettingsPageTest::parameterProductUsesSnapshotCounterpart()
+{
+    ShellModel model;
+    UsersSettingsPage page(model);
+    model.setUser(QStringLiteral("admin"), Role::Admin);
+
+    DeviceSnapshotData d = validSnapshotData();
+    d.widthSpeed = 15;
+    model.updateSnapshot(DeviceSnapshot(d));
+
+    // The editor default is D220=2, but the confirmed PLC value is 15.
+    // D204=20000 would produce 300000 and must be rejected before re-auth.
+    page.d204Spin()->setValue(20000);
+    clickAt(page.writeD204Button());
+    QVERIFY(page.findChild<AdminPasswordDialog *>() == nullptr);
+    QVERIFY(page.paramStatusText().contains(QStringLiteral("D204×D220")));
+
+    d = validSnapshotData();
+    d.pulsePerMm = 32767;
+    model.updateSnapshot(DeviceSnapshot(d));
+    QSignalSpy writeSpy(&page, &UsersSettingsPage::writeParameterRequested);
+    page.d220Spin()->setValue(15);
+    clickAt(page.writeD220Button());
+    QCOMPARE(writeSpy.count(), 0);
+    QVERIFY(page.paramStatusText().contains(QStringLiteral("D204×D220")));
+}
+
 void UsersSettingsPageTest::serialConfigValidation()
 {
     ShellModel model;
@@ -394,6 +432,24 @@ void UsersSettingsPageTest::serialConfigValidation()
     cfg.parity = QStringLiteral("X");
     m.setSerialConfig(cfg);
     QVERIFY(!m.serialConfigValid());
+}
+
+void UsersSettingsPageTest::serialSaveDisablesUntilResult()
+{
+    ShellModel model;
+    UsersSettingsPage page(model);
+    model.setUser(QStringLiteral("admin"), Role::Admin);
+    QSignalSpy saveSpy(&page, &UsersSettingsPage::saveSerialConfigRequested);
+
+    clickAt(page.saveSerialButton());
+    QCOMPARE(saveSpy.count(), 1);
+    QVERIFY(!page.saveSerialButton()->isEnabled());
+
+    clickAt(page.saveSerialButton());
+    QCOMPARE(saveSpy.count(), 1);
+
+    page.setSerialSaveResult(true, QString());
+    QVERIFY(page.saveSerialButton()->isEnabled());
 }
 
 // --- page: D204 re-auth dialog ------------------------------------------------------------
@@ -459,13 +515,15 @@ void UsersSettingsPageTest::loginFailureShownOnLockedPanel()
     QVERIFY(page.loginStatusLabel() != nullptr);
     QVERIFY(page.lockedPanel()->isAncestorOf(page.loginStatusLabel()));
 
-    // 锁定 30 秒提示必须显示在锁定面板上, 用户始终可见.
+    // Lockout must not make a known username distinguishable from an unknown one.
     LoginResult locked;
     locked.ok = false;
     locked.reason = QStringLiteral("locked");
     page.setLoginResult(locked);
     QApplication::processEvents();
-    QVERIFY(page.loginStatusLabel()->text().contains(QStringLiteral("锁定")));
+    const QString generic =
+        QStringLiteral("用户名或密码错误；连续失败的账号可能暂时锁定");
+    QCOMPARE(page.loginStatusLabel()->text(), generic);
 
     // 密码错误提示同样可见.
     LoginResult bad;
@@ -473,8 +531,7 @@ void UsersSettingsPageTest::loginFailureShownOnLockedPanel()
     bad.reason = QStringLiteral("bad credentials");
     page.setLoginResult(bad);
     QApplication::processEvents();
-    QVERIFY(page.loginStatusLabel()->text().contains(
-        QStringLiteral("用户名或密码错误")));
+    QCOMPARE(page.loginStatusLabel()->text(), generic);
 }
 
 void UsersSettingsPageTest::loginDialogStaysOpenOnFailure()

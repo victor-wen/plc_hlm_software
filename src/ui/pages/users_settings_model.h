@@ -59,7 +59,8 @@ public:
 
     // --- login (spec §11.5) ---------------------------------------------------
     // Result fed from DatabaseService::loginResult (Task 20). Never derived
-    // from the UI. reason "locked" -> 三次失败锁定 30 秒提示.
+    // from the UI. Account-specific failure reasons are displayed generically
+    // so login responses cannot be used to enumerate usernames.
     void setLoginResult(const LoginResult &result);
     bool loginLocked() const { return m_loginLocked; }
     QString loginStatusText() const;

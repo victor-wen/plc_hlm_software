@@ -67,6 +67,7 @@ Application::Application(const AppConfig &config, QObject *parent)
     : QObject(parent)
     , m_cfg(config)
 {
+    m_loadedSerialCfg = m_cfg.serial;
     createObjects();
     wireSignals();
 }
@@ -206,8 +207,8 @@ void Application::wireSignals()
             &DatabaseService::createInitialAdmin);
     connect(m_usersPage, &UsersSettingsPage::loginRequested, m_db,
             &DatabaseService::login);
-    connect(m_usersPage, &UsersSettingsPage::logoutRequested, m_lifecycle,
-            &LifecycleController::onLogoutRequested);
+    connect(m_usersPage, &UsersSettingsPage::logoutRequested, this,
+            &Application::handleLogoutRequested);
     connect(m_usersPage, &UsersSettingsPage::logoutClearRequested, m_lifecycle,
             &LifecycleController::onLogoutClearRequested);
     connect(m_usersPage, &UsersSettingsPage::addUserRequested, m_db,
@@ -267,7 +268,13 @@ void Application::wireSignals()
     connect(m_db, &DatabaseService::ready, this, &Application::onReady);
     connect(m_db, &DatabaseService::databaseRestricted, this,
             [this](const QString &reason) {
+                m_currentUserId = -1;
+                if (m_d204Pending)
+                    m_d204Cancelled = true;
                 m_lifecycle->enterRestrictedMode(reason);
+                // Persisted settings are unavailable in restricted mode. Start
+                // the configured fallback gateway so Stop/Estop remain usable.
+                startGatewayIfNeeded();
                 LoginResult unavailable;
                 unavailable.ok = false;
                 unavailable.reason = QStringLiteral("database restricted");
@@ -318,19 +325,24 @@ void Application::wireSignals()
     connect(m_db, &DatabaseService::settingLoaded, this,
             &Application::handleSettingLoaded);
     connect(m_db, &DatabaseService::settingSaved, this,
-            [this](bool ok, const QString &error) {
+            [this](bool ok, const QString &) {
+                // Ignore unrelated/late callbacks. A serial-save batch owns
+                // exactly seven replies and completes once.
+                if (m_pendingSerialSaves <= 0)
+                    return;
                 --m_pendingSerialSaves;
                 if (!ok)
                     m_serialSaveFailed = true;
-                if (m_pendingSerialSaves <= 0) {
-                    if (m_serialSaveFailed) {
+                if (m_pendingSerialSaves == 0) {
+                    const bool failed = m_serialSaveFailed;
+                    m_serialSaveFailed = false;
+                    if (failed) {
                         m_usersPage->setSerialSaveResult(
                             false, QStringLiteral("数据库写入失败"));
                     } else {
                         rebuildGateway(m_pendingSerialCfg);
                         m_usersPage->setSerialSaveResult(true, QString());
                     }
-                    m_serialSaveFailed = false;
                 }
             });
     connect(m_db, &DatabaseService::passwordVerified, this,
@@ -406,13 +418,25 @@ void Application::wireGateway(IPlcGateway *gw)
     }
 }
 
+void Application::startGatewayIfNeeded()
+{
+    if (!m_gw || m_gatewayStarted || m_shutdownDone)
+        return;
+    m_gw->start();
+    m_gatewayStarted = true;
+    if (m_cfg.useSimulatedGateway && m_cfg.simulatedTickIntervalMs > 0
+        && !m_simulationTimer->isActive())
+        m_simulationTimer->start();
+}
+
 void Application::start()
 {
-    // Startup order (spec §13): database -> gateway -> vision -> session.
+    // The simulator has no persisted transport settings and can start
+    // immediately. The real gateway starts only after all serial settings have
+    // been loaded, so it never opens the default COM port by mistake.
     m_db->start();
-    m_gw->start();
-    if (m_cfg.useSimulatedGateway && m_cfg.simulatedTickIntervalMs > 0)
-        m_simulationTimer->start();
+    if (m_cfg.useSimulatedGateway)
+        startGatewayIfNeeded();
     if (m_vision)
         m_vision->start();
     m_lifecycle->startSessionTimer();
@@ -435,6 +459,7 @@ void Application::shutdown()
         m_lifecycle->shutdown();
     if (m_gw)
         m_gw->stop();
+    m_gatewayStarted = false;
     if (m_db)
         m_db->stop();
     if (m_vision)
@@ -464,6 +489,10 @@ void Application::onReady()
 
 void Application::persistSerialConfig(const SerialConfig &cfg)
 {
+    // One in-flight batch at a time. This also protects non-UI callers from
+    // corrupting the shared reply counter.
+    if (m_pendingSerialSaves > 0)
+        return;
     m_pendingSerialCfg = cfg;
     m_pendingSerialSaves = 7;
     m_serialSaveFailed = false;
@@ -487,44 +516,48 @@ void Application::persistSerialConfig(const SerialConfig &cfg)
 
 void Application::handleSettingLoaded(const std::optional<SettingRecord> &setting)
 {
-    // Count every load (including a missing key) so the echo fires on first
-    // run; otherwise m_pendingSerialLoads never reaches 0 (Task 20 review).
-    --m_pendingSerialLoads;
-    if (!setting) {
-        if (m_pendingSerialLoads <= 0)
-            m_usersPage->setSerialConfig(m_loadedSerialCfg);
-        return;
-    }
-    const QString &key = setting->key;
-    const QString &value = setting->typedValue;
-    bool ok = false;
-    if (key == QString::fromLatin1(kSerialComPort)) {
-        m_loadedSerialCfg.comPort = value;
-    } else if (key == QString::fromLatin1(kSerialStation)) {
-        const int v = value.toInt(&ok);
-        if (ok)
-            m_loadedSerialCfg.station = v;
-    } else if (key == QString::fromLatin1(kSerialBaudRate)) {
-        const int v = value.toInt(&ok);
-        if (ok)
-            m_loadedSerialCfg.baudRate = v;
-    } else if (key == QString::fromLatin1(kSerialStopBits)) {
-        const int v = value.toInt(&ok);
-        if (ok)
-            m_loadedSerialCfg.stopBits = v;
-    } else if (key == QString::fromLatin1(kSerialParity)) {
-        m_loadedSerialCfg.parity = value;
-    } else if (key == QString::fromLatin1(kSerialTimeoutMs)) {
-        const int v = value.toInt(&ok);
-        if (ok)
-            m_loadedSerialCfg.timeoutMs = v;
-    } else if (key == QString::fromLatin1(kSerialReadRetries)) {
-        const int v = value.toInt(&ok);
-        if (ok)
-            m_loadedSerialCfg.readRetries = v;
-    }
     if (m_pendingSerialLoads <= 0)
-        m_usersPage->setSerialConfig(m_loadedSerialCfg);
+        return;
+    // Count every load (including a missing key) so first run uses defaults.
+    --m_pendingSerialLoads;
+    if (setting) {
+        const QString &key = setting->key;
+        const QString &value = setting->typedValue;
+        bool ok = false;
+        if (key == QString::fromLatin1(kSerialComPort)) {
+            m_loadedSerialCfg.comPort = value;
+        } else if (key == QString::fromLatin1(kSerialStation)) {
+            const int v = value.toInt(&ok);
+            if (ok)
+                m_loadedSerialCfg.station = v;
+        } else if (key == QString::fromLatin1(kSerialBaudRate)) {
+            const int v = value.toInt(&ok);
+            if (ok)
+                m_loadedSerialCfg.baudRate = v;
+        } else if (key == QString::fromLatin1(kSerialStopBits)) {
+            const int v = value.toInt(&ok);
+            if (ok)
+                m_loadedSerialCfg.stopBits = v;
+        } else if (key == QString::fromLatin1(kSerialParity)) {
+            m_loadedSerialCfg.parity = value;
+        } else if (key == QString::fromLatin1(kSerialTimeoutMs)) {
+            const int v = value.toInt(&ok);
+            if (ok)
+                m_loadedSerialCfg.timeoutMs = v;
+        } else if (key == QString::fromLatin1(kSerialReadRetries)) {
+            const int v = value.toInt(&ok);
+            if (ok)
+                m_loadedSerialCfg.readRetries = v;
+        }
+    }
+
+    if (m_pendingSerialLoads > 0)
+        return;
+
+    m_pendingSerialLoads = 0;
+    m_usersPage->setSerialConfig(m_loadedSerialCfg);
+    if (!m_cfg.useSimulatedGateway)
+        rebuildGateway(m_loadedSerialCfg);
 }
 
 // Rebuilds the gateway with a new serial configuration: stop the old one,
@@ -533,6 +566,7 @@ void Application::rebuildGateway(const SerialConfig &cfg)
 {
     if (m_gw) {
         m_gw->stop();
+        m_gatewayStarted = false;
         m_gw->deleteLater();
         m_gw = nullptr;
     }
@@ -542,40 +576,122 @@ void Application::rebuildGateway(const SerialConfig &cfg)
         m_gw = new QtModbusPlcGateway(toModbusConfig(cfg), this);
     }
     wireGateway(m_gw);
-    m_gw->start();
+    startGatewayIfNeeded();
 }
 
 // --- parameter writes (D122/D220/D204, spec §11.3) ---------------------------
 
+bool Application::validateParameterWrite(quint16 address, quint16 value,
+                                         QString *error) const
+{
+    auto reject = [error](const QString &reason) {
+        if (error)
+            *error = reason;
+        return false;
+    };
+
+    if (m_shell->role() != Role::Admin)
+        return reject(QStringLiteral("仅管理员可修改设备参数"));
+
+    if (address == kD122) {
+        return value >= 100 && value <= 20000
+            ? true
+            : reject(QStringLiteral("D122 皮带速度需在 100-20000 Hz 之间"));
+    }
+
+    if (address != kD204 && address != kD220)
+        return reject(QStringLiteral("不支持的参数地址"));
+
+    if (!m_shell->snapshotFresh())
+        return reject(QStringLiteral("PLC 数据无效或已过期，无法校验参数组合"));
+
+    const DeviceSnapshot &snapshot = m_shell->snapshot();
+    quint16 d204 = snapshot.pulsePerMm();
+    quint16 d220 = snapshot.widthSpeed();
+    if (address == kD204) {
+        if (value < 1 || value > 32767)
+            return reject(QStringLiteral("D204 脉冲当量需在 1-32767 之间"));
+        if (!snapshot.fieldValid(SnapshotField::WidthSpeed))
+            return reject(QStringLiteral("PLC 当前 D220 无效，无法校验参数组合"));
+        d204 = value;
+    } else {
+        if (value < 1 || value > 15)
+            return reject(QStringLiteral("D220 调宽速度需在 1-15 mm/s 之间"));
+        if (!snapshot.fieldValid(SnapshotField::PulsePerMm))
+            return reject(QStringLiteral("PLC 当前 D204 无效，无法校验参数组合"));
+        d220 = value;
+    }
+
+    const qint64 product = qint64(d204) * d220;
+    return product >= 10 && product <= 200000
+        ? true
+        : reject(QStringLiteral("D204×D220 需在 10-200000 之间"));
+}
+
 void Application::handleParameterWrite(quint16 address, quint16 value)
 {
-    // Range validation is done by the page; the write goes through the
-    // gateway at Normal priority (spec §11.3).
+    QString error;
+    if (!validateParameterWrite(address, value, &error)) {
+        m_usersPage->setParameterWriteResult(false, error);
+        return;
+    }
     m_pendingParamAddrs.append(int(address));
     m_gw->writeRegister(address, value, CommandPriority::Normal);
 }
 
 void Application::handleD204Write(quint16 value, const QString &adminPassword)
 {
-    // D204 修改需再次验证管理员密码 (spec §11.3): verify against the current
-    // session user; the result arrives via passwordVerified.
+    if (m_d204Pending) {
+        m_usersPage->setParameterWriteResult(
+            false, QStringLiteral("已有 D204 密码验证正在进行"));
+        return;
+    }
+
+    QString error;
+    if (!validateParameterWrite(kD204, value, &error)) {
+        m_usersPage->setParameterWriteResult(false, error);
+        return;
+    }
+
     m_d204Pending = true;
+    m_d204Cancelled = false;
+    m_d204PendingUserId = m_currentUserId;
     m_d204Value = value;
-    m_db->verifyPassword(m_currentUserId, adminPassword);
+    m_db->verifyPassword(m_d204PendingUserId, adminPassword);
 }
 
 void Application::handlePasswordVerified(bool ok)
 {
     if (!m_d204Pending)
         return;
+
+    const bool cancelled = m_d204Cancelled;
+    const qint64 verifiedUserId = m_d204PendingUserId;
+    const quint16 value = m_d204Value;
     m_d204Pending = false;
-    if (ok) {
-        m_pendingParamAddrs.append(int(kD204));
-        m_gw->writeRegister(kD204, m_d204Value, CommandPriority::Normal);
-    } else {
+    m_d204Cancelled = false;
+    m_d204PendingUserId = -1;
+
+    if (cancelled || m_shell->role() != Role::Admin
+        || m_currentUserId != verifiedUserId) {
+        m_usersPage->setParameterWriteResult(
+            false, QStringLiteral("会话已变化，D204 写入已取消"));
+        return;
+    }
+    if (!ok) {
         m_usersPage->setParameterWriteResult(false,
                                              QStringLiteral("管理员密码验证失败"));
+        return;
     }
+
+    QString error;
+    if (!validateParameterWrite(kD204, value, &error)) {
+        m_usersPage->setParameterWriteResult(false, error);
+        return;
+    }
+
+    m_pendingParamAddrs.append(int(kD204));
+    m_gw->writeRegister(kD204, value, CommandPriority::Normal);
 }
 
 void Application::handleWriteCompleted(quint16 address, bool ok,
@@ -601,10 +717,18 @@ void Application::handleLoginResult(const LoginResult &result)
     }
 }
 
+void Application::handleLogoutRequested()
+{
+    m_currentUserId = -1;
+    if (m_d204Pending)
+        m_d204Cancelled = true;
+    m_lifecycle->onLogoutRequested();
+}
+
 void Application::onLoginLogoutRequested()
 {
     if (m_shell->role() != Role::Anonymous) {
-        m_lifecycle->onLogoutRequested();
+        handleLogoutRequested();
     } else {
         // 未登录: 切到用户与设置页 (index 6) 显示登录面板.
         m_window->setCurrentPage(6);

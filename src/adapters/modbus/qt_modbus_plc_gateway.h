@@ -41,6 +41,10 @@ public:
     explicit QtModbusPlcGateway(const Config &cfg, QObject *parent = nullptr);
     ~QtModbusPlcGateway() override;
 
+    // Read-only inspection used by integration tests to verify that persisted
+    // settings were applied before the real transport starts.
+    Config configuration() const { return m_cfg; }
+
     void start() override;
     void stop() override;
     bool isOnline() const override;

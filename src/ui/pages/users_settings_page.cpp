@@ -698,6 +698,7 @@ void UsersSettingsPage::setSerialConfig(const SerialConfig &config)
 
 void UsersSettingsPage::setSerialSaveResult(bool ok, const QString &detail)
 {
+    m_saveSerial->setEnabled(true);
     // 非乐观状态: 保存结果由 Task 20 回填 (spec §11.2).
     m_serialStatus->setText(ok ? QStringLiteral("串口配置已保存并重连")
                                : QStringLiteral("串口配置保存失败: %1").arg(detail));
@@ -780,6 +781,15 @@ void UsersSettingsPage::onWriteD122()
 void UsersSettingsPage::onWriteD220()
 {
     m_pageModel.setEditedD220(m_d220Spin->value());
+    const DeviceSnapshot &snapshot = m_model.snapshot();
+    if (!m_model.snapshotFresh()
+        || !snapshot.fieldValid(SnapshotField::PulsePerMm)) {
+        m_paramStatus->setText(
+            QStringLiteral("PLC 当前 D204 无效或已过期，无法校验参数组合"));
+        return;
+    }
+    // Validate against the confirmed PLC counterpart, not an editor default.
+    m_pageModel.setEditedD204(snapshot.pulsePerMm());
     if (!m_pageModel.d220Valid() || !m_pageModel.productValid()) {
         m_paramStatus->setText(m_pageModel.paramReasons().join(QStringLiteral("；")));
         return;
@@ -792,6 +802,15 @@ void UsersSettingsPage::onWriteD220()
 void UsersSettingsPage::onWriteD204()
 {
     m_pageModel.setEditedD204(m_d204Spin->value());
+    const DeviceSnapshot &snapshot = m_model.snapshot();
+    if (!m_model.snapshotFresh()
+        || !snapshot.fieldValid(SnapshotField::WidthSpeed)) {
+        m_paramStatus->setText(
+            QStringLiteral("PLC 当前 D220 无效或已过期，无法校验参数组合"));
+        return;
+    }
+    // Validate against the confirmed PLC counterpart, not an editor default.
+    m_pageModel.setEditedD220(snapshot.widthSpeed());
     if (!m_pageModel.d204Valid() || !m_pageModel.productValid()) {
         m_paramStatus->setText(m_pageModel.paramReasons().join(QStringLiteral("；")));
         return;
@@ -902,6 +921,8 @@ void UsersSettingsPage::onChangePasswordClicked()
 
 void UsersSettingsPage::onSaveSerialClicked()
 {
+    if (!m_saveSerial->isEnabled())
+        return;
     SerialConfig cfg;
     cfg.comPort = m_comPort->text().trimmed();
     cfg.station = m_station->value();
@@ -918,6 +939,7 @@ void UsersSettingsPage::onSaveSerialClicked()
     }
     // 修改通讯配置必须断开后重连并写入审计 (spec §8.1): 页面只发请求信号,
     // Task 20 接线 DatabaseService::setSetting + 重连 + 审计.
+    m_saveSerial->setEnabled(false);
     emit saveSerialConfigRequested(cfg);
     // 非乐观状态: 只标记等待确认, 结果由 Task 20 的 feed 接口回填.
     m_serialStatus->setText(QStringLiteral("等待确认保存并重连"));
