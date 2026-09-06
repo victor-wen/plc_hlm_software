@@ -447,9 +447,10 @@ void SimulatedGatewayFlowTest::snapshotIsAtomicAndComplete()
     QVERIFY(!s.m102());
     QVERIFY(!s.m103());
     QVERIFY(!s.m43());
-    // §9: belt speed is not modeled -> out of range -> invalid; the fields
-    // the model does simulate are valid.
-    QVERIFY(!s.fieldValid(SnapshotField::BeltSpeed));
+    // §9: the simulator publishes an in-range default belt speed so the
+    // complete snapshot is usable by the interactive --sim mode.
+    QCOMPARE(s.beltSpeed(), quint16(1000));
+    QVERIFY(s.fieldValid(SnapshotField::BeltSpeed));
     QVERIFY(s.fieldValid(SnapshotField::TargetWidth));
     QVERIFY(s.fieldValid(SnapshotField::CurrentWidth));
     QVERIFY(s.fieldValid(SnapshotField::FaultCode));
