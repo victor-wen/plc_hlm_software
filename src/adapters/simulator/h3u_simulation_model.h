@@ -53,6 +53,13 @@ private:
     void updateM60();
     void updateD210();
     void updateD126();
+    // PLC status words synthesized from the M-coils (single source of truth
+    // shared by the in-process gateway and the standalone RTU server). HMI
+    // access to D100/D103 is read-only (address table, spec §8.2).
+    // D100 bit0-7=M0-M7, bit8=M8|M60, bit9=M9|M61, bit10-14=M10-M14, bit15=0;
+    // D103 bit0-15=M30-M45.
+    quint16 statusWord1() const; // D100
+    quint16 statusWord3() const; // D103
     void tick(quint64 seconds);
 
     SimulationClock &m_clock;
@@ -61,7 +68,9 @@ private:
     // (M0, M1, M2, M60, M61) kept in sync by the handlers.
     bool m_coils[113] = {};
 
-    // Holding registers D100-D223 (index = protocol address).
+    // Holding registers D100-D223 (index = protocol address). D100/D103 are
+    // read-only derived status words computed on read from the coils; writes
+    // to them are ignored (see statusWord1/statusWord3).
     quint16 m_regs[224] = {};
 
     // Continuous safety interlock during width adjustment (spec §10.3.1 M49).

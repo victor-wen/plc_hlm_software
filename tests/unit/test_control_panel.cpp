@@ -295,14 +295,16 @@ void ControlPanelTest::registerDisplayReflectsModel()
     RtuServer server(model, faults);
     ControlPanelModel panel(server, faults, model);
 
-    model.writeRegister(100, 0x1234);
     model.writeRegister(110, 8);
     model.writeRegister(140, 42);
     model.writeCoil(0, true);
     model.writeCoil(14, true);
     model.writeCoil(45, true);
 
-    QCOMPARE(panel.registerValue(100), quint16(0x1234));
+    // D100 is a derived status word: M0 + M1 (default manual) + M14.
+    const quint16 expectedD100 =
+        quint16((1u << 0) | (1u << 1) | (1u << 14));
+    QCOMPARE(panel.registerValue(100), expectedD100);
     QCOMPARE(panel.registerValue(110), quint16(8));
     QCOMPARE(panel.registerValue(140), quint16(42));
     QVERIFY(panel.coilValue(0));
@@ -313,7 +315,7 @@ void ControlPanelTest::registerDisplayReflectsModel()
     ControlPanel widget(model);
     widget.refresh();
     QCOMPARE(widget.registerLabel(QStringLiteral("D100"))->text(),
-             QStringLiteral("4660"));
+             QString::number(expectedD100));
     QCOMPARE(widget.registerLabel(QStringLiteral("D110"))->text(),
              QStringLiteral("8"));
     QCOMPARE(widget.registerLabel(QStringLiteral("D140"))->text(),

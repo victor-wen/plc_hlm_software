@@ -196,28 +196,13 @@ void SimulatedPlcGateway::setHeartbeatFrozen(bool frozen)
 
 void SimulatedPlcGateway::publishSnapshot()
 {
-    // Fast block D100-D140 (spec §8.3): reuse the centralized decoder.
+    // Fast block D100-D140 (spec §8.3): reuse the centralized decoder. The
+    // model maintains the D100/D103 status words itself (single source of
+    // truth, spec §8.2), so the fast-block registers already carry the
+    // M0-M14 / M30-M45 mapping — no synthesis here (or the two paths diverge).
     quint16 raw[kFastCount] = {};
     for (int i = 0; i < kFastCount; ++i)
         raw[i] = m_model.readRegister(kFastStart + i);
-
-    // The model stores coils directly; the real PLC ladder maps M0-M14 into
-    // D100 and M30-M45 into D103 (spec §8.2). Synthesize the status words so
-    // the snapshot exposes the same boolean states as the real gateway.
-    for (int bit = 0; bit <= 14; ++bit) {
-        if (m_model.readCoil(bit))
-            raw[0] |= quint16(1) << bit; // D100
-    }
-    // M60/M61 (auto-ready / homed) are exposed via their D100-mapped bits
-    // M8/M9 (spec §8.2, address table).
-    if (m_model.readCoil(60))
-        raw[0] |= quint16(1) << 8; // M8 = M60
-    if (m_model.readCoil(61))
-        raw[0] |= quint16(1) << 9; // M9 = M61
-    for (int bit = 0; bit <= 15; ++bit) {
-        if (m_model.readCoil(30 + bit))
-            raw[3] |= quint16(1) << bit; // D103
-    }
 
     const QDateTime now = QDateTime::currentDateTime();
     DeviceSnapshotData d = decodeFastBlock(raw, ++m_sequence, true, 0, now, now,

@@ -135,6 +135,9 @@ private slots:
     // --- handler: function codes and register mapping ------------------------
     void readCoilsMapsToModelCoils();
     void readHoldingRegistersMapsToModelRegisters();
+    void statusWordsReflectCoils();
+    void statusWordTracksHomeReturnTick();
+    void resetModeSwitchReflectedInD100();
     void writeSingleCoilWritesModel();
     void writeSingleRegisterWritesModel();
     void writeSingleCoilRejectsInvalidValue();
@@ -189,10 +192,12 @@ void RtuSimulatorTest::readHoldingRegistersMapsToModelRegisters()
     FaultInjector faults;
     RtuRequestHandler handler(model, faults);
 
-    model.writeRegister(100, 0x1234);
-    model.writeRegister(101, 0x5678);
+    // D128/D129 are ordinary holding registers (D100/D103 are derived status
+    // words, covered by statusWordsReflectCoils()).
+    model.writeRegister(128, 0x1234);
+    model.writeRegister(129, 0x5678);
 
-    const QModbusResponse resp = handler.handleRequest(readHoldingRegistersReq(100, 2));
+    const QModbusResponse resp = handler.handleRequest(readHoldingRegistersReq(128, 2));
     QVERIFY(resp.isValid());
     QCOMPARE(resp.functionCode(), QModbusRequest::ReadHoldingRegisters);
     // PDU: byteCount(1) + 4 bytes big-endian.
@@ -203,6 +208,101 @@ void RtuSimulatorTest::readHoldingRegistersMapsToModelRegisters()
     QCOMPARE(quint8(data[2]), quint8(0x34));
     QCOMPARE(quint8(data[3]), quint8(0x56));
     QCOMPARE(quint8(data[4]), quint8(0x78));
+}
+
+void RtuSimulatorTest::statusWordsReflectCoils()
+{
+    // Regression (external simulator has no ladder): D100/D103 must be
+    // synthesized from the M-coils so a real FC03 read (the HMI fast poll)
+    // sees the same state as the in-process gateway.
+    SimulationClock clock;
+    H3uSimulationModel model(clock);
+    FaultInjector faults;
+    RtuRequestHandler handler(model, faults);
+
+    // Default: manual mode M1 -> D100 bit1.
+    QCOMPARE(model.readRegister(100), quint16(1 << 1));
+
+    // D100: bit0-7 = M0-M7, bit8 = M60, bit9 = M61, bit10-14 = M10-M14.
+    model.writeCoil(0, true);  // M0
+    model.writeCoil(3, true);  // M3
+    model.writeCoil(14, true); // M14
+    model.writeCoil(60, true); // M60 -> bit8
+    model.writeCoil(61, true); // M61 -> bit9
+    const quint16 expectedD100 =
+        quint16((1 << 0) | (1 << 1) | (1 << 3) | (1 << 8) | (1 << 9) | (1 << 14));
+    QCOMPARE(model.readRegister(100), expectedD100);
+
+    // D103: bit0-15 = M30-M45.
+    model.writeCoil(30, true);
+    model.writeCoil(34, true);
+    model.writeCoil(42, true);
+    model.writeCoil(45, true);
+    const quint16 expectedD103 =
+        quint16((1 << 0) | (1 << 4) | (1 << 12) | (1 << 15));
+    QCOMPARE(model.readRegister(103), expectedD103);
+
+    // FC03 over the real handler returns the synthesized words.
+    const QModbusResponse d100Resp =
+        handler.handleRequest(readHoldingRegistersReq(100, 1));
+    QVERIFY(d100Resp.isValid());
+    QByteArray data = d100Resp.data();
+    QCOMPARE(data.size(), 3);
+    QCOMPARE(quint16((quint8(data[1]) << 8) | quint8(data[2])), expectedD100);
+
+    const QModbusResponse d103Resp =
+        handler.handleRequest(readHoldingRegistersReq(103, 1));
+    QVERIFY(d103Resp.isValid());
+    data = d103Resp.data();
+    QCOMPARE(data.size(), 3);
+    QCOMPARE(quint16((quint8(data[1]) << 8) | quint8(data[2])), expectedD103);
+}
+
+void RtuSimulatorTest::statusWordTracksHomeReturnTick()
+{
+    // The status words must track state changes made by tick(), not only
+    // writeCoil(): home return completion flips M61 (and M60) from tick().
+    SimulationClock clock;
+    H3uSimulationModel model(clock);
+    FaultInjector faults;
+    RtuRequestHandler handler(model, faults);
+
+    // M103 reset: homing (M50=1, M61=0) -> D100 bit9 clears.
+    model.writeCoil(103, true);
+    QVERIFY(model.readCoil(50));
+    QVERIFY(!model.readCoil(61));
+    QCOMPARE(model.readRegister(100) & quint16(1 << 9), quint16(0));
+
+    // Home return completes after 2 s: M61=1 and M60=1 (D130 in range).
+    handler.tick();
+    handler.tick();
+    QVERIFY(!model.readCoil(50));
+    QVERIFY(model.readCoil(61));
+    QVERIFY(model.readRegister(100) & quint16(1 << 9)); // M61
+    QVERIFY(model.readRegister(100) & quint16(1 << 8)); // M60
+}
+
+void RtuSimulatorTest::resetModeSwitchReflectedInD100()
+{
+    // spec §10.2 step 1: when not manual, reset writes M104=0 and waits for
+    // M1=1. The external simulator previously never set D100, so M1 stayed 0
+    // and reset timed out. It must now appear in D100 immediately.
+    SimulationClock clock;
+    H3uSimulationModel model(clock);
+    FaultInjector faults;
+    RtuRequestHandler handler(model, faults);
+
+    model.writeCoil(104, true); // auto mode: M2=1, M1=0
+    QVERIFY(model.readCoil(2));
+    QVERIFY(!model.readCoil(1));
+    QCOMPARE(model.readRegister(100) & quint16(1 << 1), quint16(0));
+
+    // HMI reset step 1: write M104=0 (manual).
+    const QModbusResponse resp =
+        handler.handleRequest(writeSingleCoilReq(104, false));
+    QVERIFY(resp.isValid());
+    QVERIFY(model.readCoil(1));
+    QVERIFY(model.readRegister(100) & quint16(1 << 1)); // M1 visible in D100
 }
 
 void RtuSimulatorTest::writeSingleCoilWritesModel()
@@ -235,14 +335,14 @@ void RtuSimulatorTest::writeSingleRegisterWritesModel()
     FaultInjector faults;
     RtuRequestHandler handler(model, faults);
 
-    const QModbusResponse resp = handler.handleRequest(writeSingleRegisterReq(100, 0xABCD));
+    const QModbusResponse resp = handler.handleRequest(writeSingleRegisterReq(128, 0xABCD));
     QVERIFY(resp.isValid());
-    QCOMPARE(model.readRegister(100), quint16(0xABCD));
+    QCOMPARE(model.readRegister(128), quint16(0xABCD));
     // Echo response: address + value.
     const QByteArray data = resp.data();
     QCOMPARE(data.size(), 4);
     QCOMPARE(quint8(data[0]), quint8(0));
-    QCOMPARE(quint8(data[1]), quint8(100));
+    QCOMPARE(quint8(data[1]), quint8(128));
     QCOMPARE(quint8(data[2]), quint8(0xAB));
     QCOMPARE(quint8(data[3]), quint8(0xCD));
 }
@@ -335,10 +435,11 @@ void RtuSimulatorTest::illegalValueInjectionRejectsWrites()
     faults.setScenario(FaultInjector::Scenario::IllegalValue);
 
     // Writes are answered with IllegalDataValue and do not touch the model.
-    const QModbusResponse write = handler.handleRequest(writeSingleRegisterReq(100, 5));
+    // Use an ordinary writable register: D100 is a derived status word.
+    const QModbusResponse write = handler.handleRequest(writeSingleRegisterReq(128, 5));
     QVERIFY(write.isException());
     QCOMPARE(write.exceptionCode(), QModbusExceptionResponse::IllegalDataValue);
-    QCOMPARE(model.readRegister(100), quint16(0));
+    QCOMPARE(model.readRegister(128), quint16(200)); // unchanged default D128
 
     const QModbusResponse coil = handler.handleRequest(writeSingleCoilReq(50, true));
     QVERIFY(coil.isException());

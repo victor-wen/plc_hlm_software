@@ -63,6 +63,7 @@ private slots:
     void m103ClearsWidthResults();
     void d126IsSpeedTimesPulsePerMm();
     void d210SignedDelta();
+    void readOnlyStatusWordsIgnoreRegisterWrites();
 };
 
 void H3uSimulationModelTest::m43SuccessOnlyM44()
@@ -496,6 +497,32 @@ void H3uSimulationModelTest::d210SignedDelta()
     homeReady(m);
     m.writeRegister(128, 150); // D130 = 200 -> delta = -50
     QCOMPARE(qint16(m.readRegister(210)), qint16(-50));
+}
+
+void H3uSimulationModelTest::readOnlyStatusWordsIgnoreRegisterWrites()
+{
+    // D100/D103 are read-only derived status words synthesized from the coils
+    // (spec §8.2, address table Read): a raw register write must be ignored so
+    // they never desynchronize from the M-bit state.
+    SimulationClock clock;
+    H3uSimulationModel m(clock);
+
+    const quint16 before100 = m.readRegister(100);
+    const quint16 before103 = m.readRegister(103);
+    // Default: manual mode M1 -> D100 bit1; D103 all clear.
+    QCOMPARE(before100, quint16(1 << 1));
+    QCOMPARE(before103, quint16(0));
+
+    m.writeRegister(100, 0xBEEF);
+    m.writeRegister(103, 0xDEAD);
+    QCOMPARE(m.readRegister(100), before100); // write ignored
+    QCOMPARE(m.readRegister(103), before103); // write ignored
+
+    // They still track the coils after the rejected writes.
+    m.writeCoil(0, true);
+    QVERIFY(m.readRegister(100) & quint16(1 << 0));
+    m.writeCoil(30, true);
+    QVERIFY(m.readRegister(103) & quint16(1 << 0));
 }
 
 QTEST_GUILESS_MAIN(H3uSimulationModelTest)

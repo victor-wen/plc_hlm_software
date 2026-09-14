@@ -33,6 +33,8 @@ constexpr quint16 kM110 = 110; // light curtain bypass
 constexpr quint16 kM111 = 111; // door bypass
 constexpr quint16 kM112 = 112; // HMI watchdog
 
+constexpr quint16 kD100 = 100; // status word 1: M0-M14 map, bit15 reserved
+constexpr quint16 kD103 = 103; // status word 3: M30-M45 map
 constexpr quint16 kD110 = 110; // fault code
 constexpr quint16 kD122 = 122; // belt speed
 constexpr quint16 kD126 = 126; // width frequency low word
@@ -122,6 +124,11 @@ void H3uSimulationModel::writeRegister(quint16 addr, quint16 value)
 {
     if (addr > 223)
         return;
+    // D100/D103 are read-only PLC status words synthesized from the coils
+    // (spec §8.2, address table Read): a raw register write must not
+    // desynchronize them from the M-bit state.
+    if (addr == kD100 || addr == kD103)
+        return;
     m_regs[addr] = value;
     if (addr == kD128 || addr == kD130)
         updateD210();
@@ -131,7 +138,45 @@ void H3uSimulationModel::writeRegister(quint16 addr, quint16 value)
 
 quint16 H3uSimulationModel::readRegister(quint16 addr) const
 {
+    // D100/D103 are derived, so they are always consistent with the current
+    // coil state (no update-timing window for the external RTU server).
+    if (addr == kD100)
+        return statusWord1();
+    if (addr == kD103)
+        return statusWord3();
     return addr <= 223 ? m_regs[addr] : 0;
+}
+
+quint16 H3uSimulationModel::statusWord1() const
+{
+    // spec §8.2: D100 bit0-14 expose M0-M14; M60/M61 are mapped onto the
+    // M8/M9 positions (bit8/bit9). Bit15 is reserved and always 0.
+    //
+    // bit8 = M8 | M60 and bit9 = M9 | M61. Coils 8/9 are never used by this
+    // model, so in practice bit8/bit9 == M60/M61; the union is deliberately
+    // kept for byte-for-byte parity with the behavior the in-process gateway
+    // synthesized before it was unified here. Do NOT change it to M60/M61 only.
+    quint16 word = 0;
+    for (int bit = 0; bit <= 14; ++bit) {
+        if (m_coils[bit])
+            word |= quint16(1) << bit;
+    }
+    if (m_coils[kM60])
+        word |= quint16(1) << 8; // M8 = M60 (auto ready)
+    if (m_coils[kM61])
+        word |= quint16(1) << 9; // M9 = M61 (homed)
+    return word;
+}
+
+quint16 H3uSimulationModel::statusWord3() const
+{
+    // spec §8.2: D103 bit0-15 expose M30-M45.
+    quint16 word = 0;
+    for (int bit = 0; bit <= 15; ++bit) {
+        if (m_coils[30 + bit])
+            word |= quint16(1) << bit;
+    }
+    return word;
 }
 
 quint32 H3uSimulationModel::readRegister32(quint16 lowAddr) const
