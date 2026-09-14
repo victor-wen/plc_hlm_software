@@ -104,9 +104,11 @@ void PulseStateMachine::onReadback(quint16 address, bool value)
     // Bit is 0. For an uncertain set this means the set never took effect:
     // the pulse was not delivered. For an uncertain clear it means the pulse
     // is complete (spec §8.5 step 5: 收到清零应答或回读为 0 后完成脉冲).
+    // Copy before erase: erasing the entry invalidates `p`.
+    const bool uncertain = p.uncertain;
     m_pulses.erase(it);
     if (m_cb.finished)
-        m_cb.finished(address, !p.uncertain);
+        m_cb.finished(address, !uncertain);
 }
 
 void PulseStateMachine::reset()
