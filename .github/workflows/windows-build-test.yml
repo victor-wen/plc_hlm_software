@@ -22,6 +22,14 @@
 #    runner indefinitely.
 # These are intentionally CI-only changes requested by the repository owner and
 # should be preserved when rebasing/merging agent work.
+#
+# USER-REQUESTED CI OPTIMIZATION (2026-09-14):
+# 4) The package job must not recompile the project. The Release matrix job
+#    already built and tested hlm_app.exe/plc_simulator.exe, so it uploads them
+#    as a small artifact and the package job reuses them. The package job only
+#    restores the vcpkg dependency tree (configure without building) for
+#    windeployqt and the runtime DLL set. This removes a third full Release
+#    compile (including all test executables) from every run.
 
 name: windows-build-test
 
@@ -107,6 +115,20 @@ jobs:
 
       - name: Build
         run: cmake --build build --config ${{ matrix.config }}
+
+      # USER-REQUESTED CI OPTIMIZATION (2026-09-14): the package job reuses
+      # these two Release executables instead of rebuilding every target
+      # (tests included) a third time.
+      - name: Upload Release executables for packaging
+        if: matrix.config == 'Release'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: plc-hmi-Release-exe
+          path: |
+            build/hlm_app.exe
+            build/plc_simulator.exe
+          if-no-files-found: error
+          retention-days: 1
 
       # USER-REQUESTED CI OPTIMIZATION: keep independent test executables
       # parallel for fast feedback. The timeout is also a safety guard: a hung
@@ -198,32 +220,40 @@ jobs:
         shell: pwsh
         run: New-Item -ItemType Directory -Force -Path "${{ runner.workspace }}\vcpkg-binary-cache" | Out-Null
 
-      - name: Configure (HLM_ENABLE_VISION=ON, Release)
+      # USER-REQUESTED CI OPTIMIZATION (2026-09-14): configure only. This
+      # restores the manifest dependencies into deps-build/vcpkg_installed
+      # (binary-cached) for windeployqt and the runtime DLL set without
+      # compiling any project target.
+      - name: Restore dependency tree from binary cache
         env:
           VCPKG_BINARY_SOURCES: 'clear;files,${{ runner.workspace }}\vcpkg-binary-cache,readwrite'
         run: |
-          cmake -S . -B build -G Ninja `
+          cmake -S . -B deps-build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
             -DHLM_ENABLE_VISION=ON
 
-      - name: Build (Release)
-        run: cmake --build build --config Release
+      - name: Download Release executables from the build matrix
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: plc-hmi-Release-exe
+          path: previous-build
 
       - name: Package (windeployqt + OpenSSL/OpenCV DLLs + LICENSES)
         run: |
-          # CMake manifest mode installs this project's dependencies under the
-          # build tree. Prefer that deterministic prefix over any incidental
-          # packages which may exist under the bootstrapped vcpkg checkout.
-          $vcpkgInstalled = "build/vcpkg_installed/x64-windows"
+          # CMake manifest mode installed this project's dependencies under the
+          # dependency build tree. Prefer that deterministic prefix over any
+          # incidental packages which may exist under the bootstrapped vcpkg
+          # checkout.
+          $vcpkgInstalled = "deps-build/vcpkg_installed/x64-windows"
           if (-not (Test-Path $vcpkgInstalled)) {
             $vcpkgInstalled = "$env:VCPKG_ROOT/installed/x64-windows"
           }
           if (-not (Test-Path $vcpkgInstalled)) {
-            throw "vcpkg installed tree not found (tried VCPKG_ROOT and build/vcpkg_installed)"
+            throw "vcpkg installed tree not found (tried VCPKG_ROOT and deps-build/vcpkg_installed)"
           }
           pwsh -NoProfile -File scripts/package.ps1 `
-            -BuildDir build `
+            -BuildDir previous-build `
             -OutDir dist `
             -Config Release `
             -VcpkgInstalledDir $vcpkgInstalled `
