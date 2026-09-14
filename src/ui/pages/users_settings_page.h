@@ -129,7 +129,10 @@ private:
     QWidget *buildUserSection();
     QWidget *buildSerialSection();
     QWidget *buildParameterSection();
-    ValueDisplay *addParamDisplay(const QString &key, const QString &title);
+    // Adds a titled parameter value block to the caller's layout; returns the
+    // wrapper widget, while the inner ValueDisplay stays available through
+    // paramDisplay(key).
+    QWidget *addParamDisplay(const QString &key, const QString &title);
     void onLoginClicked();
     void onCreateAdminClicked();
     void onLogoutClicked();

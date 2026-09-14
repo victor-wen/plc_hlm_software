@@ -59,41 +59,66 @@ bool ShellModel::snapshotFresh() const
         && s.slowQuality() == DataQuality::Valid;
 }
 
+bool ShellModel::modeKnown() const
+{
+    // The mode/run/homed state bits (M1/M2/M3/M9) come from the fast status
+    // block (D100, spec §8.2). Only that block's transport/age quality gates
+    // whether they are known: an unrelated out-of-range field (e.g. D130=0)
+    // must not blank the whole top bar (spec §9, §11.2).
+    //
+    // Note: the current adapters feed decodeFastBlock() a hard-coded
+    // DataQuality::Valid (qt_modbus_plc_gateway.cpp:774-775,
+    // simulated_plc_gateway.cpp:223-224), so in practice this gate degenerates
+    // to connected(). It is kept so a future adapter that reports stale/errored
+    // polls (age/transport result) downgrades the gate without UI changes.
+    const DeviceSnapshot &s = snapshot();
+    return s.connected() && s.fastQuality() == DataQuality::Valid;
+}
+
 bool ShellModel::isAutoMode() const
 {
-    if (!snapshotFresh())
+    if (!modeKnown())
         return false;
     return snapshot().m2();
 }
 
 bool ShellModel::isRunning() const
 {
-    if (!snapshotFresh())
+    if (!modeKnown())
         return false;
     return snapshot().m3();
 }
 
 bool ShellModel::isHomed() const
 {
-    if (!snapshotFresh())
+    if (!modeKnown())
         return false;
     return snapshot().m9(); // M61 via D100 bit9 (spec §8.2)
 }
 
 bool ShellModel::isFaulted() const
 {
-    if (!snapshotFresh())
+    if (!modeKnown())
         return false;
+    // M14 (D100 bit14) and D110 fault code both live in the fast block.
     const DeviceSnapshot &s = snapshot();
     return s.m14() || s.faultCode() != 0;
 }
 
 bool ShellModel::isEstop() const
 {
-    if (!snapshotFresh())
-        return false;
+    // M0 is in the fast block, M100 in the command readback block. Require
+    // each source's own block quality so an untrusted block never fabricates
+    // an estop state (spec §8.2, §11.2). As with modeKnown(), the current
+    // adapters feed the command/fast blocks Valid, so this currently reduces
+    // to reading the raw bits; the gate is future-proofing for adapters that
+    // report age/transport quality.
     const DeviceSnapshot &s = snapshot();
-    return s.m0() || s.m100();
+    const bool fastKnown =
+        s.connected() && s.fastQuality() == DataQuality::Valid;
+    const bool commandKnown =
+        s.connected() && s.commandQuality() == DataQuality::Valid;
+    return (fastKnown && s.m0()) || (commandKnown && s.m100());
 }
 
 QString ShellModel::userName() const
@@ -104,6 +129,8 @@ QString ShellModel::userName() const
 QString ShellModel::activeAlarmText() const
 {
     // Priority (spec §11.1): estop > latched fault > fault > offline notice.
+    // Deliberately reads the raw snapshot without block-quality gating:
+    // fail-safe, a possibly-stale estop/fault is reported rather than hidden.
     if (m_snapshot.has_value()) {
         const DeviceSnapshot &s = *m_snapshot;
         if (s.m0() || s.m100())

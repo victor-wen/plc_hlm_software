@@ -242,6 +242,18 @@ QPushButton#stopButton[active="false"] {
     border-color: #d6ae48;
 }
 
+/* Disabled action-bar buttons: #actionBar ID rules and the per-button
+   [active=...] rules above out-specify QPushButton:disabled, so without this
+   rule a disabled action button renders identical to an enabled one. The
+   scoped selector (id + :disabled + two type selectors) out-specifies them and
+   restores the shared disabled look. estopButton keeps its own inline style. */
+QWidget#actionBar QPushButton:disabled {
+    color: #8998a7;
+    background-color: #e4eaf0;
+    border-color: #cdd6df;
+    border-bottom-color: #cdd6df;
+}
+
 /* --- cards and process schematic ----------------------------------------- */
 QFrame#overviewSchematic,
 QFrame#recipeWidthPanel,
@@ -411,6 +423,24 @@ QPushButton#recipeDeleteButton {
     color: #a52228;
     background-color: #fff5f5;
     border-color: #dea4a7;
+}
+
+/* ID-styled buttons also out-specify QPushButton:disabled. These are disabled
+   while an operation is in flight (creating/deleting/saving), so they must
+   still grey out. The scoped :disabled selectors beat the ID rules above and
+   leave the enabled appearance untouched. */
+QPushButton#loginOk:disabled,
+QPushButton#usersLoginButton:disabled,
+QPushButton#createAdminButton:disabled,
+QPushButton#addUserButton:disabled,
+QPushButton#saveSerialButton:disabled,
+QPushButton#applyWidthButton:disabled,
+QPushButton#recipeSaveButton:disabled,
+QPushButton#deleteUserButton:disabled,
+QPushButton#recipeDeleteButton:disabled {
+    color: #8998a7;
+    background-color: #e4eaf0;
+    border-color: #cdd6df;
 }
 
 QLineEdit,

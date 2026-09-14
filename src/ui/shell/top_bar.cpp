@@ -133,11 +133,15 @@ void TopBar::refresh()
     else
         m_lights[3]->setState(StatusState::Unknown, QStringLiteral("未回原点"));
 
-    // 4: ready (M60 via D100 bit8)
-    const bool ready = m_model.snapshotFresh() && m_model.snapshot().m8();
-    m_lights[4]->setState(ready ? StatusState::On : StatusState::Unknown,
-                          ready ? QStringLiteral("准备完成")
-                                : QStringLiteral("未准备"));
+    // 4: ready (M60 via D100 bit8). M8 lives in the fast block. When the state
+    // is unknown show "准备 —" rather than "未准备", which would claim a
+    // confirmed not-ready state (spec §9, §11.2).
+    if (!m_model.modeKnown())
+        m_lights[4]->setState(StatusState::Unknown, QStringLiteral("准备 —"));
+    else if (m_model.snapshot().m8())
+        m_lights[4]->setState(StatusState::On, QStringLiteral("准备完成"));
+    else
+        m_lights[4]->setState(StatusState::Unknown, QStringLiteral("未准备"));
 
     // 5: fault/estop
     if (m_model.isEstop())

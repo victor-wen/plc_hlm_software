@@ -23,6 +23,8 @@
 #include <QComboBox>
 #include <QListWidget>
 #include <QPushButton>
+#include <QImage>
+#include <QColor>
 
 #include "domain/device_snapshot.h"
 #include "ui/shell/shell_model.h"
@@ -76,6 +78,44 @@ UserRecord user(qint64 id, const QString &name, Role role)
     u.role = role;
     u.enabled = true;
     return u;
+}
+
+// Number of differing pixels between two same-size images; -1 on size mismatch.
+int pixelDiffCount(const QImage &a, const QImage &b)
+{
+    if (a.size() != b.size())
+        return -1;
+    int diff = 0;
+    for (int y = 0; y < a.height(); ++y)
+        for (int x = 0; x < a.width(); ++x)
+            if (a.pixel(x, y) != b.pixel(x, y))
+                ++diff;
+    return diff;
+}
+
+// Most frequent colour (button background; robust to anti-aliased text).
+QColor dominantColor(const QImage &img)
+{
+    QHash<QRgb, int> hist;
+    for (int y = 0; y < img.height(); ++y)
+        for (int x = 0; x < img.width(); ++x)
+            ++hist[img.pixel(x, y)];
+    QRgb best = 0;
+    int bestN = -1;
+    for (auto it = hist.constBegin(); it != hist.constEnd(); ++it) {
+        if (it.value() > bestN) {
+            bestN = it.value();
+            best = it.key();
+        }
+    }
+    return QColor(best);
+}
+
+bool nearColor(const QColor &c, const QColor &ref, int tolerance = 12)
+{
+    return qAbs(c.red() - ref.red()) <= tolerance
+        && qAbs(c.green() - ref.green()) <= tolerance
+        && qAbs(c.blue() - ref.blue()) <= tolerance;
 }
 
 } // namespace
@@ -142,6 +182,8 @@ private slots:
     // --- page: rendering -------------------------------------------------------
     void pageShowsSnapshotParameterValues();
     void editorControlsMeetTouchTargetSize();
+    void paramTitleLivesInParameterPanel();
+    void disabledIdButtonsLookDisabled();
 
     // --- MainWindow integration ------------------------------------------------
     void mainWindowUsesUsersSettingsPage();
@@ -835,6 +877,81 @@ void UsersSettingsPageTest::editorControlsMeetTouchTargetSize()
     QVERIFY(page.d220Spin()->minimumHeight() >= 48);
     QVERIFY(page.writeD204Button()->minimumHeight() >= 48);
     QVERIFY(page.logoutButton()->minimumHeight() >= 48);
+}
+
+void UsersSettingsPageTest::paramTitleLivesInParameterPanel()
+{
+    // Regression (R3): addParamDisplay created a wrapper (title + ValueDisplay)
+    // but returned only the inner ValueDisplay, so the wrapper was never added
+    // to any layout and floated at (0,0) as a direct child of the page — still
+    // rendered while the anonymous user only sees the locked panel.
+    ShellModel model; // anonymous
+    UsersSettingsPage page(model);
+    page.resize(1280, 800);
+    page.show();
+    QApplication::processEvents();
+
+    QLabel *d220Title = nullptr;
+    for (QLabel *label : page.findChildren<QLabel *>()) {
+        if (label->text().contains(QStringLiteral("调宽速度"))) {
+            d220Title = label;
+            break;
+        }
+    }
+    QVERIFY2(d220Title != nullptr, "D220 parameter title must exist");
+
+    // The title must be owned by the parameter panel subtree, not left
+    // floating directly under the page.
+    bool inParameterPanel = false;
+    for (QWidget *w = d220Title; w != nullptr; w = w->parentWidget()) {
+        if (w->objectName() == QStringLiteral("parameterPanel")) {
+            inParameterPanel = true;
+            break;
+        }
+    }
+    QVERIFY2(inParameterPanel, "D220 title must be inside #parameterPanel");
+
+    // Anonymous: the admin/parameter panel is hidden, so it must not render.
+    QVERIFY(!d220Title->isVisibleTo(&page));
+}
+
+void UsersSettingsPageTest::disabledIdButtonsLookDisabled()
+{
+    // Regression: ID-styled buttons outside #actionBar (here
+    // #saveSerialButton) also out-specify QPushButton:disabled. When disabled
+    // while saving they must still render the shared disabled look, not keep
+    // the enabled blue.
+    ShellModel model;
+    UsersSettingsPage page(model);
+    model.setUser(QStringLiteral("admin"), Role::Admin);
+    model.updateSnapshot(DeviceSnapshot(validSnapshotData()));
+
+    MainWindow themed; // loads :/theme.qss
+    page.setStyleSheet(themed.styleSheet());
+
+    page.resize(1280, 800);
+    page.show();
+    QApplication::processEvents();
+
+    QPushButton *save = page.saveSerialButton();
+    QVERIFY(save != nullptr);
+
+    save->setEnabled(true);
+    QApplication::processEvents();
+    const QImage enabled =
+        save->grab().toImage().convertToFormat(QImage::Format_RGB32);
+    save->setEnabled(false);
+    QApplication::processEvents();
+    const QImage disabled =
+        save->grab().toImage().convertToFormat(QImage::Format_RGB32);
+
+    QCOMPARE(enabled.size(), disabled.size());
+    QVERIFY2(pixelDiffCount(enabled, disabled) > 0,
+             "disabled #saveSerialButton must differ from enabled");
+    const QColor bg = dominantColor(disabled);
+    QVERIFY2(nearColor(bg, QColor(0xe4, 0xea, 0xf0)),
+             qPrintable(QStringLiteral("disabled bg=%1 expected ~#e4eaf0")
+                            .arg(bg.name())));
 }
 
 // --- MainWindow integration ------------------------------------------------------------------------

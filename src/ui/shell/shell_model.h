@@ -47,12 +47,12 @@ public:
     // 字段禁用依赖动作).
     bool actionsAvailable() const { return m_online && snapshotFresh(); }
 
-    bool modeKnown() const { return snapshotFresh(); }
+    bool modeKnown() const;    // fast block (M1/M2/M3/M9) confirmed
     bool isAutoMode() const;   // M2=1 (M1=0)
     bool isRunning() const;    // M3=1
     bool isHomed() const;      // M9 (M61 readback, spec §8.2)
     bool isFaulted() const;    // M14 or fault code != 0
-    bool isEstop() const;      // M0 or M100
+    bool isEstop() const;      // M0 (fast) or M100 (command readback)
 
     QString userName() const;
     Role role() const { return m_role; }

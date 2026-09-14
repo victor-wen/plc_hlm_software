@@ -535,8 +535,8 @@ QWidget *UsersSettingsPage::buildParameterSection()
     return box;
 }
 
-ValueDisplay *UsersSettingsPage::addParamDisplay(const QString &key,
-                                                 const QString &title)
+QWidget *UsersSettingsPage::addParamDisplay(const QString &key,
+                                            const QString &title)
 {
     auto *wrap = new QWidget(this);
     auto *layout = new QVBoxLayout(wrap);
@@ -547,7 +547,10 @@ ValueDisplay *UsersSettingsPage::addParamDisplay(const QString &key,
     display->setMinimumHeight(48);
     layout->addWidget(display);
     m_paramDisplays.insert(key, display);
-    return display;
+    // Return the wrapper so the caller lays out the title with the value; the
+    // inner display is still exposed via paramDisplay(key). Returning only the
+    // display left the wrapper floating at (0,0) as a page child (R3).
+    return wrap;
 }
 
 ValueDisplay *UsersSettingsPage::paramDisplay(const QString &key) const

@@ -33,6 +33,29 @@ void setActiveState(QWidget *widget, bool active)
     widget->style()->polish(widget);
     widget->update();
 }
+
+// Mode switch, start and reset read only the M0/M1/M2/M3/M8/M14 bits, which
+// live in the fast status block (D100-D140, spec §8.2). Gating them on
+// ShellModel::snapshotFresh() also required every other block to be Valid, so
+// any unrelated out-of-range decoded field (e.g. an un-homed D130 of 0)
+// disabled the whole bar (spec §9, §11.2). ShellModel::modeKnown() scopes the
+// same connected + fastQuality()==Valid gate to the fast block; reuse it
+// instead of duplicating the predicate. Note: the current adapters hard-code
+// the fast block to Valid, so this currently reduces to connected().
+//
+// gatedCheck runs an interlock once the data it depends on is usable. Offline
+// keeps the interlock's own communications reason; online-but-unusable reports
+// the real data reason instead of the former catch-all "通讯中断或数据过期".
+InterlockResult gatedCheck(bool dataUsable, const QString &dataReason,
+                           const DeviceSnapshot &s, bool online,
+                           InterlockResult (*check)(const DeviceSnapshot &, bool))
+{
+    if (!online)
+        return check(s, online);
+    if (!dataUsable)
+        return InterlockResult{false, {dataReason}};
+    return check(s, online);
+}
 } // namespace
 
 ActionBar::ActionBar(ShellModel &model, QWidget *parent)
@@ -133,49 +156,53 @@ void ActionBar::refresh()
     setActiveState(m_start, m_model.modeKnown() && m_model.isRunning());
     setActiveState(m_stop, m_model.modeKnown() && !m_model.isRunning());
 
-    // Mode switch: admin only (spec §11.4).
+    // Mode switch: admin only (spec §11.4). The interlock needs only the link
+    // and M3, which lives in the fast block.
     {
         const PermissionResult p = PermissionPolicy::check(role, Command::ModeSwitch);
-        const InterlockResult i = m_model.snapshotFresh()
-            ? InterlockRules::checkModeSwitch(s, online)
-            : InterlockResult{false, {QStringLiteral("通讯中断或数据过期")}};
+        const InterlockResult i = gatedCheck(
+            m_model.modeKnown(),
+            QStringLiteral("快速状态数据无效, 无法确认运行状态 (M3)"),
+            s, online, &InterlockRules::checkModeSwitch);
         m_manual->setEnabledWithReason(p.allowed && i.allowed, combinedReason(p, i));
         m_auto->setEnabledWithReason(p.allowed && i.allowed, combinedReason(p, i));
     }
 
-    // Start: operator/admin + interlocks (spec §10.4).
+    // Start: operator/admin + interlocks over the fast-block state bits
+    // (spec §10.4).
     {
         const PermissionResult p = PermissionPolicy::check(role, Command::Start);
-        const InterlockResult i = m_model.snapshotFresh()
-            ? InterlockRules::checkStart(s, online)
-            : InterlockResult{false, {QStringLiteral("通讯中断或数据过期")}};
+        const InterlockResult i = gatedCheck(
+            m_model.modeKnown(),
+            QStringLiteral("快速状态数据无效, 无法确认启动条件"),
+            s, online, &InterlockRules::checkStart);
         m_start->setEnabledWithReason(p.allowed && i.allowed, combinedReason(p, i));
     }
 
-    // Stop: any user, online only (spec §10.5).
+    // Stop: any user, online only (spec §10.5). This is a write with no
+    // snapshot-field dependency, so out-of-range/stale read data must not
+    // disable it.
     {
         const PermissionResult p = PermissionPolicy::check(role, Command::Stop);
-        const InterlockResult i = m_model.snapshotFresh()
-            ? InterlockRules::checkStop(s, online)
-            : InterlockResult{false, {QStringLiteral("通讯中断, 命令无法送达, 请使用现场停止或实体急停")}};
+        const InterlockResult i = InterlockRules::checkStop(s, online);
         m_stop->setEnabledWithReason(p.allowed && i.allowed, combinedReason(p, i));
     }
 
-    // Reset: admin + interlocks (spec §10.2).
+    // Reset: admin + interlocks over the fast-block M3 bit (spec §10.2).
     {
         const PermissionResult p = PermissionPolicy::check(role, Command::Reset);
-        const InterlockResult i = m_model.snapshotFresh()
-            ? InterlockRules::checkReset(s, online)
-            : InterlockResult{false, {QStringLiteral("通讯中断或数据过期")}};
+        const InterlockResult i = gatedCheck(
+            m_model.modeKnown(),
+            QStringLiteral("快速状态数据无效, 无法确认运行状态 (M3)"),
+            s, online, &InterlockRules::checkReset);
         m_reset->setEnabledWithReason(p.allowed && i.allowed, combinedReason(p, i));
     }
 
     // Estop set: any user, online only; offline -> "请使用实体急停" (spec §10.6).
+    // Like stop, it needs no snapshot field.
     {
         const PermissionResult p = PermissionPolicy::check(role, Command::EstopSet);
-        const InterlockResult i = m_model.snapshotFresh()
-            ? InterlockRules::checkEstopSet(s, online)
-            : InterlockResult{false, {QStringLiteral("通讯中断, 请使用实体急停")}};
+        const InterlockResult i = InterlockRules::checkEstopSet(s, online);
         m_estop->setEnabledWithReason(p.allowed && i.allowed, combinedReason(p, i));
     }
 

@@ -16,6 +16,9 @@
 #include <QSignalSpy>
 #include <QStackedWidget>
 #include <QPushButton>
+#include <QImage>
+#include <QColor>
+#include <QStyle>
 
 #include "domain/device_snapshot.h"
 #include "ui/shell/shell_model.h"
@@ -51,6 +54,65 @@ DeviceSnapshotData validSnapshotData()
     return d;
 }
 
+// Builds a snapshot through the real fast-block decode path, so out-of-range
+// fields behave exactly as in production: checkRange only sets invalidFields
+// (which pushes overallQuality to OutOfRange) and never lowers fastQuality,
+// which keeps the passed-in transport/age quality. Locks the assumption that
+// "field out of range" and "fast block stale/errored" are independent.
+DeviceSnapshot decodedFastSnapshot(quint16 statusWord1, quint16 currentWidth)
+{
+    quint16 raw[41] = {0};
+    raw[0] = statusWord1;   // D100 -> M0-M14
+    raw[10] = 0;            // D110 fault code (0-10)
+    raw[20] = 0;            // D120 step (0-5)
+    raw[22] = 1500;         // D122 belt speed (100-20000)
+    raw[28] = 100;          // D128 target width (50-400)
+    raw[30] = currentWidth; // D130 current width (50-400)
+    raw[40] = 1;            // D140 heartbeat
+    const QDateTime now = QDateTime::currentDateTime();
+    return DeviceSnapshot(
+        decodeFastBlock(raw, 1, true, 0, now, now, DataQuality::Valid));
+}
+
+// Number of differing pixels between two same-size images; -1 on size mismatch.
+int pixelDiffCount(const QImage &a, const QImage &b)
+{
+    if (a.size() != b.size())
+        return -1;
+    int diff = 0;
+    for (int y = 0; y < a.height(); ++y)
+        for (int x = 0; x < a.width(); ++x)
+            if (a.pixel(x, y) != b.pixel(x, y))
+                ++diff;
+    return diff;
+}
+
+// Most frequent colour in the image (the button background, since text covers
+// far fewer pixels). Robust to anti-aliased glyph pixels.
+QColor dominantColor(const QImage &img)
+{
+    QHash<QRgb, int> hist;
+    for (int y = 0; y < img.height(); ++y)
+        for (int x = 0; x < img.width(); ++x)
+            ++hist[img.pixel(x, y)];
+    QRgb best = 0;
+    int bestN = -1;
+    for (auto it = hist.constBegin(); it != hist.constEnd(); ++it) {
+        if (it.value() > bestN) {
+            bestN = it.value();
+            best = it.key();
+        }
+    }
+    return QColor(best);
+}
+
+bool nearColor(const QColor &c, const QColor &ref, int tolerance = 12)
+{
+    return qAbs(c.red() - ref.red()) <= tolerance
+        && qAbs(c.green() - ref.green()) <= tolerance
+        && qAbs(c.blue() - ref.blue()) <= tolerance;
+}
+
 } // namespace
 
 class ShellTest : public QObject
@@ -63,6 +125,7 @@ private slots:
     void modelSnapshotUpdatesState();
     void modelStaleSnapshotMarksInvalid();
     void modelUserAndRole();
+    void modelFlagsUseOwningBlockOnly();
 
     // --- MainWindow navigation ----------------------------------------------
     void navigationHasSevenItems();
@@ -73,6 +136,7 @@ private slots:
     // --- MainWindow status bar ----------------------------------------------
     void statusBarReflectsSnapshot();
     void statusBarOfflineShowsDash();
+    void topBarReadyShowsUnknownWhenStateUnknown();
 
     // --- MainWindow alarm banner --------------------------------------------
     void alarmBannerGreenWhenNoFault();
@@ -83,6 +147,17 @@ private slots:
     void actionButtonsDisabledWithReasonWhenOffline();
     void actionButtonsEnabledForAdminOnline();
     void noOptimisticStateOnCommand();
+    void unrelatedOutOfRangeFieldDoesNotDisableActions();
+    void modeButtonsStillRequireAdminOnOutOfRangeSnapshot();
+    void offlineDisablesEveryActionButton();
+    void staleFastBlockDisablesDependentActionsOnly();
+    void protocolErrorFastBlockDisablesDependentActionsOnly();
+    void slowBlockStaleKeepsFastDependentActionsEnabled();
+    void emptySnapshotOnlineKeepsAdvancedActionsDisabled();
+
+    // --- top bar / R1-R4: block-scoped state ---------------------------------
+    void unrelatedOutOfRangeFieldKeepsTopBarReal();
+    void actionBarButtonsLookDisabled();
 
     // --- theme ---------------------------------------------------------------
     void themeStylesheetApplied();
@@ -145,6 +220,60 @@ void ShellTest::modelUserAndRole()
     model.setUser(QStringLiteral("admin"), Role::Admin);
     QCOMPARE(model.userName(), QStringLiteral("admin"));
     QCOMPARE(model.role(), Role::Admin);
+}
+
+void ShellTest::modelFlagsUseOwningBlockOnly()
+{
+    // Regression (R1/R4): each getter must gate on the block that carries its
+    // bits/fields, not the whole snapshot (spec §9, §11.2).
+    ShellModel model;
+
+    // Fast block valid + an unrelated out-of-range field (D130=0): the fast
+    // state bits M1/M2/M3/M9/M14 are still confirmed.
+    model.updateSnapshot(decodedFastSnapshot((1 << 2) | (1 << 9), 0));
+    QVERIFY(!model.snapshotFresh()); // whole snapshot is OutOfRange
+    QVERIFY(model.modeKnown());
+    QVERIFY(model.isAutoMode());     // M2
+    QVERIFY(!model.isRunning());     // M3=0
+    QVERIFY(model.isHomed());        // M9
+    QVERIFY(!model.isFaulted());     // M14=0, D110=0
+
+    // Fast block stale: the fast-derived flags are unknown again.
+    DeviceSnapshotData stale = validSnapshotData();
+    stale.statusWord1 = (1 << 2) | (1 << 9);
+    stale.fastQuality = DataQuality::Stale;
+    stale.overallQuality = aggregateQuality(stale);
+    model.updateSnapshot(DeviceSnapshot(stale));
+    QVERIFY(!model.modeKnown());
+    QVERIFY(!model.isAutoMode());
+    QVERIFY(!model.isRunning());
+    QVERIFY(!model.isHomed());
+    QVERIFY(!model.isFaulted());
+    QVERIFY(!model.isEstop());
+
+    // isEstop also reads M100 from the command block: an untrusted command
+    // block must not let M100=1 report 急停 as confirmed...
+    DeviceSnapshotData cmd = validSnapshotData();
+    cmd.commandBits = 0x0001; // M100 = software estop set
+    cmd.commandQuality = DataQuality::Stale;
+    cmd.overallQuality = aggregateQuality(cmd);
+    model.updateSnapshot(DeviceSnapshot(cmd));
+    QVERIFY(!model.isEstop());
+
+    // ...and a valid command block confirms it.
+    cmd.commandQuality = DataQuality::Valid;
+    cmd.overallQuality = aggregateQuality(cmd);
+    model.updateSnapshot(DeviceSnapshot(cmd));
+    QVERIFY(model.isEstop());
+
+    // OR combination: the fast block confirms M0=1 while the command block is
+    // untrusted (M100 unknown) -> 急停 is still reported (fail-safe).
+    DeviceSnapshotData m0 = validSnapshotData();
+    m0.statusWord1 = 0x0001;                  // M0 estop
+    m0.commandQuality = DataQuality::Stale;   // M100 unknown
+    m0.overallQuality = aggregateQuality(m0);
+    model.updateSnapshot(DeviceSnapshot(m0));
+    QVERIFY(model.isEstop());
 }
 
 // --- MainWindow navigation ---------------------------------------------------
@@ -214,6 +343,29 @@ void ShellTest::statusBarOfflineShowsDash()
     QVERIFY(w.topBarText().contains(QStringLiteral("—")));
 }
 
+void ShellTest::topBarReadyShowsUnknownWhenStateUnknown()
+{
+    // The ready light (M8, fast block) must say "准备 —" when the state is
+    // unknown, not "未准备", which would claim a confirmed not-ready state
+    // (spec §11.2: 未知/过期 -> "—").
+    MainWindow w;
+    w.show();
+
+    QString text = w.topBarText();
+    QVERIFY2(text.contains(QStringLiteral("准备 —")), qPrintable(text));
+    QVERIFY(!text.contains(QStringLiteral("未准备")));
+    QVERIFY(!text.contains(QStringLiteral("准备完成")));
+
+    // Fast block stale: still unknown, not "未准备".
+    DeviceSnapshotData stale = validSnapshotData();
+    stale.fastQuality = DataQuality::Stale;
+    stale.overallQuality = aggregateQuality(stale);
+    w.shellModel()->updateSnapshot(DeviceSnapshot(stale));
+    text = w.topBarText();
+    QVERIFY2(text.contains(QStringLiteral("准备 —")), qPrintable(text));
+    QVERIFY(!text.contains(QStringLiteral("未准备")));
+}
+
 // --- MainWindow alarm banner -------------------------------------------------
 
 void ShellTest::alarmBannerGreenWhenNoFault()
@@ -271,6 +423,295 @@ void ShellTest::actionButtonsEnabledForAdminOnline()
     model->updateSnapshot(DeviceSnapshot(d));
     QVERIFY(w.startButton()->isEnabled());
     QVERIFY(w.resetButton()->isEnabled());
+}
+
+void ShellTest::unrelatedOutOfRangeFieldDoesNotDisableActions()
+{
+    // Regression (root cause): a single out-of-range decoded field such as an
+    // un-homed D130 current width = 0 makes the aggregate snapshot quality
+    // OutOfRange, so ShellModel::snapshotFresh() is false. None of the bar's
+    // actions reads D130, so stop/estop (online only, spec §10.5/§10.6),
+    // mode switch (online && M3=0, spec §10.2) and start (fast-block M bits,
+    // spec §10.4) must remain available. Only the dependent field may disable
+    // an action (spec §9, §11.2).
+    MainWindow w;
+    w.show();
+    ShellModel *model = w.shellModel();
+    model->setUser(QStringLiteral("admin"), Role::Admin);
+
+    // D130 current width = 0 decoded through the production path. It only sets
+    // invalidFields/overallQuality; fastQuality stays Valid.
+    model->updateSnapshot(
+        decodedFastSnapshot((1 << 2) | (1 << 8), 0)); // M2 auto, M8 ready, M3=0
+
+    // Sanity: the bug's trigger (snapshot-wide freshness) is genuinely false,
+    // yet the fast block the actions depend on is still usable.
+    QVERIFY(!model->snapshotFresh());
+    QVERIFY(!model->snapshot().fieldValid(SnapshotField::CurrentWidth));
+    QVERIFY(model->snapshot().fastQuality() == DataQuality::Valid);
+
+    auto *manual = w.findChild<QPushButton *>(QStringLiteral("manualModeButton"));
+    auto *autoBtn = w.findChild<QPushButton *>(QStringLiteral("autoModeButton"));
+    QVERIFY(manual != nullptr);
+    QVERIFY(autoBtn != nullptr);
+
+    // The three assertions called out by the debugger report.
+    QVERIFY2(autoBtn->isEnabled(), qPrintable(autoBtn->toolTip()));
+    QVERIFY2(w.stopButton()->isEnabled(), qPrintable(w.stopButton()->toolTip()));
+    QVERIFY2(w.estopButton()->isEnabled(), qPrintable(w.estopButton()->toolTip()));
+
+    QVERIFY2(manual->isEnabled(), qPrintable(manual->toolTip()));
+    QVERIFY2(w.startButton()->isEnabled(), qPrintable(w.startButton()->toolTip()));
+    QVERIFY2(w.resetButton()->isEnabled(), qPrintable(w.resetButton()->toolTip()));
+
+    // Online actions must not report a communications failure (spec §10.5/§10.6).
+    QVERIFY(!w.stopButton()->toolTip().contains(QStringLiteral("通讯中断")));
+    QVERIFY(!w.estopButton()->toolTip().contains(QStringLiteral("通讯中断")));
+}
+
+void ShellTest::modeButtonsStillRequireAdminOnOutOfRangeSnapshot()
+{
+    // The fix must not let an out-of-range snapshot bypass the admin-only
+    // mode-switch permission (spec §11.4).
+    MainWindow w;
+    w.show();
+    ShellModel *model = w.shellModel(); // anonymous, never logged in
+
+    DeviceSnapshotData d = validSnapshotData();
+    d.statusWord1 = 0; // M3=0: the interlock alone would allow mode switch
+    d.currentWidth = 0;
+    d.invalidFields = (quint32(1) << quint8(SnapshotField::CurrentWidth));
+    d.overallQuality = aggregateQuality(d);
+    model->updateSnapshot(DeviceSnapshot(d));
+
+    auto *manual = w.findChild<QPushButton *>(QStringLiteral("manualModeButton"));
+    auto *autoBtn = w.findChild<QPushButton *>(QStringLiteral("autoModeButton"));
+    QVERIFY(manual != nullptr);
+    QVERIFY(autoBtn != nullptr);
+    QVERIFY(!manual->isEnabled());
+    QVERIFY(!autoBtn->isEnabled());
+    QVERIFY(manual->toolTip().contains(QStringLiteral("管理员")));
+    QVERIFY(autoBtn->toolTip().contains(QStringLiteral("管理员")));
+}
+
+void ShellTest::offlineDisablesEveryActionButton()
+{
+    // Offline keeps every action disabled with a communications reason, even
+    // for an admin (spec §10.5/§10.6).
+    MainWindow w;
+    w.show();
+    ShellModel *model = w.shellModel();
+    model->setUser(QStringLiteral("admin"), Role::Admin);
+    model->setOnline(false);
+
+    auto *manual = w.findChild<QPushButton *>(QStringLiteral("manualModeButton"));
+    auto *autoBtn = w.findChild<QPushButton *>(QStringLiteral("autoModeButton"));
+    QVERIFY(manual != nullptr);
+    QVERIFY(autoBtn != nullptr);
+    QVERIFY(!manual->isEnabled());
+    QVERIFY(!autoBtn->isEnabled());
+    QVERIFY(!w.startButton()->isEnabled());
+    QVERIFY(!w.stopButton()->isEnabled());
+    QVERIFY(!w.resetButton()->isEnabled());
+    QVERIFY(!w.estopButton()->isEnabled());
+
+    QVERIFY(w.stopButton()->toolTip().contains(QStringLiteral("通讯中断")));
+    QVERIFY(w.estopButton()->toolTip().contains(QStringLiteral("通讯中断")));
+}
+
+void ShellTest::staleFastBlockDisablesDependentActionsOnly()
+{
+    // §11.2: when the fast block carrying M0/M2/M3/M8/M14 has expired, actions
+    // whose interlock reads those bits are disabled. Stop/estop need only the
+    // link, so they stay available (spec §10.5/§10.6).
+    MainWindow w;
+    w.show();
+    ShellModel *model = w.shellModel();
+    model->setUser(QStringLiteral("admin"), Role::Admin);
+
+    DeviceSnapshotData d = validSnapshotData();
+    d.statusWord1 = (1 << 2) | (1 << 8); // would satisfy mode/start if fresh
+    d.fastQuality = DataQuality::Stale;
+    d.overallQuality = aggregateQuality(d);
+    model->updateSnapshot(DeviceSnapshot(d));
+    QVERIFY(!model->snapshotFresh());
+
+    auto *manual = w.findChild<QPushButton *>(QStringLiteral("manualModeButton"));
+    auto *autoBtn = w.findChild<QPushButton *>(QStringLiteral("autoModeButton"));
+    QVERIFY(manual != nullptr);
+    QVERIFY(autoBtn != nullptr);
+    QVERIFY(!manual->isEnabled());
+    QVERIFY(!autoBtn->isEnabled());
+    QVERIFY(!w.startButton()->isEnabled());
+    QVERIFY(!w.resetButton()->isEnabled());
+    QVERIFY(w.stopButton()->isEnabled());
+    QVERIFY(w.estopButton()->isEnabled());
+
+    // The disabled reason must name the real data problem, not a
+    // communications failure: the link is up.
+    QVERIFY(manual->toolTip().contains(QStringLiteral("快速状态")));
+    QVERIFY(!manual->toolTip().contains(QStringLiteral("通讯")));
+    QVERIFY(w.startButton()->toolTip().contains(QStringLiteral("快速状态")));
+    QVERIFY(!w.startButton()->toolTip().contains(QStringLiteral("通讯")));
+}
+
+void ShellTest::protocolErrorFastBlockDisablesDependentActionsOnly()
+{
+    // Same as the stale case but for a transport/protocol error on the fast
+    // block: dependent actions disabled, stop/estop keep working (spec §11.2).
+    MainWindow w;
+    w.show();
+    ShellModel *model = w.shellModel();
+    model->setUser(QStringLiteral("admin"), Role::Admin);
+
+    DeviceSnapshotData d = validSnapshotData();
+    d.statusWord1 = (1 << 2) | (1 << 8);
+    d.fastQuality = DataQuality::ProtocolError;
+    d.overallQuality = aggregateQuality(d);
+    model->updateSnapshot(DeviceSnapshot(d));
+
+    auto *manual = w.findChild<QPushButton *>(QStringLiteral("manualModeButton"));
+    auto *autoBtn = w.findChild<QPushButton *>(QStringLiteral("autoModeButton"));
+    QVERIFY(manual != nullptr);
+    QVERIFY(autoBtn != nullptr);
+    QVERIFY(!manual->isEnabled());
+    QVERIFY(!autoBtn->isEnabled());
+    QVERIFY(!w.startButton()->isEnabled());
+    QVERIFY(!w.resetButton()->isEnabled());
+    QVERIFY(w.stopButton()->isEnabled());
+    QVERIFY(w.estopButton()->isEnabled());
+}
+
+void ShellTest::slowBlockStaleKeepsFastDependentActionsEnabled()
+{
+    // Reverse lock: the gating reads only the fast block. A stale slow (or
+    // home/command) block must NOT disable mode/start/reset whose interlocks
+    // read fast-block M bits (spec §9, §11.2).
+    MainWindow w;
+    w.show();
+    ShellModel *model = w.shellModel();
+    model->setUser(QStringLiteral("admin"), Role::Admin);
+
+    DeviceSnapshotData d = validSnapshotData();
+    d.statusWord1 = (1 << 2) | (1 << 8); // M2 auto, M8 ready, M3=0
+    d.slowQuality = DataQuality::Stale;  // fast block stays Valid
+    d.homeQuality = DataQuality::Stale;
+    d.overallQuality = aggregateQuality(d);
+    model->updateSnapshot(DeviceSnapshot(d));
+    QVERIFY(!model->snapshotFresh()); // whole-snapshot freshness is false
+
+    auto *manual = w.findChild<QPushButton *>(QStringLiteral("manualModeButton"));
+    auto *autoBtn = w.findChild<QPushButton *>(QStringLiteral("autoModeButton"));
+    QVERIFY(manual != nullptr);
+    QVERIFY(autoBtn != nullptr);
+    QVERIFY(manual->isEnabled());
+    QVERIFY(autoBtn->isEnabled());
+    QVERIFY(w.startButton()->isEnabled());
+    QVERIFY(w.resetButton()->isEnabled());
+    QVERIFY(w.stopButton()->isEnabled());
+    QVERIFY(w.estopButton()->isEnabled());
+}
+
+void ShellTest::emptySnapshotOnlineKeepsAdvancedActionsDisabled()
+{
+    // setOnline(true) can be observed before the first snapshot (ShellModel's
+    // link flag is an independent input). The default empty snapshot must not
+    // make mode/start/reset look ready just because its fastQuality defaults
+    // to Valid (spec §9, §11.2). Stop/estop remain link-only.
+    MainWindow w;
+    w.show();
+    ShellModel *model = w.shellModel();
+    model->setUser(QStringLiteral("admin"), Role::Admin);
+    model->setOnline(true);
+    QVERIFY(!model->hasSnapshot());
+
+    auto *manual = w.findChild<QPushButton *>(QStringLiteral("manualModeButton"));
+    auto *autoBtn = w.findChild<QPushButton *>(QStringLiteral("autoModeButton"));
+    QVERIFY(manual != nullptr);
+    QVERIFY(autoBtn != nullptr);
+    QVERIFY(!manual->isEnabled());
+    QVERIFY(!autoBtn->isEnabled());
+    QVERIFY(!w.startButton()->isEnabled());
+    QVERIFY(!w.resetButton()->isEnabled());
+
+    QVERIFY(manual->toolTip().contains(QStringLiteral("快速状态")));
+    QVERIFY(!manual->toolTip().contains(QStringLiteral("通讯")));
+}
+
+void ShellTest::unrelatedOutOfRangeFieldKeepsTopBarReal()
+{
+    // Regression (R1/R4): an unrelated out-of-range field (D130 current width
+    // 0) made modeKnown() -> snapshotFresh() false, blanking the whole top bar
+    // to "—" although the fast block carrying M1/M2/M3/M8/M9 is valid.
+    MainWindow w;
+    w.show();
+    ShellModel *model = w.shellModel();
+    model->setUser(QStringLiteral("admin"), Role::Admin);
+    model->updateSnapshot(
+        decodedFastSnapshot((1 << 2) | (1 << 8) | (1 << 9), 0)); // auto+ready+homed
+
+    QVERIFY(!model->snapshotFresh()); // unrelated field still fails whole-fresh
+    QVERIFY(model->modeKnown());
+    QVERIFY(model->isAutoMode());
+    QVERIFY(model->isHomed());
+
+    const QString text = w.topBarText();
+    QVERIFY2(text.contains(QStringLiteral("自动")), qPrintable(text));
+    QVERIFY2(text.contains(QStringLiteral("停止")), qPrintable(text));
+    QVERIFY2(text.contains(QStringLiteral("已回原点")), qPrintable(text));
+    QVERIFY2(text.contains(QStringLiteral("准备完成")), qPrintable(text));
+    QVERIFY2(text.contains(QStringLiteral("正常")), qPrintable(text));
+    QVERIFY(!text.contains(QStringLiteral("模式 —")));
+    QVERIFY(!text.contains(QStringLiteral("运行 —")));
+    QVERIFY(!text.contains(QStringLiteral("回原点 —")));
+    QVERIFY(!text.contains(QStringLiteral("故障/急停 —")));
+}
+
+void ShellTest::actionBarButtonsLookDisabled()
+{
+    // Regression (R2): #actionBar ID rules and per-button [active=...] rules
+    // out-specified QPushButton:disabled, so a disabled action-bar button
+    // rendered pixel-identical to an enabled one. The scoped
+    // QWidget#actionBar QPushButton:disabled rule must restore the shared
+    // disabled look without touching enabled rendering.
+    MainWindow w;
+    w.resize(1280, 800);
+    w.show();
+    QApplication::processEvents();
+
+    QPushButton *button = w.findChild<QPushButton *>(QStringLiteral("autoModeButton"));
+    QVERIFY(button != nullptr);
+
+    const QColor grayToken(0xe4, 0xea, 0xf0);
+    const auto checkVariant = [&](const QString &label) {
+        button->setEnabled(true);
+        QApplication::processEvents();
+        const QImage enabled =
+            button->grab().toImage().convertToFormat(QImage::Format_RGB32);
+        button->setEnabled(false);
+        QApplication::processEvents();
+        const QImage disabled =
+            button->grab().toImage().convertToFormat(QImage::Format_RGB32);
+
+        QCOMPARE(enabled.size(), disabled.size());
+        QVERIFY2(pixelDiffCount(enabled, disabled) > 0,
+                 qPrintable(label + QStringLiteral(": disabled must differ")));
+        const QColor bg = dominantColor(disabled);
+        QVERIFY2(nearColor(bg, grayToken),
+                 qPrintable(QStringLiteral("%1: disabled bg=%2 expected ~#e4eaf0")
+                                .arg(label, bg.name())));
+    };
+
+    // Variant 1: the default active=false style.
+    checkVariant(QStringLiteral("active=false"));
+
+    // Variant 2: [active=true] (the auto button while in auto mode). Set the
+    // dynamic property and re-polish exactly as ActionBar::setActiveState does.
+    button->setProperty("active", true);
+    button->style()->unpolish(button);
+    button->style()->polish(button);
+    QApplication::processEvents();
+    checkVariant(QStringLiteral("active=true"));
 }
 
 void ShellTest::noOptimisticStateOnCommand()
