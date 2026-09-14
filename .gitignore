@@ -8,6 +8,8 @@
 /build/
 /out/
 /cmake-build-*/
+/CMakeFiles/
+/CMakeCache.txt
 CMakeUserPresets.json
 
 # IDE and user-local settings
