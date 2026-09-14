@@ -104,6 +104,8 @@ private slots:
     void writeRejectedUntilFirstSnapshotAfterReconnect();
     void slowPollOutOfRangeMarksFieldsInvalid();
     void fastPollPreservesHomeAndCommandBits();
+    void packCoilBitsPacksLsbFirst();
+    void makeTransferResultConvertsByKind();
     // Task 20: pulse state machine + M112 watchdog wiring, comm stats.
     void startPulseRoutesThroughStateMachine();
     void pulseHoldThenClearAtMin100ms();
@@ -991,6 +993,76 @@ void GatewayTest::commStatsEmitted()
     QCOMPARE(m_statReconnects.last(), 1);
     // 1 (earlier) + 3 offline-driving cycles = 4 failed polls.
     QCOMPARE(m_statFailedPolls.last(), 4);
+}
+
+void GatewayTest::packCoilBitsPacksLsbFirst()
+{
+    // Contract (modbus_transport.h): a ReadCoils result packs one bit per coil
+    // into values[0], bit i = coil i.
+
+    // Command block (13 coils): M100 + M112.
+    QList<quint16> command(13, 0);
+    command[0] = 1;  // M100
+    command[12] = 1; // M112
+    QCOMPARE(packCoilBits(command), quint16((1 << 0) | (1 << 12)));
+
+    // Home block (4 coils): M51 + M53.
+    QCOMPARE(packCoilBits({0, 1, 0, 1}), quint16((1 << 1) | (1 << 3)));
+
+    // Single-coil readback: bit0 == the coil value (count == 1).
+    QCOMPARE(packCoilBits({1}), quint16(1));
+    QCOMPARE(packCoilBits({0}), quint16(0));
+
+    // Empty / all-zero.
+    QCOMPARE(packCoilBits({}), quint16(0));
+    QCOMPARE(packCoilBits(QList<quint16>(13, 0)), quint16(0));
+}
+
+void GatewayTest::makeTransferResultConvertsByKind()
+{
+    // Locks the reply->TransferResult conversion used by RtuTransport. If the
+    // ReadCoils branch ever reverts to a per-coil append, values.size() becomes
+    // 4 (or 13) and/or values.first() becomes 0/1, so these assertions fail.
+    ModbusRequest coils;
+    coils.kind = ModbusRequest::Kind::ReadCoils;
+
+    // 4 coils {1,0,1,0} -> exactly ONE packed word 0b0101.
+    const TransferResult four =
+        makeTransferResult(coils, true, QString(), {1, 0, 1, 0});
+    QVERIFY(four.ok);
+    QCOMPARE(four.values.size(), 1); // guards against per-coil append
+    QCOMPARE(four.values.first(), quint16(0b0101));
+
+    // 13-coil command block: M100 (bit0) + M112 (bit12).
+    QList<quint16> command(13, 0);
+    command[0] = 1;
+    command[12] = 1;
+    const TransferResult cmd =
+        makeTransferResult(coils, true, QString(), command);
+    QCOMPARE(cmd.values.size(), 1);
+    QCOMPARE(cmd.values.first(), quint16((1 << 0) | (1 << 12)));
+
+    // ReadRegisters: values pass through unchanged, one entry each.
+    ModbusRequest regs;
+    regs.kind = ModbusRequest::Kind::ReadRegisters;
+    const TransferResult r =
+        makeTransferResult(regs, true, QString(), {0x1234, 0x5678});
+    QVERIFY(r.ok);
+    QCOMPARE(r.values.size(), 2);
+    QCOMPARE(r.values.at(0), quint16(0x1234));
+    QCOMPARE(r.values.at(1), quint16(0x5678));
+
+    // Writes carry no read payload.
+    ModbusRequest write;
+    write.kind = ModbusRequest::Kind::WriteRegister;
+    QVERIFY(makeTransferResult(write, true, QString(), {}).values.isEmpty());
+
+    // Failure path: ok/error propagated, no values.
+    const TransferResult fail =
+        makeTransferResult(coils, false, QStringLiteral("timeout"), {1, 1});
+    QVERIFY(!fail.ok);
+    QCOMPARE(fail.error, QStringLiteral("timeout"));
+    QVERIFY(fail.values.isEmpty());
 }
 
 QTEST_GUILESS_MAIN(GatewayTest)

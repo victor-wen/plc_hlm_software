@@ -91,19 +91,15 @@ public:
         if (!reply)
             return false;
 
-        connect(reply, &QModbusReply::finished, this, [this, reply]() {
-            TransferResult res;
+        connect(reply, &QModbusReply::finished, this, [this, reply, req]() {
             if (reply->error() == QModbusDevice::NoError) {
-                res.ok = true;
-                const QModbusDataUnit result = reply->result();
-                for (int i = 0; i < result.values().size(); ++i)
-                    res.values.append(quint16(result.values().at(i)));
+                emit transferFinished(makeTransferResult(
+                    req, true, QString(), reply->result().values()));
             } else {
-                res.ok = false;
-                res.error = reply->errorString();
+                emit transferFinished(makeTransferResult(
+                    req, false, reply->errorString(), {}));
             }
             reply->deleteLater();
-            emit transferFinished(res);
         });
         return true;
     }
