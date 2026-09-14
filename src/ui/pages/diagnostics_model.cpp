@@ -72,6 +72,14 @@ const char *homeCommandBitName(int m)
     }
 }
 
+// A source block is trusted only when linked and its quality is Valid. The
+// current adapters always report Valid, but this keeps the page correct if an
+// adapter starts reporting age/transport quality (spec §9).
+bool blockFresh(const DeviceSnapshot &s, DataQuality quality)
+{
+    return s.connected() && quality == DataQuality::Valid;
+}
+
 } // namespace
 
 DiagnosticsModel::DiagnosticsModel(const ShellModel &model)
@@ -79,14 +87,34 @@ DiagnosticsModel::DiagnosticsModel(const ShellModel &model)
 {
 }
 
-bool DiagnosticsModel::fresh() const
+bool DiagnosticsModel::fastFresh() const
 {
-    return m_model.snapshotFresh();
+    const DeviceSnapshot &s = m_model.snapshot();
+    return blockFresh(s, s.fastQuality());
 }
 
-DiagnosticsField DiagnosticsModel::field(const QString &text, quint8 f) const
+bool DiagnosticsModel::slowFresh() const
 {
-    if (!fresh() || !m_model.snapshot().fieldValid(SnapshotField(f)))
+    const DeviceSnapshot &s = m_model.snapshot();
+    return blockFresh(s, s.slowQuality());
+}
+
+bool DiagnosticsModel::homeFresh() const
+{
+    const DeviceSnapshot &s = m_model.snapshot();
+    return blockFresh(s, s.homeQuality());
+}
+
+bool DiagnosticsModel::commandFresh() const
+{
+    const DeviceSnapshot &s = m_model.snapshot();
+    return blockFresh(s, s.commandQuality());
+}
+
+DiagnosticsField DiagnosticsModel::field(const QString &text, quint8 f,
+                                         bool sourceFresh) const
+{
+    if (!sourceFresh || !m_model.snapshot().fieldValid(SnapshotField(f)))
         return {}; // invalid -> "—" (spec §9)
     return {text, true};
 }
@@ -95,12 +123,12 @@ DiagnosticsField DiagnosticsModel::field(const QString &text, quint8 f) const
 
 bool DiagnosticsModel::rawWordsValid() const
 {
-    return fresh();
+    return fastFresh();
 }
 
 QString DiagnosticsModel::rawWordHex(int index) const
 {
-    if (!fresh())
+    if (!fastFresh())
         return QStringLiteral("—");
     const DeviceSnapshot &s = m_model.snapshot();
     quint16 value = 0;
@@ -120,20 +148,21 @@ QString DiagnosticsModel::rawWordHex(int index) const
 
 bool DiagnosticsModel::bitValid() const
 {
-    return fresh();
+    // D100/D103 bits are decoded from the fast block.
+    return fastFresh();
 }
 
 bool DiagnosticsModel::bitState(int mNumber) const
 {
-    if (!fresh())
-        return false;
     const DeviceSnapshot &s = m_model.snapshot();
     if (mNumber >= 0 && mNumber <= 14)
-        return decode::d100Bit(s.statusWord1(), mNumber); // D100 -> M0-M14
+        return fastFresh() && decode::d100Bit(s.statusWord1(), mNumber); // D100 -> M0-M14
     if (mNumber >= 30 && mNumber <= 45)
-        return decode::d103Bit(s.statusWord3(), mNumber - 30); // D103 -> M30-M45
+        return fastFresh() && decode::d103Bit(s.statusWord3(), mNumber - 30); // D103 -> M30-M45
     if (mNumber >= 50 && mNumber <= 53) {
-        // M50-M53 (function code 01 readback).
+        // M50-M53 (function code 01 readback, home block).
+        if (!homeFresh())
+            return false;
         switch (mNumber) {
         case 50: return s.m50();
         case 51: return s.m51();
@@ -142,7 +171,9 @@ bool DiagnosticsModel::bitState(int mNumber) const
         }
     }
     if (mNumber >= 100 && mNumber <= 112) {
-        // M100-M112 command readback (function code 01).
+        // M100-M112 command readback (function code 01, command block).
+        if (!commandFresh())
+            return false;
         switch (mNumber) {
         case 100: return s.m100();
         case 101: return s.m101();
@@ -200,7 +231,8 @@ QVector<BitRow> DiagnosticsModel::homeCommandBits() const
         BitRow r;
         r.mNumber = m;
         r.name = QString::fromUtf8(homeCommandBitName(m));
-        r.known = bitValid();
+        // M50-M53 come from the home block, M100-M112 from the command block.
+        r.known = (m <= 53) ? homeFresh() : commandFresh();
         r.state = r.known && bitState(m);
         rows.append(r);
     }
@@ -211,10 +243,11 @@ QVector<BitRow> DiagnosticsModel::homeCommandBits() const
 
 bool DiagnosticsModel::heartbeatKnown() const
 {
-    // Stale/offline snapshot: activity is unknown, show "—" (spec §9). Never
-    // record a baseline from an expired snapshot, otherwise the light would
-    // stay "活性" forever after the PLC disconnects (spec §13: D140 frozen).
-    if (!fresh())
+    // D140 lives in the fast block. Stale/offline fast data: activity is
+    // unknown, show "—" (spec §9). Never record a baseline from an expired
+    // snapshot, otherwise the light would stay "活性" forever after the PLC
+    // disconnects (spec §13: D140 frozen).
+    if (!fastFresh())
         return false;
     if (m_hasLastHeartbeat)
         return true;
@@ -248,25 +281,25 @@ bool DiagnosticsModel::heartbeatActive() const
 DiagnosticsField DiagnosticsModel::faultCode() const
 {
     return field(QString::number(m_model.snapshot().faultCode()),
-                 quint8(SnapshotField::FaultCode)); // D110
+                 quint8(SnapshotField::FaultCode), fastFresh()); // D110
 }
 
 DiagnosticsField DiagnosticsModel::currentStep() const
 {
-    if (!fresh())
-        return {};
-    return {QString::number(m_model.snapshot().currentStep()), true}; // D120
+    // D120 is in the fast block and has a defined 0-5 range.
+    return field(QString::number(m_model.snapshot().currentStep()),
+                 quint8(SnapshotField::CurrentStep), fastFresh());
 }
 
 DiagnosticsField DiagnosticsModel::beltSpeed() const
 {
     return field(QString::number(m_model.snapshot().beltSpeed()),
-                 quint8(SnapshotField::BeltSpeed)); // D122
+                 quint8(SnapshotField::BeltSpeed), fastFresh()); // D122
 }
 
 DiagnosticsField DiagnosticsModel::widthFrequency() const
 {
-    if (!fresh())
+    if (!fastFresh())
         return {};
     return {QString::number(m_model.snapshot().widthFrequency()), true}; // D126/127
 }
@@ -274,25 +307,25 @@ DiagnosticsField DiagnosticsModel::widthFrequency() const
 DiagnosticsField DiagnosticsModel::targetWidth() const
 {
     return field(QString::number(m_model.snapshot().targetWidth()),
-                 quint8(SnapshotField::TargetWidth)); // D128
+                 quint8(SnapshotField::TargetWidth), fastFresh()); // D128
 }
 
 DiagnosticsField DiagnosticsModel::currentWidth() const
 {
     return field(QString::number(m_model.snapshot().currentWidth()),
-                 quint8(SnapshotField::CurrentWidth)); // D130
+                 quint8(SnapshotField::CurrentWidth), fastFresh()); // D130
 }
 
 DiagnosticsField DiagnosticsModel::pulseCount() const
 {
-    if (!fresh())
+    if (!fastFresh())
         return {};
     return {QString::number(m_model.snapshot().pulseCount()), true}; // D136/137
 }
 
 DiagnosticsField DiagnosticsModel::productionCount() const
 {
-    if (!fresh())
+    if (!fastFresh())
         return {};
     return {QString::number(m_model.snapshot().productionCount()), true}; // D138/139
 }
@@ -300,12 +333,13 @@ DiagnosticsField DiagnosticsModel::productionCount() const
 DiagnosticsField DiagnosticsModel::pulsePerMm() const
 {
     return field(QString::number(m_model.snapshot().pulsePerMm()),
-                 quint8(SnapshotField::PulsePerMm)); // D204
+                 quint8(SnapshotField::PulsePerMm), slowFresh()); // D204
 }
 
 DiagnosticsField DiagnosticsModel::widthDelta() const
 {
-    if (!fresh())
+    // D210 is decoded in the slow block (no separate range field).
+    if (!slowFresh())
         return {};
     return {QString::number(m_model.snapshot().widthDelta()), true}; // D210
 }
@@ -313,7 +347,7 @@ DiagnosticsField DiagnosticsModel::widthDelta() const
 DiagnosticsField DiagnosticsModel::widthSpeed() const
 {
     return field(QString::number(m_model.snapshot().widthSpeed()),
-                 quint8(SnapshotField::WidthSpeed)); // D220
+                 quint8(SnapshotField::WidthSpeed), slowFresh()); // D220
 }
 
 // --- vision self-test (wired by Task 20) -------------------------------------------

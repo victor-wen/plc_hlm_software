@@ -12,12 +12,17 @@
 #include "app/application.h"
 #include "app/configuration.h"
 #include "common/version.h"
+#include "ui/app_theme.h"
 
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("PLC-HLM"));
     QApplication::setApplicationVersion(QString::fromLatin1(hlm::versionString()));
+
+    // Force the light industrial palette/style so the UI is identical under a
+    // dark OS color scheme (root cause B: QSS-unstyled scroll viewports).
+    hlm::applyAppTheme(app);
 
     QCommandLineParser parser;
     parser.setApplicationDescription(

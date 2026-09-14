@@ -140,6 +140,7 @@ endif()
 # app shell wires to the application layer.
 add_library(hlm_ui STATIC
     src/ui/MainWindow.cpp
+    src/ui/app_theme.cpp
     src/ui/shell/shell_model.cpp
     src/ui/shell/top_bar.cpp
     src/ui/shell/alarm_banner.cpp

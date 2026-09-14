@@ -41,6 +41,10 @@ struct CommStats
 // externally-fed diagnostics inputs (vision self-test result and comm
 // statistics, wired by Task 20). No I/O, no commands, no write intents.
 //
+// Freshness is evaluated PER SOURCE BLOCK (fast/slow/home/command), never from
+// the whole-snapshot quality: only the items whose block/field is untrusted
+// show "—"; an unrelated out-of-range field must not blank the page (spec §9).
+//
 // Bit exposure is strictly limited to the DEFINED bits (spec §8.2):
 //   - D100 bit0-14 -> M0-M14 (bit15 reserved, never exposed)
 //   - D103 bit0-15 -> M30-M45
@@ -106,8 +110,14 @@ public:
     const CommStats &commStats() const { return m_commStats; }
 
 private:
-    bool fresh() const;
-    DiagnosticsField field(const QString &text, quint8 f) const;
+    // Per-source-block freshness (connected + that block's quality Valid).
+    // Diagnostics must not key off the whole snapshot: an unrelated
+    // out-of-range field must not blank every other item (spec §9, §11.2).
+    bool fastFresh() const;     // D100-D140: raw words, M0-M14, M30-M45, D110/D120/D122/D126-D140
+    bool slowFresh() const;     // D204/D210/D220
+    bool homeFresh() const;     // M50-M53
+    bool commandFresh() const;  // M100-M112
+    DiagnosticsField field(const QString &text, quint8 f, bool sourceFresh) const;
 
     const ShellModel &m_model;
 

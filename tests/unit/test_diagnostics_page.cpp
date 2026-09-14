@@ -16,6 +16,12 @@
 #include <QLabel>
 #include <QTableWidget>
 #include <QHeaderView>
+#include <QImage>
+#include <QColor>
+#include <QScrollArea>
+#include <QFrame>
+#include <QStyle>
+#include <QStyleFactory>
 
 #include "domain/device_snapshot.h"
 #include "ui/shell/shell_model.h"
@@ -23,6 +29,7 @@
 #include "ui/pages/diagnostics_page.h"
 #include "ui/widgets/value_display.h"
 #include "ui/widgets/status_light.h"
+#include "ui/app_theme.h"
 #include "ui/MainWindow.h"
 
 using namespace hlm;
@@ -59,6 +66,20 @@ DeviceSnapshotData validSnapshotData()
     d.slowQuality = DataQuality::Valid;
     d.overallQuality = aggregateQuality(d);
     return d;
+}
+
+// A fast block decoded through the real production path (so field ranges and
+// fastQuality behave exactly as in production). Slow fields are left at 0 and
+// must be filled/checked by the caller.
+DeviceSnapshotData decodedFastData()
+{
+    quint16 raw[41] = {0};
+    raw[22] = 1500; // D122 belt speed (100-20000)
+    raw[28] = 200;  // D128 target width (50-400)
+    raw[30] = 150;  // D130 current width (50-400)
+    raw[40] = 1;    // D140 heartbeat
+    const QDateTime now = QDateTime::currentDateTime();
+    return decodeFastBlock(raw, 1, true, 0, now, now, DataQuality::Valid);
 }
 
 // Sends a synthetic click (press + release) at the widget center.
@@ -100,6 +121,10 @@ private slots:
 
     // --- DiagnosticsModel: stale snapshot -> invalid (spec §9) ----------------
     void modelStaleShowsInvalid();
+    void modelOutOfRangeFieldKeepsOtherFields();
+    void modelSlowStaleOnlyAffectsSlowFields();
+    void modelHomeCommandGatingPerBlock();
+    void modelSlowOutOfRangeKeepsFastFields();
 
     // --- DiagnosticsModel: key registers --------------------------------------
     void modelMapsRegisters();
@@ -116,6 +141,7 @@ private slots:
     void pageShowsSectionTitles();
     void pageVisionFailureIsolated();
     void pageCommStatsRendered();
+    void darkSystemPaletteStillRendersLight();
 
     // --- read-only page (no write intents) ------------------------------------
     void pageDeclaresNoSignals();
@@ -320,6 +346,7 @@ void DiagnosticsPageTest::modelStaleShowsInvalid()
     model.updateSnapshot(DeviceSnapshot(d));
     DiagnosticsModel m(model);
 
+    // The fast block is stale: every fast-sourced item is unknown -> "—".
     QVERIFY(!m.rawWordsValid());
     QCOMPARE(m.rawWordHex(0), QStringLiteral("—"));
     QVERIFY(!m.bitValid());
@@ -328,8 +355,116 @@ void DiagnosticsPageTest::modelStaleShowsInvalid()
     QVERIFY(!m.beltSpeed().valid);
     QVERIFY(!m.targetWidth().valid);
     QVERIFY(!m.currentWidth().valid);
-    QVERIFY(!m.pulsePerMm().valid);
-    QVERIFY(!m.widthSpeed().valid);
+
+    // Behavior change (block-scoped gating, spec §9): a stale FAST block no
+    // longer blanks SLOW-sourced fields (D204/D220 live in the slow block,
+    // which is still Valid here). Previously the whole page keyed off
+    // snapshotFresh(), so these were "—" too.
+    QVERIFY(m.pulsePerMm().valid);
+    QVERIFY(m.widthSpeed().valid);
+}
+
+void DiagnosticsPageTest::modelOutOfRangeFieldKeepsOtherFields()
+{
+    // Regression: a single out-of-range fast field (D130 current width = 0)
+    // pushes the aggregate quality to OutOfRange. Only D130 becomes invalid;
+    // every other item must stay readable (spec §9: only the dependent field).
+    ShellModel model;
+    DeviceSnapshotData d = validSnapshotData();
+    d.currentWidth = 0; // D130 range 50-400
+    d.invalidFields = (quint32(1) << quint8(SnapshotField::CurrentWidth));
+    d.overallQuality = aggregateQuality(d);
+    model.updateSnapshot(DeviceSnapshot(d));
+    DiagnosticsModel m(model);
+
+    QVERIFY(!m.currentWidth().valid);           // the invalid field
+    // Everything else stays readable.
+    QVERIFY(m.rawWordsValid());
+    QCOMPARE(m.rawWordHex(0), QStringLiteral("0x0000"));
+    QVERIFY(m.bitValid());
+    QVERIFY(m.faultCode().valid);
+    QVERIFY(m.currentStep().valid);
+    QVERIFY(m.beltSpeed().valid);
+    QVERIFY(m.targetWidth().valid);
+    QVERIFY(m.pulsePerMm().valid);
+    QVERIFY(m.widthSpeed().valid);
+    QVERIFY(m.heartbeatKnown());
+}
+
+void DiagnosticsPageTest::modelSlowStaleOnlyAffectsSlowFields()
+{
+    // Slow block stale: D204/D220 -> "—", fast items unaffected.
+    ShellModel model;
+    DeviceSnapshotData d = validSnapshotData();
+    d.slowQuality = DataQuality::Stale;
+    d.overallQuality = aggregateQuality(d);
+    model.updateSnapshot(DeviceSnapshot(d));
+    DiagnosticsModel m(model);
+
+    QVERIFY(!m.pulsePerMm().valid); // D204 slow
+    QVERIFY(!m.widthSpeed().valid); // D220 slow
+
+    QVERIFY(m.rawWordsValid());
+    QVERIFY(m.bitValid());
+    QVERIFY(m.faultCode().valid);
+    QVERIFY(m.currentWidth().valid);
+    QVERIFY(m.heartbeatKnown());
+}
+
+void DiagnosticsPageTest::modelHomeCommandGatingPerBlock()
+{
+    // Home (M50-M53) and command (M100-M112) readback blocks stale: those bit
+    // rows become unknown, while fast D100/D103 bits and registers stay valid.
+    ShellModel model;
+    DeviceSnapshotData d = validSnapshotData();
+    d.homeBits = 0x0002;    // M51
+    d.commandBits = 0x0001; // M100
+    d.homeQuality = DataQuality::Stale;
+    d.commandQuality = DataQuality::Stale;
+    d.overallQuality = aggregateQuality(d);
+    model.updateSnapshot(DeviceSnapshot(d));
+    DiagnosticsModel m(model);
+
+    for (const BitRow &r : m.homeCommandBits())
+        QVERIFY2(!r.known, qPrintable(QStringLiteral("M%1").arg(r.mNumber)));
+
+    // Fast-sourced items are unaffected.
+    QVERIFY(m.bitValid());
+    QVERIFY(m.rawWordsValid());
+    QVERIFY(m.faultCode().valid);
+    QVERIFY(m.currentWidth().valid);
+    for (const BitRow &r : m.d100Bits())
+        QVERIFY(r.known);
+    for (const BitRow &r : m.d103Bits())
+        QVERIFY(r.known);
+}
+
+void DiagnosticsPageTest::modelSlowOutOfRangeKeepsFastFields()
+{
+    // Symmetric to modelOutOfRangeFieldKeepsOtherFields: D204/D220 out of
+    // range (built through the real slow-decode path) must invalidate only the
+    // slow fields. Fast registers, D110, the bit tables and D140 stay valid.
+    DeviceSnapshotData d = decodedFastData();
+    d.pulsePerMm = 0; // D204 below 1
+    d.widthSpeed = 0; // D220 below 1
+    checkSlowBlockRange(d); // marks invalid + overallQuality OutOfRange
+    QVERIFY(d.invalidFields != 0);
+    QVERIFY(d.overallQuality == DataQuality::OutOfRange);
+
+    ShellModel model;
+    model.updateSnapshot(DeviceSnapshot(d));
+    DiagnosticsModel m(model);
+
+    QVERIFY(!m.pulsePerMm().valid); // D204
+    QVERIFY(!m.widthSpeed().valid); // D220
+
+    // Fast-derived items are unaffected.
+    QVERIFY(m.rawWordsValid());
+    QVERIFY(m.bitValid());
+    QVERIFY(m.faultCode().valid);
+    QVERIFY(m.currentStep().valid);
+    QVERIFY(m.currentWidth().valid);
+    QVERIFY(m.heartbeatKnown());
 }
 
 // --- key registers --------------------------------------------------------------
@@ -597,6 +732,67 @@ void DiagnosticsPageTest::pageCommStatsRendered()
              QStringLiteral("0 ms"));
     QCOMPARE(page.commDisplay(QStringLiteral("sequence"))->text(),
              QStringLiteral("1"));
+}
+
+void DiagnosticsPageTest::darkSystemPaletteStillRendersLight()
+{
+    // Regression (root cause B): the diagnostics page has an un-named
+    // QScrollArea whose viewport has no QSS background. Under the Windows dark
+    // system palette it rendered #1e1e1e while `* { color:#17283b }` kept the
+    // labels dark -> ~1.1:1 contrast. The application theme must force the
+    // light industrial palette (and Fusion) independent of the OS scheme.
+    // applyAppTheme() replaces the app style (Qt owns and deletes the old
+    // style object), so remember its name, not the pointer.
+    const QString originalStyleName = qApp->style()->objectName();
+    const QPalette originalPalette = qApp->palette();
+
+    // Simulate Windows dark mode.
+    QPalette dark;
+    dark.setColor(QPalette::Window, QColor(0x1e, 0x1e, 0x1e));
+    dark.setColor(QPalette::Base, QColor(0x1e, 0x1e, 0x1e));
+    dark.setColor(QPalette::WindowText, QColor(0xf0, 0xf0, 0xf0));
+    dark.setColor(QPalette::Text, QColor(0xf0, 0xf0, 0xf0));
+    qApp->setPalette(dark);
+
+    hlm::applyAppTheme(*qApp);
+
+    const QColor base = qApp->palette().color(QPalette::Base);
+    const QColor window = qApp->palette().color(QPalette::Window);
+    QVERIFY2(base.lightness() > 200,
+             qPrintable(QStringLiteral("Base=%1").arg(base.name())));
+    QVERIFY2(window.lightness() > 200,
+             qPrintable(QStringLiteral("Window=%1").arg(window.name())));
+
+    // Structural reproduction: an un-named QScrollArea with a plain content
+    // widget (exactly the diagnostics layout) must render light, not dark.
+    QWidget host;
+    auto *scroll = new QScrollArea(&host);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    auto *content = new QWidget(scroll);
+    scroll->setWidget(content);
+    host.resize(220, 220);
+    host.show();
+    QApplication::processEvents();
+
+    const QImage img =
+        host.grab().toImage().convertToFormat(QImage::Format_RGB32);
+    for (const QPoint &p : {QPoint(110, 110), QPoint(30, 30), QPoint(180, 180)}) {
+        const QColor c(img.pixel(p));
+        QVERIFY2(c.lightness() > 180,
+                 qPrintable(QStringLiteral("scroll viewport pixel(%1,%2)=%3")
+                                .arg(p.x()).arg(p.y()).arg(c.name())));
+    }
+
+    // Restore the process-global style and palette so later tests are not
+    // order-coupled. applyAppTheme() replaced the style (Qt deletes the old
+    // style object), so recreate it from the remembered name. Built-in styles
+    // always carry a non-empty objectName.
+    if (!originalStyleName.isEmpty()) {
+        if (QStyle *style = QStyleFactory::create(originalStyleName))
+            qApp->setStyle(style);
+    }
+    qApp->setPalette(originalPalette);
 }
 
 // --- read-only page (no write intents) -----------------------------------------

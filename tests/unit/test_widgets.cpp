@@ -14,6 +14,9 @@
 #include <QtTest>
 #include <QMouseEvent>
 #include <QSignalSpy>
+#include <QImage>
+#include <QColor>
+#include <QFontMetrics>
 
 #include "ui/widgets/hold_button.h"
 #include "ui/widgets/status_light.h"
@@ -62,6 +65,8 @@ private slots:
     void valueDisplayShowsDashWhenInvalid();
     void valueDisplayShowsDashWhenStale();
     void valueDisplayShowsUnit();
+    void valueDisplayKeepsReadableFontUnderPixelSizing();
+    void valueDisplayMinimumHintFitsDrawnFont();
 
     // --- HoldButton ---------------------------------------------------------
     void holdButtonPressAndRelease();
@@ -133,6 +138,69 @@ void WidgetsTest::valueDisplayShowsUnit()
     ValueDisplay display;
     display.setValue(QStringLiteral("1500"), QStringLiteral("mm/min"), true);
     QCOMPARE(display.text(), QStringLiteral("1500 mm/min"));
+}
+
+void WidgetsTest::valueDisplayKeepsReadableFontUnderPixelSizing()
+{
+    // Regression: theme.qss sets `* { font-size: 15px; }`, so a widget's
+    // resolved font has pixelSize()==15 and pointSizeF()==-1. The old paint
+    // code did setPointSizeF(pointSizeF()+2) => setPointSizeF(1.0), collapsing
+    // the glyphs to ~1px (white boxes with no visible text). Render the widget
+    // and require real glyph pixels with a readable height.
+    ValueDisplay display;
+    QFont f = display.font();
+    f.setPixelSize(15); // exactly what the px-based theme produces
+    display.setFont(f);
+    display.setValue(QStringLiteral("1500"), QStringLiteral("Hz"), true);
+    display.resize(220, 48);
+    display.show();
+    QApplication::processEvents();
+
+    const QImage img =
+        display.grab().toImage().convertToFormat(QImage::Format_RGB32);
+    QVERIFY(!img.isNull());
+
+    // Count the dark glyph pixels in the interior (dark text on the white box).
+    int dark = 0;
+    int minY = img.height();
+    int maxY = -1;
+    for (int y = 3; y < img.height() - 3; ++y) {
+        for (int x = 16; x < img.width() - 8; ++x) {
+            const QColor c(img.pixel(x, y));
+            if (c.lightness() < 120) {
+                ++dark;
+                minY = qMin(minY, y);
+                maxY = qMax(maxY, y);
+            }
+        }
+    }
+    QVERIFY2(dark > 30, qPrintable(QStringLiteral("glyph pixels=%1").arg(dark)));
+    const int glyphHeight = (maxY >= minY) ? (maxY - minY + 1) : 0;
+    QVERIFY2(glyphHeight >= 10,
+             qPrintable(QStringLiteral("glyph height=%1 px").arg(glyphHeight)));
+}
+
+void WidgetsTest::valueDisplayMinimumHintFitsDrawnFont()
+{
+    // minimumSizeHint must be computed from the SAME (bold, +2) font paintEvent
+    // draws with, and include the 14/10 px horizontal insets, so the value is
+    // not clipped when the widget sits at its minimum width.
+    ValueDisplay display;
+    QFont f = display.font();
+    f.setPixelSize(15);
+    display.setFont(f);
+    display.setValue(QStringLiteral("1500"), QStringLiteral("Hz"), true);
+
+    QFont drawn = f;
+    drawn.setBold(true);
+    drawn.setPixelSize(17); // base 15 + 2, matching the paint path
+    const int advance = QFontMetrics(drawn).horizontalAdvance(display.text());
+    // minimumSizeHint() is protected in ValueDisplay; read it via QWidget.
+    const QSize hint = static_cast<const QWidget &>(display).minimumSizeHint();
+    QVERIFY2(hint.width() >= advance + 24,
+             qPrintable(QStringLiteral("minWidth=%1 advance=%2")
+                            .arg(hint.width())
+                            .arg(advance)));
 }
 
 // --- HoldButton --------------------------------------------------------------
