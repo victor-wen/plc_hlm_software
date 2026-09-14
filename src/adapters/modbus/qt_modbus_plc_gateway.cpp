@@ -761,21 +761,31 @@ void ModbusGatewayWorker::handleReadResult(const ModbusRequest &req, const Trans
                 raw[i] = res.values.at(i);
             const QDateTime started = QDateTime::currentDateTime();
             const qint64 ageMs = qMax<qint64>(0, m_nowMs() - m_fastDispatchedMs);
-            // The fast block decode builds a fresh DeviceSnapshotData; the
-            // slow-block fields (D204/D210/D220) and their out-of-range flags
-            // are decoded by the slower SlowPoll and must survive the fast
-            // poll, or the published snapshot would always show them as 0.
+            // The fast block decode builds a fresh DeviceSnapshotData. The
+            // slow-block fields (D204/D210/D220) and the home/command readback
+            // bits are filled by their own polls, which do NOT publish; they
+            // must survive the fast poll, or the published snapshot would
+            // always show them as 0 (breaking M50-M53/M100-M112 and the M100
+            // estop branch). Their block qualities are carried across as well.
             const quint16 pulsePerMm = m_data.pulsePerMm;
             const qint16 widthDelta = m_data.widthDelta;
             const quint16 widthSpeed = m_data.widthSpeed;
             const quint32 slowInvalid = m_data.invalidFields
                 & ((quint32(1) << quint8(SnapshotField::PulsePerMm))
                    | (quint32(1) << quint8(SnapshotField::WidthSpeed)));
+            const quint16 homeBits = m_data.homeBits;
+            const quint16 commandBits = m_data.commandBits;
+            const DataQuality homeQuality = m_data.homeQuality;
+            const DataQuality commandQuality = m_data.commandQuality;
             m_data = decodeFastBlock(raw, 0, true, ageMs, started, started,
                                      DataQuality::Valid);
             m_data.pulsePerMm = pulsePerMm;
             m_data.widthDelta = widthDelta;
             m_data.widthSpeed = widthSpeed;
+            m_data.homeBits = homeBits;
+            m_data.commandBits = commandBits;
+            m_data.homeQuality = homeQuality;
+            m_data.commandQuality = commandQuality;
             m_data.invalidFields |= slowInvalid;
             m_data.overallQuality = aggregateQuality(m_data);
             checkHeartbeatFreeze(m_data.heartbeat);

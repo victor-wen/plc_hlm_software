@@ -103,6 +103,7 @@ private slots:
     void restartAfterStopWorks();
     void writeRejectedUntilFirstSnapshotAfterReconnect();
     void slowPollOutOfRangeMarksFieldsInvalid();
+    void fastPollPreservesHomeAndCommandBits();
     // Task 20: pulse state machine + M112 watchdog wiring, comm stats.
     void startPulseRoutesThroughStateMachine();
     void pulseHoldThenClearAtMin100ms();
@@ -739,6 +740,41 @@ void GatewayTest::slowPollOutOfRangeMarksFieldsInvalid()
     m_transport->completeOk(fastBlock(4));
     QVERIFY(m_lastSnapshot.fieldValid(SnapshotField::PulsePerMm));
     QVERIFY(m_lastSnapshot.fieldValid(SnapshotField::WidthSpeed));
+}
+
+void GatewayTest::fastPollPreservesHomeAndCommandBits()
+{
+    // Regression: HomePoll/CommandPoll write m_data.homeBits/commandBits but do
+    // NOT publish. FastPoll rebuilds m_data from decodeFastBlock (which zeroes
+    // those fields). Without saving/restoring them, every published snapshot
+    // reports M50-M53/M100-M112 as 0, breaking the diagnostics bit tables and
+    // ShellModel::isEstop()'s M100 branch on a real PLC link.
+    m_transport->completeOk(fastBlock(1)); // first fast poll -> online
+    QVERIFY(m_worker->isOnline());
+    QCOMPARE(m_snapshots, 1);
+
+    // Enable home + command polls; at 300 ms they enqueue alongside fast.
+    m_worker->setPollIntervals(250, 250, 250, 1000000);
+    m_now = 300;
+    m_worker->onPollTick();
+    m_transport->completeOk(fastBlock(2)); // in-flight fast poll first
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::HomePoll);
+    m_transport->completeOk({0x000A}); // M51 + M53
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::CommandPoll);
+    m_transport->completeOk({0x1001}); // M100 + M112
+
+    // The next fast poll publishes a snapshot that must still carry the bits
+    // read by HomePoll/CommandPoll.
+    m_now = 600;
+    m_worker->onPollTick();
+    m_transport->completeOk(fastBlock(3));
+    QCOMPARE(m_snapshots, 3);
+    QVERIFY(m_lastSnapshot.m51());
+    QVERIFY(m_lastSnapshot.m53());
+    QVERIFY(m_lastSnapshot.m100());
+    QVERIFY(m_lastSnapshot.m112());
+    QVERIFY(!m_lastSnapshot.m50());
+    QVERIFY(!m_lastSnapshot.m101());
 }
 
 // ---------------------------------------------------------------------------
