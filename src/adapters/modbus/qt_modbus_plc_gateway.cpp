@@ -773,6 +773,7 @@ void ModbusGatewayWorker::handleReadResult(const ModbusRequest &req, const Trans
             const quint16 commandBits = m_data.commandBits;
             const DataQuality homeQuality = m_data.homeQuality;
             const DataQuality commandQuality = m_data.commandQuality;
+            const DataQuality slowQuality = m_data.slowQuality;
             m_data = decodeFastBlock(raw, 0, true, ageMs, started, started,
                                      DataQuality::Valid);
             m_data.pulsePerMm = pulsePerMm;
@@ -782,6 +783,7 @@ void ModbusGatewayWorker::handleReadResult(const ModbusRequest &req, const Trans
             m_data.commandBits = commandBits;
             m_data.homeQuality = homeQuality;
             m_data.commandQuality = commandQuality;
+            m_data.slowQuality = slowQuality;
             m_data.invalidFields |= slowInvalid;
             m_data.overallQuality = aggregateQuality(m_data);
             checkHeartbeatFreeze(m_data.heartbeat);
