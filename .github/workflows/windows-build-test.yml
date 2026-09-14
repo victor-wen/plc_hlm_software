@@ -135,6 +135,12 @@ jobs:
       # Qt/GUI test (for example an offscreen widget event-loop hang) must fail
       # and let the remaining tests continue instead of occupying a runner
       # indefinitely.
+      #
+      # USER-REQUESTED CI OPTIMIZATION (2026-09-14): the Debug Qt widget tests
+      # are an order of magnitude slower than Release (the shell suite alone
+      # measured ~24 s before the rendering regressions and ~30 s after them).
+      # 30 s was therefore too tight and produced a false timeout; 60 s keeps
+      # the hang guard with headroom for runner variance.
       - name: Test (ctest)
         shell: pwsh
         run: |
@@ -164,7 +170,7 @@ jobs:
           $env:QT_PLUGIN_PATH = (Resolve-Path $qtPluginRoot).Path
           $env:QT_QPA_PLATFORM_PLUGIN_PATH = (Resolve-Path $qtPlatformRoot).Path
 
-          ctest --test-dir build -C ${{ matrix.config }} --parallel 4 --timeout 30 --output-on-failure
+          ctest --test-dir build -C ${{ matrix.config }} --parallel 4 --timeout 60 --output-on-failure
 
       - name: Upload build and test artifacts
         if: always()
