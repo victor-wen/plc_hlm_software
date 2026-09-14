@@ -143,9 +143,9 @@ jobs:
       # the hang guard with headroom for runner variance.
       #
       # full_flow is timing-sensitive by design (it is RUN_SERIAL and its own
-      # CMake comment documents 5 s async waits starving on shared runners).
-      # A single retry only affects already-failing runs; green runs pay
-      # nothing, and a deterministic failure still fails on the second try.
+      # CMake comment documents 5 s async waits starving on shared runners), so
+      # it alone is retried on failure. Every other test runs without retries,
+      # so a genuine failure there is never masked by a repeat.
       - name: Test (ctest)
         shell: pwsh
         run: |
@@ -175,7 +175,11 @@ jobs:
           $env:QT_PLUGIN_PATH = (Resolve-Path $qtPluginRoot).Path
           $env:QT_QPA_PLATFORM_PLUGIN_PATH = (Resolve-Path $qtPlatformRoot).Path
 
-          ctest --test-dir build -C ${{ matrix.config }} --parallel 4 --timeout 60 --repeat until-pass:2 --output-on-failure
+          # All tests except the timing-sensitive full_flow suite, no retries.
+          ctest --test-dir build -C ${{ matrix.config }} --parallel 4 --timeout 60 -E full_flow --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Retry only full_flow: a single retry affects already-failing runs.
+          ctest --test-dir build -C ${{ matrix.config }} --parallel 4 --timeout 60 -R full_flow --repeat until-pass:2 --output-on-failure
 
       - name: Upload build and test artifacts
         if: always()
