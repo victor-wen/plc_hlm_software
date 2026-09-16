@@ -193,6 +193,20 @@ void Application::createObjects()
             m_db->appendAudit(a);
         },
         []() { /* heartbeat stops with the gateway (spec §13) */ }, this);
+
+    // Restricted-mode verdict propagation (PLC-HMI-008 D1/D2): the coordinator
+    // consults the single LifecycleController::commandAllowed predicate at its
+    // command-entry chokepoint, so page entries that reach the coordinator
+    // directly (manual hold/latch/bypass, recipe apply, mode switch) are
+    // enforced identically to the Application-routed commands. The callback
+    // keeps the verdict authoritative on restricted-mode enter/exit; no second
+    // restricted predicate exists. A bare coordinator (unit tests) has no gate
+    // and keeps its previous behavior.
+    m_coordinator->setCommandGate([this](Command cmd) -> QString {
+        if (m_lifecycle != nullptr && !m_lifecycle->commandAllowed(cmd))
+            return m_lifecycle->commandRejectionReason();
+        return QString();
+    });
 }
 
 void Application::wireSignals()
@@ -728,6 +742,15 @@ bool Application::validateParameterWrite(quint16 address, quint16 value,
 
 void Application::handleParameterWrite(quint16 address, quint16 value)
 {
+    // Parameter writes are user-initiated commands: restricted mode blocks
+    // them through the same single verdict and shows the deterministic reason
+    // (PLC-HMI-008 D1).
+    if (m_lifecycle != nullptr
+        && !m_lifecycle->commandAllowed(Command::ParameterChange)) {
+        m_usersPage->setParameterWriteResult(false,
+                                             m_lifecycle->commandRejectionReason());
+        return;
+    }
     QString error;
     if (!validateParameterWrite(address, value, &error)) {
         m_usersPage->setParameterWriteResult(false, error);
@@ -738,6 +761,14 @@ void Application::handleParameterWrite(quint16 address, quint16 value)
 
 void Application::handleD204Write(quint16 value, const QString &adminPassword)
 {
+    // Same restricted-mode gate as every other user-initiated parameter write:
+    // no password round-trip and no register write while restricted.
+    if (m_lifecycle != nullptr
+        && !m_lifecycle->commandAllowed(Command::ParameterChange)) {
+        m_usersPage->setParameterWriteResult(false,
+                                             m_lifecycle->commandRejectionReason());
+        return;
+    }
     if (m_d204Pending) {
         m_usersPage->setParameterWriteResult(
             false, QStringLiteral("已有 D204 密码验证正在进行"));
@@ -891,10 +922,31 @@ void Application::onLoginLogoutRequested()
 
 void Application::onCommandRequested(Command cmd)
 {
+    // Restricted-mode gate (PLC-HMI-008 D1/D2): consult the single
+    // LifecycleController verdict before any dispatch. A blocked request is
+    // projected immediately as a visible rejection with the deterministic
+    // reason and never reaches the coordinator or the PLC.
+    if (m_lifecycle != nullptr && !m_lifecycle->commandAllowed(cmd)) {
+        publishOperatorStatus(cmd, OperatorCommandState::Rejected,
+                              m_lifecycle->commandRejectionReason(),
+                              /*newRequest=*/true);
+        return;
+    }
     if (cmd == Command::EstopSet) {
         // 已处于软件急停且当前用户是管理员: 确认后解除急停; 否则置急停.
         // 非管理员点击解除会被 coordinator 的权限门控拒绝 (spec §11.4).
         if (m_shell->isEstop() && m_shell->role() == Role::Admin) {
+            // In this state the control maps to EstopRelease, a different
+            // Command verdict: restricted mode must block the release and show
+            // the same deterministic reason instead of opening the dialog.
+            if (m_lifecycle != nullptr
+                && !m_lifecycle->commandAllowed(Command::EstopRelease)) {
+                publishOperatorStatus(Command::EstopRelease,
+                                      OperatorCommandState::Rejected,
+                                      m_lifecycle->commandRejectionReason(),
+                                      /*newRequest=*/true);
+                return;
+            }
             const auto answer = QMessageBox::question(
                 m_window, QStringLiteral("解除软件急停"),
                 QStringLiteral("确认解除软件急停？"),

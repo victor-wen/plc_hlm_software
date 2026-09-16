@@ -155,3 +155,33 @@ add_test(NAME serial_settings_application_developer COMMAND test_serial_settings
 set_tests_properties(serial_settings_application_developer PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )
+
+# --- PLC-HMI-008: restricted-mode production routing -------------------------
+
+add_executable(test_restricted_mode_routing restricted_mode_routing_test.cpp)
+target_link_libraries(test_restricted_mode_routing PRIVATE
+    hlm_app_core
+    hlm_simulator
+    hlm_sqlite
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME restricted_mode_routing COMMAND test_restricted_mode_routing)
+set_tests_properties(restricted_mode_routing PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
+)
+
+# --- PLC-HMI-008: developer-owned restricted-routing regression tests (D5) ---
+
+add_executable(test_restricted_routing_developer restricted_routing_developer_test.cpp)
+target_link_libraries(test_restricted_routing_developer PRIVATE
+    hlm_app_core
+    hlm_simulator
+    hlm_sqlite
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME restricted_routing_developer COMMAND test_restricted_routing_developer)
+set_tests_properties(restricted_routing_developer PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
+)

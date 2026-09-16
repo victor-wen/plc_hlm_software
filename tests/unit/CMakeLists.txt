@@ -398,6 +398,26 @@ target_link_libraries(test_serial_settings_batch_developer PRIVATE
 )
 add_test(NAME serial_settings_batch_developer COMMAND test_serial_settings_batch_developer)
 
-set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page control_panel operator_command_lifecycle command_status_projection command_feedback_pages operator_lifecycle_developer recipe_editor_state recipe_result_feedback recipe_editor_developer serial_settings_page PROPERTIES
+# --- PLC-HMI-008: independent touch-visible disabled-reason tests -----------
+# QTEST_MAIN widget target: visible_disabled_reasons is in the offscreen list.
+
+add_executable(test_visible_disabled_reasons visible_disabled_reasons_test.cpp)
+target_link_libraries(test_visible_disabled_reasons PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME visible_disabled_reasons COMMAND test_visible_disabled_reasons)
+
+# --- PLC-HMI-008: developer-owned visible-reason regression tests (D5) -------
+# QTEST_MAIN widget target: visible_reasons_developer is in the offscreen list.
+
+add_executable(test_visible_reasons_developer visible_reasons_developer_test.cpp)
+target_link_libraries(test_visible_reasons_developer PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME visible_reasons_developer COMMAND test_visible_reasons_developer)
+
+set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page control_panel operator_command_lifecycle command_status_projection command_feedback_pages operator_lifecycle_developer recipe_editor_state recipe_result_feedback recipe_editor_developer serial_settings_page visible_disabled_reasons visible_reasons_developer PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )

@@ -89,6 +89,16 @@ void ControlCoordinator::setRole(Role role)
     m_role = role;
 }
 
+void ControlCoordinator::setCommandGate(std::function<QString(Command)> gate)
+{
+    m_commandGate = std::move(gate);
+}
+
+QString ControlCoordinator::blockedByRestrictedMode(Command cmd) const
+{
+    return m_commandGate ? m_commandGate(cmd) : QString();
+}
+
 PermissionResult ControlCoordinator::permission(Command cmd) const
 {
     return PermissionPolicy::check(m_role, cmd);
@@ -140,6 +150,11 @@ ControlCoordinator::CommandResult ControlCoordinator::rejectCommand(Command cmd,
 
 ControlCoordinator::CommandResult ControlCoordinator::reset()
 {
+    // Restricted-mode gate first: a blocked request is rejected visibly before
+    // any dispatch and never reaches the transport/PLC (PLC-HMI-008 D1).
+    if (const QString blocked = blockedByRestrictedMode(Command::Reset);
+        !blocked.isEmpty())
+        return rejectCommand(Command::Reset, blocked);
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
     CommandResult g = gate(Command::Reset, s);
     if (!g.accepted)
@@ -180,6 +195,9 @@ ControlCoordinator::CommandResult ControlCoordinator::reset()
 
 ControlCoordinator::CommandResult ControlCoordinator::adjustWidth(quint16 targetWidth)
 {
+    if (const QString blocked = blockedByRestrictedMode(Command::AdjustWidth);
+        !blocked.isEmpty())
+        return rejectCommand(Command::AdjustWidth, blocked);
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
     CommandResult g = gate(Command::AdjustWidth, s, targetWidth);
     if (!g.accepted)
@@ -232,6 +250,9 @@ ControlCoordinator::CommandResult ControlCoordinator::adjustWidth(quint16 target
 
 ControlCoordinator::CommandResult ControlCoordinator::setMode(bool autoMode)
 {
+    if (const QString blocked = blockedByRestrictedMode(Command::ModeSwitch);
+        !blocked.isEmpty())
+        return rejectCommand(Command::ModeSwitch, blocked);
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
     CommandResult g = gate(Command::ModeSwitch, s);
     if (!g.accepted)
@@ -255,6 +276,9 @@ ControlCoordinator::CommandResult ControlCoordinator::setMode(bool autoMode)
 
 ControlCoordinator::CommandResult ControlCoordinator::start()
 {
+    if (const QString blocked = blockedByRestrictedMode(Command::Start);
+        !blocked.isEmpty())
+        return rejectCommand(Command::Start, blocked);
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
     CommandResult g = gate(Command::Start, s);
     if (!g.accepted)
@@ -277,6 +301,11 @@ ControlCoordinator::CommandResult ControlCoordinator::start()
 
 ControlCoordinator::CommandResult ControlCoordinator::stop()
 {
+    // The gate allows Stop while restricted (commandAllowed verdict); the
+    // online-stop path must never be blocked by the restricted gate.
+    if (const QString blocked = blockedByRestrictedMode(Command::Stop);
+        !blocked.isEmpty())
+        return rejectCommand(Command::Stop, blocked);
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
     CommandResult g = gate(Command::Stop, s);
     if (!g.accepted)
@@ -299,6 +328,11 @@ ControlCoordinator::CommandResult ControlCoordinator::stop()
 
 ControlCoordinator::CommandResult ControlCoordinator::estopSet()
 {
+    // The gate allows EstopSet while restricted (commandAllowed verdict); the
+    // software-estop path must never be blocked by the restricted gate.
+    if (const QString blocked = blockedByRestrictedMode(Command::EstopSet);
+        !blocked.isEmpty())
+        return rejectCommand(Command::EstopSet, blocked);
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
     CommandResult g = gate(Command::EstopSet, s);
     if (!g.accepted)
@@ -327,6 +361,9 @@ ControlCoordinator::CommandResult ControlCoordinator::estopSet()
 
 ControlCoordinator::CommandResult ControlCoordinator::estopRelease()
 {
+    if (const QString blocked = blockedByRestrictedMode(Command::EstopRelease);
+        !blocked.isEmpty())
+        return rejectCommand(Command::EstopRelease, blocked);
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
     CommandResult g = gate(Command::EstopRelease, s);
     if (!g.accepted)
@@ -350,6 +387,12 @@ ControlCoordinator::CommandResult ControlCoordinator::estopRelease()
 
 ControlCoordinator::CommandResult ControlCoordinator::manualHold(quint16 address, bool pressed)
 {
+    // Every user-initiated manual entry is gated first, press and release:
+    // restricted mode blocks ManualCommand per the commandAllowed verdict, and
+    // a blocked request stays visibly rejected instead of reaching the PLC.
+    if (const QString blocked = blockedByRestrictedMode(Command::ManualCommand);
+        !blocked.isEmpty())
+        return rejectCommand(Command::ManualCommand, blocked);
     // Hold commands are only M106/M107/M108 (spec §10.7); reject others.
     if (address != kM106 && address != kM107 && address != kM108)
         return rejectCommand(Command::ManualCommand,
@@ -388,6 +431,9 @@ ControlCoordinator::CommandResult ControlCoordinator::manualHold(quint16 address
 
 ControlCoordinator::CommandResult ControlCoordinator::manualLatch(quint16 address, bool value)
 {
+    if (const QString blocked = blockedByRestrictedMode(Command::ManualCommand);
+        !blocked.isEmpty())
+        return rejectCommand(Command::ManualCommand, blocked);
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
     CommandResult g = gate(Command::ManualCommand, s);
     if (!g.accepted)
@@ -411,6 +457,9 @@ ControlCoordinator::CommandResult ControlCoordinator::manualLatch(quint16 addres
 
 ControlCoordinator::CommandResult ControlCoordinator::bypass(quint16 address, bool value)
 {
+    if (const QString blocked = blockedByRestrictedMode(Command::Bypass);
+        !blocked.isEmpty())
+        return rejectCommand(Command::Bypass, blocked);
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
     CommandResult g = gate(Command::Bypass, s);
     if (!g.accepted)

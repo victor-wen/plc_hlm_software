@@ -76,6 +76,11 @@ public:
     QString restrictedReason() const { return m_restrictedReason; }
     // False when restricted mode blocks the command (only Stop/EstopSet stay).
     bool commandAllowed(Command cmd) const;
+    // Deterministic, non-empty operator-facing reason for a command blocked by
+    // restricted mode (D1/D2): the production routing gate projects this exact
+    // string into OperatorCommandStatus.human_readable_detail. Empty while not
+    // restricted.
+    QString commandRejectionReason() const;
 
     // --- shutdown (spec §13) ----------------------------------------------------
     void shutdown();

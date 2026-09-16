@@ -732,16 +732,25 @@ void ManualControlPageTest::operatorSeesDisabledControlsWithReason()
 
     // 操作员只读: all manual + bypass controls disabled with the permission
     // reason (spec §11.4: 无权限操作应保持可发现但禁用，并说明所需权限).
+    // Tooltip/status tip supplement the reason; the exact reason is also
+    // inline visible text (PLC-HMI-008 D3, forbidden_change 693).
     QVERIFY(!page.jogButton()->isEnabled());
     QVERIFY(!page.widthFwdButton()->isEnabled());
     QVERIFY(!page.widthRevButton()->isEnabled());
     QVERIFY(!page.stopGateButton()->isEnabled());
     QVERIFY(page.stopGateButton()->toolTip().contains(
         QStringLiteral("需要管理员权限")));
+    QVERIFY(page.stopGateButton()->visibleReasonText().contains(
+        QStringLiteral("需要管理员权限")));
+    QVERIFY(!page.stopGateButton()->reasonLabel()->isHidden());
     QVERIFY(!page.passthroughButton()->isEnabled());
+    QVERIFY(!page.passthroughButton()->visibleReasonText().isEmpty());
     QVERIFY(!page.beltContinuousButton()->isEnabled());
+    QVERIFY(!page.beltContinuousButton()->visibleReasonText().isEmpty());
     QVERIFY(!page.curtainShieldButton()->isEnabled());
+    QVERIFY(!page.curtainShieldButton()->visibleReasonText().isEmpty());
     QVERIFY(!page.doorShieldButton()->isEnabled());
+    QVERIFY(!page.doorShieldButton()->visibleReasonText().isEmpty());
 }
 
 void ManualControlPageTest::controlsMeetTouchTargetSize()

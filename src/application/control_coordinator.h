@@ -82,6 +82,18 @@ public:
     void setRole(Role role);
     Role role() const { return m_role; }
 
+    // Restricted-mode command gate (PLC-HMI-008 D1/D2). The composition root
+    // installs the single LifecycleController::commandAllowed verdict here:
+    // the callback returns an empty string while the command is allowed and a
+    // non-empty operator-facing reason while restricted mode blocks it. Every
+    // user-initiated command entry consults this gate before any
+    // permission/interlock check, dispatch or PLC submission, so no duplicated
+    // predicate exists. Internal safety/clear paths (logoutClear, stop/estop
+    // convergence, shutdown clears) never consult the gate; Stop and EstopSet
+    // stay allowed exactly as the verdict defines. When no gate is installed
+    // (unit tests constructing a bare coordinator) every command is allowed.
+    void setCommandGate(std::function<QString(Command)> gate);
+
     // --- commands (all return a structured result; effects arrive via signals)
     PermissionResult permission(Command cmd) const;
     InterlockResult interlock(Command cmd, const DeviceSnapshot &s,
@@ -182,6 +194,8 @@ private:
     CommandResult gate(Command cmd, const DeviceSnapshot &s, quint16 targetWidth = 0);
     // Emits commandRejected(cmd, reason) and returns the structured result.
     CommandResult rejectCommand(Command cmd, const QString &reason);
+    // Non-empty when the installed restricted-mode gate blocks `cmd`.
+    QString blockedByRestrictedMode(Command cmd) const;
     // Submits and, when accepted, tracks the request identity for completion
     // correlation. False = the transport rejected the submission.
     bool submitCoil(Command cmd, quint16 address, bool value, CommandPriority priority);
@@ -210,6 +224,9 @@ private:
     PulseTransport m_transport;
     Config m_cfg;
     std::function<qint64()> m_nowMs;
+    // Restricted-mode verdict installed by the composition root; empty when no
+    // restricted gate applies (see setCommandGate).
+    std::function<QString(Command)> m_commandGate;
     Role m_role = Role::Anonymous;
     bool m_online = false;
     std::optional<DeviceSnapshot> m_snapshot;

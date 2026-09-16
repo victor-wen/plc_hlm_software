@@ -67,9 +67,12 @@ ActionBar::ActionBar(ShellModel &model, QWidget *parent)
     setMinimumWidth(192);
     setMaximumWidth(192);
 
+    // Compact spacing: the inline disabled reasons (D3) add height to disabled
+    // controls, so the column keeps a little more room for the safety strip at
+    // the 1366x768 envelope without shrinking Stop/estop.
     auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(6, 6, 6, 6);
-    layout->setSpacing(6);
+    layout->setContentsMargins(4, 4, 4, 4);
+    layout->setSpacing(4);
 
     auto *title = new QLabel(QStringLiteral("设备操作"), this);
     title->setObjectName(QStringLiteral("actionBarTitle"));
@@ -129,10 +132,12 @@ ActionBar::ActionBar(ShellModel &model, QWidget *parent)
     m_estop->setObjectName(QStringLiteral("estopButton"));
     m_estop->setProperty("danger", true);
     m_estop->setMinimumHeight(80);
+    // text-align keeps the visible disabled reason (PermissionButton D3) below
+    // the painted title instead of overlapping it.
     m_estop->setStyleSheet(
         QStringLiteral("QPushButton#estopButton { background-color: #c42b2b;"
                        " color: white; font-weight: bold; border: 3px solid #7a1010;"
-                       " border-radius: 6px; }"
+                       " border-radius: 6px; text-align: top; }"
                        "QPushButton#estopButton:disabled { background-color: #8a5555; }"));
     layout->addWidget(m_estop);
 

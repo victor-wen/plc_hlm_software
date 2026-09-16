@@ -42,8 +42,10 @@
 #include "ui/MainWindow.h"
 #include "ui/pages/recipe_width_page.h"
 #include "ui/pages/users_settings_page.h"
+#include "ui/shell/action_bar.h"
 #include "ui/shell/shell_model.h"
 #include "ui/widgets/hold_button.h"
+#include "ui/widgets/permission_button.h"
 
 using namespace hlm;
 
@@ -756,14 +758,23 @@ void FullFlowTest::mainWindowOffscreenShell()
     QVERIFY(!w.hasActiveHolds());
     QVERIFY(!held.isHeld());
 
-    // Anonymous role: action buttons disabled with a tooltip reason
-    // (spec §11.4: 无权限操作保持可发现但禁用并说明原因).
+    // Anonymous role: action buttons disabled with a reason that is both a
+    // tooltip supplement and inline visible text, never tooltip-only
+    // (spec §11.4; PLC-HMI-008 D3, forbidden_change 693).
+    ActionBar *bar = w.findChild<ActionBar *>();
+    QVERIFY(bar != nullptr);
     QVERIFY(!w.startButton()->isEnabled());
     QVERIFY(!w.startButton()->toolTip().isEmpty());
+    QVERIFY2(!bar->startButton()->visibleReasonText().isEmpty(),
+             "a disabled action-bar control must show its reason inline");
     QVERIFY(!w.resetButton()->isEnabled());
     QVERIFY(!w.resetButton()->toolTip().isEmpty());
+    QVERIFY2(!bar->resetButton()->visibleReasonText().isEmpty(),
+             "a disabled action-bar control must show its reason inline");
     QVERIFY(!w.estopButton()->isEnabled());
     QVERIFY(!w.estopButton()->toolTip().isEmpty());
+    QVERIFY2(!bar->estopButton()->visibleReasonText().isEmpty(),
+             "a disabled software-estop control must show its reason inline");
 }
 
 // --- 7. composition root (Application) adjustWidth convergence ----------------

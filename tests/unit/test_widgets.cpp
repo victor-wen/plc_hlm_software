@@ -17,6 +17,7 @@
 #include <QImage>
 #include <QColor>
 #include <QFontMetrics>
+#include <QLabel>
 
 #include "ui/widgets/hold_button.h"
 #include "ui/widgets/status_light.h"
@@ -325,13 +326,29 @@ void WidgetsTest::permissionButtonDisabledShowsReason()
     button.setEnabledWithReason(false, QStringLiteral("需要管理员权限"));
     QVERIFY(!button.isEnabled());
     QCOMPARE(button.disabledReason(), QStringLiteral("需要管理员权限"));
-    // The reason must be discoverable by the user: shown as tooltip and
-    // accessible via status tip (spec §11.4: 相邻位置或提示框说明).
+    // The reason must be discoverable by the user: tooltip/status tip remain
+    // supplements (spec §11.4: 相邻位置或提示框说明), but they are never the
+    // only explanation (PLC-HMI-008 D3, forbidden_change 693). The exact
+    // reason is also inline visible text on the control.
     QCOMPARE(button.toolTip(), QStringLiteral("需要管理员权限"));
+    QCOMPARE(button.statusTip(), QStringLiteral("需要管理员权限"));
+    QCOMPARE(button.visibleReasonText(), QStringLiteral("需要管理员权限"));
+    QVERIFY(button.reasonLabel() != nullptr);
+    QVERIFY2(!button.reasonLabel()->isHidden(),
+             "the disabled reason must be rendered as inline visible text");
+    QVERIFY(button.reasonLabel()->fontMetrics().height() >= 12);
 
+    // A changed reason updates the visible text on every state change.
+    button.setEnabledWithReason(false, QStringLiteral("未回原点"));
+    QCOMPARE(button.visibleReasonText(), QStringLiteral("未回原点"));
+    QVERIFY(!button.reasonLabel()->isHidden());
+
+    // Allowed: the control is enabled and no stale reason survives.
     button.setEnabledWithReason(true, QString());
     QVERIFY(button.isEnabled());
     QVERIFY(button.toolTip().isEmpty());
+    QVERIFY(button.visibleReasonText().isEmpty());
+    QVERIFY(button.reasonLabel()->isHidden());
 }
 
 QTEST_MAIN(WidgetsTest)

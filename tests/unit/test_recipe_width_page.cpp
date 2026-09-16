@@ -613,11 +613,18 @@ void RecipeWidthPageTest::operatorSeesDisabledApplyWithReason()
 
     // 操作员只读: apply + recipe CRUD disabled with the permission reason
     // (spec §11.4: 无权限操作应保持可发现但禁用，并说明所需权限).
+    // Tooltip/status tip supplement the reason; the exact reason is also
+    // inline visible text (PLC-HMI-008 D3, forbidden_change 693).
     QVERIFY(!page.applyButton()->isEnabled());
     QVERIFY(page.applyButton()->toolTip().contains(
         QStringLiteral("需要管理员权限")));
+    QVERIFY(page.applyButton()->visibleReasonText().contains(
+        QStringLiteral("需要管理员权限")));
+    QVERIFY(!page.applyButton()->reasonLabel()->isHidden());
     QVERIFY(!page.saveButton()->isEnabled());
+    QVERIFY(!page.saveButton()->visibleReasonText().isEmpty());
     QVERIFY(!page.deleteButton()->isEnabled());
+    QVERIFY(!page.deleteButton()->visibleReasonText().isEmpty());
     QVERIFY(!page.nameEdit()->isEnabled());
     QVERIFY(!page.widthSpin()->isEnabled());
 }

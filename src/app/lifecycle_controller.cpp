@@ -155,6 +155,19 @@ bool LifecycleController::commandAllowed(Command cmd) const
     return cmd == Command::Stop || cmd == Command::EstopSet;
 }
 
+QString LifecycleController::commandRejectionReason() const
+{
+    if (!m_restricted)
+        return QString();
+    // Deterministic wording for the visible projection (D1/D2). The underlying
+    // storage reason is appended when present so the operator can tell why the
+    // restricted mode was entered.
+    if (m_restrictedReason.isEmpty())
+        return QStringLiteral("数据库受限模式: 仅允许在线停止和置软件急停");
+    return QStringLiteral("数据库受限模式: 仅允许在线停止和置软件急停 (%1)")
+        .arg(m_restrictedReason);
+}
+
 void LifecycleController::shutdown()
 {
     // 应用正常退出: 清除 M42/M106-M111 并释放保持意图, 随后由网关 stop 停止轮询
