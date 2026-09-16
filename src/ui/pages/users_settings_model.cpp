@@ -186,7 +186,7 @@ void UsersSettingsModel::setParameterWriteResult(bool ok, const QString &detail)
 QString UsersSettingsModel::paramStatusText() const
 {
     if (m_paramWritePending)
-        return QStringLiteral("等待 PLC 确认写入结果");
+        return QStringLiteral("验证并写入中，等待 PLC 确认写入结果");
     return m_paramStatus;
 }
 

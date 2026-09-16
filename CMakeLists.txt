@@ -56,6 +56,7 @@ add_library(hlm_core STATIC
     src/domain/address_table.cpp
     src/domain/fault_code.cpp
     src/domain/device_snapshot.cpp
+    src/domain/operator_command_status.cpp
     src/domain/password_derivation.cpp
     src/ports/iplc_gateway.cpp
     src/ports/ivision_service.cpp

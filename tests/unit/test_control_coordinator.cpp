@@ -249,6 +249,22 @@ void ControlCoordinatorTest::adminCanResetAndAdjust()
 
     c->setRole(Role::Admin);
     QVERIFY(c->reset().accepted);
+
+    // PLC-HMI-001 D3 (contract invariant: commands sharing M104 cannot consume
+    // each other's completion): a mode switch overlapping the in-flight reset
+    // is now visibly rejected instead of being silently accepted and sharing
+    // the reset's M104 write/confirmation.
+    QSignalSpy rejected(c.get(), &ControlCoordinator::commandRejected);
+    QVERIFY(!c->setMode(true).accepted);
+    QCOMPARE(rejected.count(), 1);
+    QCOMPARE(rejected[0][0].value<Command>(), Command::ModeSwitch);
+    QVERIFY(!rejected[0][1].toString().isEmpty());
+
+    // Let the reset converge; the admin can then issue the other commands.
+    gw.tick();
+    gw.tick();
+    QVERIFY(!c->resetInProgress());
+
     QVERIFY(c->setMode(true).accepted);
     QVERIFY(c->manualHold(kM106, true).accepted);
     QVERIFY(c->bypass(kM110, true).accepted);

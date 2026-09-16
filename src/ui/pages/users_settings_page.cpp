@@ -836,6 +836,10 @@ void UsersSettingsPage::onWriteD204()
 void UsersSettingsPage::onD204PasswordEntered(const QString &password)
 {
     // 密码随写请求交给应用层 (Task 20) 验证, 页面不记录 (spec §11.5).
+    // D10/OB-8: the operator sees a pending 验证/写入中 state before the
+    // terminal result arrives from the application.
+    m_pageModel.setParameterWritePending();
+    refresh();
     emit d204WriteRequested(quint16(m_d204Spin->value()), password);
     if (m_d204Dialog)
         m_d204Dialog->accept();

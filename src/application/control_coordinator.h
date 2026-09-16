@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QVector>
 
 #include <functional>
 #include <optional>
@@ -20,6 +21,10 @@ namespace hlm {
 // Design:
 //  - Every command goes through permission + interlock checks; results are
 //    reported via signals, never optimistic (spec §11.2).
+//  - A duplicate/in-progress request for any command is rejected with a
+//    visible commandRejected(cmd, reason); no entry point returns silently
+//    (.ai/project-contract.yaml invariants: visible rejection, no silent
+//    duplicate).
 //  - Pulses (M101/M102/M103/M43) are submitted through a small transport
 //    abstraction (PulseTransport) so the coordinator stays testable against a
 //    fake or the SimulatedPlcGateway; the real worker thread wires the
@@ -27,6 +32,10 @@ namespace hlm {
 //  - Command lifecycle is tracked per flow: reset waits for M61, adjust waits
 //    for M44/M45 with the saved target, start waits for M3, stop waits for
 //    M3=0. Timeouts converge to the actual PLC state (spec §13).
+//  - Hold/latch/bypass commands are accepted+pending on submission and only
+//    report success when a confirmed snapshot shows the requested machine
+//    state; a transport write rejection is visible and a defensive timeout
+//    converges an unconfirmed command to failure.
 //  - M100 is never auto-cleared (spec §10.6, §11.5, §13).
 class ControlCoordinator : public QObject
 {
@@ -126,12 +135,18 @@ public:
 signals:
     // Command accepted and dispatched (waiting for PLC confirmation).
     void commandAccepted(Command cmd);
-    // Command rejected by permission or interlock (reason for UI display).
+    // Command rejected by permission, interlock, duplicate/in-progress state or
+    // transport submission failure (reason for UI display; never empty).
     void commandRejected(Command cmd, const QString &reason);
     // Command result confirmed by the PLC snapshot (never optimistic).
     void commandResult(Command cmd, bool ok, const QString &detail);
     // A command is waiting for PLC confirmation (UI shows 发送中/等待确认).
     void commandPending(Command cmd);
+    // Additive (existing signal signatures unchanged): the human-readable
+    // phase detail for the commandPending(cmd) state just emitted. Lets the
+    // composition root project reset's 手动/回原点 phases and the
+    // write/confirm phases of other flows into OperatorCommandStatus.
+    void commandPendingDetail(Command cmd, const QString &detail);
     // Continuous-command clear requested (logout / session timeout).
     void continuousCleared();
 
@@ -141,10 +156,30 @@ private:
     enum class StartPhase { Idle, WaitM3 };
     enum class StopPhase { Idle, WaitM3Clear };
 
+    // One accepted hold/latch/bypass command awaiting snapshot confirmation.
+    // Success is only emitted when a confirmed snapshot shows `value` at
+    // `address`; otherwise the defensive timeout converges to failure.
+    struct ManualConfirm {
+        Command cmd = Command::ManualCommand;
+        quint16 address = 0;
+        bool value = false;
+        qint64 deadlineMs = 0;
+    };
+
     CommandResult gate(Command cmd, const DeviceSnapshot &s, quint16 targetWidth = 0);
+    // Emits commandRejected(cmd, reason) and returns the structured result.
+    CommandResult rejectCommand(Command cmd, const QString &reason);
     void beginWrite(Command cmd, quint16 address, bool value, CommandPriority priority);
     void beginWriteReg(Command cmd, quint16 address, quint16 value, CommandPriority priority);
     void finishCommand(Command cmd, bool ok, const QString &detail);
+
+    // Emits commandPending(cmd) plus its phase detail.
+    void emitPending(Command cmd);
+    QString pendingDetail(Command cmd) const;
+
+    bool hasManualConfirm(Command cmd, quint16 address, bool value) const;
+    void confirmManualFromSnapshot(const DeviceSnapshot &s);
+    void failAllManualConfirms(const QString &detail);
 
     void onResetSnapshot(const DeviceSnapshot &s);
     void onAdjustSnapshot(const DeviceSnapshot &s);
@@ -191,6 +226,8 @@ private:
     // Defensive estop timeout (spec §13): the pending set/release flow fails
     // with a defined result if the snapshot never reflects the M100 write.
     qint64 m_estopDeadlineMs = 0;
+    // Accepted hold/latch/bypass commands waiting for snapshot confirmation.
+    QVector<ManualConfirm> m_manualPending;
 };
 
 } // namespace hlm

@@ -76,6 +76,19 @@ ActionBar::ActionBar(ShellModel &model, QWidget *parent)
     title->setAlignment(Qt::AlignCenter);
     layout->addWidget(title);
 
+    // Persistent machine-command status (D8): visible from every page, never
+    // modal, and always the latest projected state + human-readable detail.
+    m_commandStatus = new QLabel(this);
+    m_commandStatus->setObjectName(QStringLiteral("commandStatus"));
+    m_commandStatus->setAlignment(Qt::AlignCenter);
+    m_commandStatus->setWordWrap(true);
+    m_commandStatus->setMinimumHeight(32);
+    m_commandStatus->setMaximumHeight(96);
+    m_commandStatus->setStyleSheet(QStringLiteral(
+        "QLabel#commandStatus { background-color: rgba(0, 0, 0, 0.06);"
+        " border: 1px solid #b8c4d0; border-radius: 4px; padding: 4px; }"));
+    layout->addWidget(m_commandStatus);
+
     auto make = [this, layout](const QString &text) {
         auto *b = new PermissionButton(text, this);
         // 56 logical px remains a large touch target while keeping every
@@ -139,7 +152,23 @@ ActionBar::ActionBar(ShellModel &model, QWidget *parent)
             &ActionBar::loginLogoutRequested);
 
     connect(&m_model, &ShellModel::stateChanged, this, &ActionBar::refresh);
+    connect(&m_model, &ShellModel::operatorCommandStatusChanged, this,
+            [this](const OperatorCommandStatus &) { refreshCommandStatus(); });
     refresh();
+}
+
+void ActionBar::refreshCommandStatus()
+{
+    if (m_commandStatus == nullptr)
+        return;
+    const OperatorCommandStatus status = m_model.operatorCommandStatus();
+    if (status.lifecycle_state == OperatorCommandState::Idle) {
+        m_commandStatus->setText(QStringLiteral("就绪"));
+        return;
+    }
+    m_commandStatus->setText(QStringLiteral("%1: %2")
+                                 .arg(toString(status.lifecycle_state),
+                                      status.human_readable_detail));
 }
 
 void ActionBar::refresh()
@@ -209,6 +238,10 @@ void ActionBar::refresh()
     // Login/logout label.
     m_login->setText(m_model.role() == Role::Anonymous ? QStringLiteral("登录")
                                                        : QStringLiteral("注销"));
+
+    // Persistent machine-command status (also kept current by the dedicated
+    // operatorCommandStatusChanged connection).
+    refreshCommandStatus();
 }
 
 } // namespace hlm

@@ -34,6 +34,8 @@
 #include <optional>
 
 #include "app/configuration.h"
+#include "application/control_coordinator.h"
+#include "domain/operator_command_status.h"
 #include "ports/repositories.h" // SettingRecord, UserRecord
 
 class QMainWindow;
@@ -98,6 +100,11 @@ private:
     void handleAuditLoaded(const QVector<AuditRecord> &records);
     void handleAlarmsLoaded(const QVector<AlarmEventRecord> &alarms);
     void handleCommandResult(Command cmd, bool ok, const QString &detail);
+    // Projects one operator-command lifecycle state into ShellModel. A new user
+    // request (accepted/rejected) increments command_generation; pending and
+    // terminal updates keep the current generation (PLC-HMI-001 D6).
+    void publishOperatorStatus(Command cmd, OperatorCommandState state,
+                               const QString &detail, bool newRequest);
     void onCommandRequested(Command cmd);
     void onLoginLogoutRequested();
     void onReady();
@@ -124,6 +131,10 @@ private:
 
     // Current session user id (for D204 re-verification, spec §11.3).
     qint64 m_currentUserId = -1;
+
+    // Monotonic operator-command generation (D6): incremented once per user
+    // request, carried by every projected OperatorCommandStatus.
+    quint64 m_commandGeneration = 0;
 
     // Serial config persistence bookkeeping (spec §8.1).
     int m_pendingSerialSaves = 0;

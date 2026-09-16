@@ -45,6 +45,20 @@ void ShellModel::setCommandPending(Command cmd, bool pending)
     emit stateChanged();
 }
 
+void ShellModel::setOperatorCommandStatus(const OperatorCommandStatus &status)
+{
+    m_operatorCommandStatus = status;
+    emit operatorCommandStatusChanged(m_operatorCommandStatus);
+    emit stateChanged();
+}
+
+void ShellModel::clearOperatorCommandStatus()
+{
+    m_operatorCommandStatus = OperatorCommandStatus();
+    emit operatorCommandStatusChanged(m_operatorCommandStatus);
+    emit stateChanged();
+}
+
 bool ShellModel::snapshotFresh() const
 {
     if (!m_snapshot.has_value())

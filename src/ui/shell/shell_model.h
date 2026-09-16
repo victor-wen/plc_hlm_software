@@ -7,6 +7,7 @@
 
 #include "application/permission_policy.h"
 #include "domain/device_snapshot.h"
+#include "domain/operator_command_status.h"
 
 namespace hlm {
 
@@ -36,6 +37,14 @@ public:
     // --- command pending flags (spec §11.2: 发送中/等待确认) ------------------
     void setCommandPending(Command cmd, bool pending);
     bool hasPendingCommands() const { return !m_pending.isEmpty(); }
+
+    // --- operator command lifecycle projection (contract OperatorCommandStatus) --
+    // One persistent, non-modal status for the latest machine command, fed by
+    // the composition root from the coordinator's accepted/rejected/pending/
+    // result signals. Cleared status is Idle with an empty detail.
+    void setOperatorCommandStatus(const OperatorCommandStatus &status);
+    OperatorCommandStatus operatorCommandStatus() const { return m_operatorCommandStatus; }
+    void clearOperatorCommandStatus();
 
     // --- derived state (snapshot-confirmed only) ------------------------------
     bool online() const { return m_online; }
@@ -70,6 +79,9 @@ signals:
     // Emitted after any state change; shell widgets re-read the model.
     void stateChanged();
     void userChanged();
+    // Emitted whenever the projected operator command status changes (set or
+    // clear), so the shell status surface can re-render immediately.
+    void operatorCommandStatusChanged(const OperatorCommandStatus &status);
 
 private:
     bool m_online = false;
@@ -78,6 +90,7 @@ private:
     std::optional<DeviceSnapshot> m_snapshot;
     DeviceSnapshot m_emptySnapshot{DeviceSnapshotData()};
     QHash<int, bool> m_pending; // Command as int for QHash
+    OperatorCommandStatus m_operatorCommandStatus;
 };
 
 } // namespace hlm

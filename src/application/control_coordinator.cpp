@@ -40,6 +40,40 @@ constexpr qint64 kAdjustWriteTimeoutMs = 5'000;
 // the M100 write but never reflects M0/M100 in the snapshot, the pending state
 // must not stay 待确认 forever — the flow fails with a defined result.
 constexpr qint64 kEstopTimeoutMs = 5'000;
+// Hold/latch/bypass confirmation wait (.ai/changes/PLC-HMI-001 D4): an
+// accepted continuous command only succeeds when a confirmed snapshot shows
+// the requested state; without confirmation it converges to failure.
+constexpr qint64 kManualConfirmTimeoutMs = 3'000;
+
+// Reads the M42/M105-M111 readback bit that confirms a hold/latch/bypass
+// command. Addresses are the coordinator's whitelisted ones (spec §10.7-§10.8).
+bool commandCoilValue(const DeviceSnapshot &s, quint16 address)
+{
+    switch (address) {
+    case kM42: return s.m42();
+    case kM105: return s.m105();
+    case kM106: return s.m106();
+    case kM107: return s.m107();
+    case kM108: return s.m108();
+    case kM109: return s.m109();
+    case kM110: return s.m110();
+    case kM111: return s.m111();
+    default: return false;
+    }
+}
+
+QString manualConfirmDetail(Command cmd)
+{
+    return cmd == Command::Bypass ? QStringLiteral("屏蔽命令已确认")
+                                  : QStringLiteral("手动命令已确认");
+}
+
+QString manualTimeoutDetail(Command cmd)
+{
+    return cmd == Command::Bypass
+        ? QStringLiteral("屏蔽命令确认超时, 请检查设备")
+        : QStringLiteral("手动命令确认超时, 请检查设备");
+}
 
 } // namespace
 
@@ -99,18 +133,29 @@ ControlCoordinator::CommandResult ControlCoordinator::gate(Command cmd,
     return {true, QString()};
 }
 
+ControlCoordinator::CommandResult ControlCoordinator::rejectCommand(Command cmd,
+                                                                    const QString &reason)
+{
+    emit commandRejected(cmd, reason);
+    return {false, reason};
+}
+
 // --- command entry points ---------------------------------------------------
 
 ControlCoordinator::CommandResult ControlCoordinator::reset()
 {
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
     CommandResult g = gate(Command::Reset, s);
-    if (!g.accepted) {
-        emit commandRejected(Command::Reset, g.reason);
-        return g;
-    }
+    if (!g.accepted)
+        return rejectCommand(Command::Reset, g.reason);
     if (m_resetPhase != ResetPhase::Idle)
-        return {false, QStringLiteral("复位已在进行中")};
+        return rejectCommand(Command::Reset,
+                             QStringLiteral("复位已在进行中, 请等待当前复位结束"));
+    // Reset selects manual mode through M104; a mode switch in flight would
+    // share that coil and must never consume this flow's confirmation.
+    if (m_modePending)
+        return rejectCommand(Command::Reset,
+                             QStringLiteral("模式切换已在进行中, 请稍后再试"));
 
     m_resetPhase = ResetPhase::WaitManual;
     m_resetHomingStarted = false;
@@ -122,12 +167,15 @@ ControlCoordinator::CommandResult ControlCoordinator::reset()
         // Already manual: pulse M103 directly (spec §10.2 step 2).
         if (m_transport.startPulse && m_transport.startPulse(kM103)) {
             m_resetPhase = ResetPhase::Homing;
-            emit commandPending(Command::Reset);
+            emitPending(Command::Reset);
         } else {
             finishCommand(Command::Reset, false, QStringLiteral("M103 脉冲发送失败"));
         }
     } else {
         // Not manual: write M104=0 and wait for M1=1 (spec §10.2 step 1).
+        // The pending phase is visible before the write result so the operator
+        // sees the manual-switch phase (D4/OB-5).
+        emitPending(Command::Reset);
         beginWrite(Command::Reset, kM104, false, CommandPriority::Normal);
     }
     return {true, QString()};
@@ -137,12 +185,11 @@ ControlCoordinator::CommandResult ControlCoordinator::adjustWidth(quint16 target
 {
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
     CommandResult g = gate(Command::AdjustWidth, s, targetWidth);
-    if (!g.accepted) {
-        emit commandRejected(Command::AdjustWidth, g.reason);
-        return g;
-    }
+    if (!g.accepted)
+        return rejectCommand(Command::AdjustWidth, g.reason);
     if (m_adjustPhase != AdjustPhase::Idle)
-        return {false, QStringLiteral("调宽已在进行中")};
+        return rejectCommand(Command::AdjustWidth,
+                             QStringLiteral("调宽已在进行中, 请等待完成"));
 
     // 目标 == 当前: 显示"当前已是目标宽度", 不发送 M43 (spec §10.3 step 3).
     if (s.fieldValid(SnapshotField::CurrentWidth) && s.currentWidth() == targetWidth) {
@@ -173,12 +220,15 @@ ControlCoordinator::CommandResult ControlCoordinator::setMode(bool autoMode)
 {
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
     CommandResult g = gate(Command::ModeSwitch, s);
-    if (!g.accepted) {
-        emit commandRejected(Command::ModeSwitch, g.reason);
-        return g;
-    }
+    if (!g.accepted)
+        return rejectCommand(Command::ModeSwitch, g.reason);
     if (m_modePending)
-        return {false, QStringLiteral("模式切换已在进行中")};
+        return rejectCommand(Command::ModeSwitch,
+                             QStringLiteral("模式切换已在进行中, 请稍后再试"));
+    // Reset also drives M104; two flows sharing the coil must not interleave.
+    if (m_resetPhase != ResetPhase::Idle)
+        return rejectCommand(Command::ModeSwitch,
+                             QStringLiteral("复位已在进行中, 无法切换模式"));
 
     m_modePending = true;
     m_modeTarget = autoMode;
@@ -192,19 +242,18 @@ ControlCoordinator::CommandResult ControlCoordinator::start()
 {
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
     CommandResult g = gate(Command::Start, s);
-    if (!g.accepted) {
-        emit commandRejected(Command::Start, g.reason);
-        return g;
-    }
+    if (!g.accepted)
+        return rejectCommand(Command::Start, g.reason);
     if (m_startPhase != StartPhase::Idle)
-        return {false, QStringLiteral("启动已在进行中")};
+        return rejectCommand(Command::Start,
+                             QStringLiteral("启动已在进行中, 请等待确认"));
 
     m_startPhase = StartPhase::WaitM3;
     m_startDeadlineMs = m_nowMs() + kStartStopTimeoutMs;
     m_startTimeoutArmed = true;
     emit commandAccepted(Command::Start);
     if (m_transport.startPulse && m_transport.startPulse(kM101)) {
-        emit commandPending(Command::Start);
+        emitPending(Command::Start);
     } else {
         finishCommand(Command::Start, false, QStringLiteral("M101 脉冲发送失败"));
     }
@@ -215,19 +264,18 @@ ControlCoordinator::CommandResult ControlCoordinator::stop()
 {
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
     CommandResult g = gate(Command::Stop, s);
-    if (!g.accepted) {
-        emit commandRejected(Command::Stop, g.reason);
-        return g;
-    }
+    if (!g.accepted)
+        return rejectCommand(Command::Stop, g.reason);
     if (m_stopPhase != StopPhase::Idle)
-        return {false, QStringLiteral("停止已在进行中")};
+        return rejectCommand(Command::Stop,
+                             QStringLiteral("停止已在进行中, 请等待确认"));
 
     m_stopPhase = StopPhase::WaitM3Clear;
     m_stopDeadlineMs = m_nowMs() + kStartStopTimeoutMs;
     m_stopTimeoutArmed = true;
     emit commandAccepted(Command::Stop);
     if (m_transport.startPulse && m_transport.startPulse(kM102)) {
-        emit commandPending(Command::Stop);
+        emitPending(Command::Stop);
     } else {
         finishCommand(Command::Stop, false, QStringLiteral("M102 脉冲发送失败"));
     }
@@ -238,10 +286,12 @@ ControlCoordinator::CommandResult ControlCoordinator::estopSet()
 {
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
     CommandResult g = gate(Command::EstopSet, s);
-    if (!g.accepted) {
-        emit commandRejected(Command::EstopSet, g.reason);
-        return g;
-    }
+    if (!g.accepted)
+        return rejectCommand(Command::EstopSet, g.reason);
+    if (m_estopSetPending)
+        return rejectCommand(Command::EstopSet,
+                             QStringLiteral("急停置位正在等待确认"));
+
     // M100=1 is idempotent and safe to retry; the UI shows 待确认 until the
     // snapshot shows M0=1 or M100=1 (spec §8.4).
     // The newest command wins: a set supersedes any in-flight release, so the
@@ -263,10 +313,12 @@ ControlCoordinator::CommandResult ControlCoordinator::estopRelease()
 {
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
     CommandResult g = gate(Command::EstopRelease, s);
-    if (!g.accepted) {
-        emit commandRejected(Command::EstopRelease, g.reason);
-        return g;
-    }
+    if (!g.accepted)
+        return rejectCommand(Command::EstopRelease, g.reason);
+    if (m_estopReleasePending)
+        return rejectCommand(Command::EstopRelease,
+                             QStringLiteral("急停解除正在等待确认"));
+
     m_estopReleasePending = true;
     m_estopDeadlineMs = m_nowMs() + kEstopTimeoutMs;
     if (m_estopSetPending) {
@@ -282,10 +334,9 @@ ControlCoordinator::CommandResult ControlCoordinator::estopRelease()
 ControlCoordinator::CommandResult ControlCoordinator::manualHold(quint16 address, bool pressed)
 {
     // Hold commands are only M106/M107/M108 (spec §10.7); reject others.
-    if (address != kM106 && address != kM107 && address != kM108) {
-        emit commandRejected(Command::ManualCommand, QStringLiteral("不支持的手动命令地址"));
-        return {false, QStringLiteral("不支持的手动命令地址")};
-    }
+    if (address != kM106 && address != kM107 && address != kM108)
+        return rejectCommand(Command::ManualCommand,
+                             QStringLiteral("不支持的手动命令地址"));
     // Release (write 0) must bypass machine-state interlocks: if a fault/estop
     // latches while the button is held, the release must still be sent so the
     // continuous command clears immediately (spec §10.7 松开写 0, §13 立即请求
@@ -293,75 +344,78 @@ ControlCoordinator::CommandResult ControlCoordinator::manualHold(quint16 address
     // §10.7, §11.4 所有写命令统一校验).
     if (!pressed) {
         const PermissionResult p = permission(Command::ManualCommand);
-        if (!p.allowed) {
-            emit commandRejected(Command::ManualCommand, p.reason);
-            return {false, p.reason};
-        }
-        if (m_transport.writeHold && m_transport.writeHold(address, false)) {
-            emit commandAccepted(Command::ManualCommand);
-            emit commandResult(Command::ManualCommand, true, QString());
-            return {true, QString()};
-        }
-        emit commandRejected(Command::ManualCommand, QStringLiteral("命令发送失败"));
-        return {false, QStringLiteral("命令发送失败")};
+        if (!p.allowed)
+            return rejectCommand(Command::ManualCommand, p.reason);
+    } else {
+        const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
+        CommandResult g = gate(Command::ManualCommand, s);
+        if (!g.accepted)
+            return rejectCommand(Command::ManualCommand, g.reason);
     }
-    const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
-    CommandResult g = gate(Command::ManualCommand, s);
-    if (!g.accepted) {
-        emit commandRejected(Command::ManualCommand, g.reason);
-        return g;
-    }
-    if (m_transport.writeHold && m_transport.writeHold(address, true)) {
-        emit commandAccepted(Command::ManualCommand);
-        emit commandResult(Command::ManualCommand, true, QString());
-        return {true, QString()};
-    }
-    emit commandRejected(Command::ManualCommand, QStringLiteral("命令发送失败"));
-    return {false, QStringLiteral("命令发送失败")};
+    // A duplicate press/release for the same address+value never returns
+    // silently: the first request is still awaiting confirmation.
+    if (hasManualConfirm(Command::ManualCommand, address, pressed))
+        return rejectCommand(Command::ManualCommand,
+                             QStringLiteral("手动命令正在等待确认"));
+    if (!m_transport.writeHold || !m_transport.writeHold(address, pressed))
+        return rejectCommand(Command::ManualCommand, QStringLiteral("命令发送失败"));
+
+    // Accepted: pending until a confirmed snapshot shows the requested state
+    // (no optimistic success, .ai/changes/PLC-HMI-001 D4).
+    m_manualPending.append(
+        {Command::ManualCommand, address, pressed, m_nowMs() + kManualConfirmTimeoutMs});
+    emit commandAccepted(Command::ManualCommand);
+    emitPending(Command::ManualCommand);
+    return {true, QString()};
 }
 
 ControlCoordinator::CommandResult ControlCoordinator::manualLatch(quint16 address, bool value)
 {
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
     CommandResult g = gate(Command::ManualCommand, s);
-    if (!g.accepted) {
-        emit commandRejected(Command::ManualCommand, g.reason);
-        return g;
-    }
+    if (!g.accepted)
+        return rejectCommand(Command::ManualCommand, g.reason);
     // The latched manual command is M109 (stop gate) only (spec §10.7).
-    if (address != kM109) {
-        emit commandRejected(Command::ManualCommand, QStringLiteral("不支持的手动命令地址"));
-        return {false, QStringLiteral("不支持的手动命令地址")};
+    if (address != kM109)
+        return rejectCommand(Command::ManualCommand,
+                             QStringLiteral("不支持的手动命令地址"));
+    if (hasManualConfirm(Command::ManualCommand, address, value))
+        return rejectCommand(Command::ManualCommand,
+                             QStringLiteral("手动命令正在等待确认"));
+    if (!m_transport.writeCoil
+        || !m_transport.writeCoil(address, value, CommandPriority::Normal)) {
+        return rejectCommand(Command::ManualCommand, QStringLiteral("命令发送失败"));
     }
-    if (m_transport.writeCoil && m_transport.writeCoil(address, value, CommandPriority::Normal)) {
-        emit commandAccepted(Command::ManualCommand);
-        emit commandResult(Command::ManualCommand, true, QString());
-        return {true, QString()};
-    }
-    emit commandRejected(Command::ManualCommand, QStringLiteral("命令发送失败"));
-    return {false, QStringLiteral("命令发送失败")};
+
+    m_manualPending.append(
+        {Command::ManualCommand, address, value, m_nowMs() + kManualConfirmTimeoutMs});
+    emit commandAccepted(Command::ManualCommand);
+    emitPending(Command::ManualCommand);
+    return {true, QString()};
 }
 
 ControlCoordinator::CommandResult ControlCoordinator::bypass(quint16 address, bool value)
 {
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
     CommandResult g = gate(Command::Bypass, s);
-    if (!g.accepted) {
-        emit commandRejected(Command::Bypass, g.reason);
-        return g;
-    }
+    if (!g.accepted)
+        return rejectCommand(Command::Bypass, g.reason);
     // 屏蔽 addresses are M105 (passthrough) and M42/M110/M111 (spec §10.8).
-    if (address != kM42 && address != kM105 && address != kM110 && address != kM111) {
-        emit commandRejected(Command::Bypass, QStringLiteral("不支持的屏蔽地址"));
-        return {false, QStringLiteral("不支持的屏蔽地址")};
+    if (address != kM42 && address != kM105 && address != kM110 && address != kM111)
+        return rejectCommand(Command::Bypass, QStringLiteral("不支持的屏蔽地址"));
+    if (hasManualConfirm(Command::Bypass, address, value))
+        return rejectCommand(Command::Bypass,
+                             QStringLiteral("屏蔽命令正在等待确认"));
+    if (!m_transport.writeCoil
+        || !m_transport.writeCoil(address, value, CommandPriority::Normal)) {
+        return rejectCommand(Command::Bypass, QStringLiteral("命令发送失败"));
     }
-    if (m_transport.writeCoil && m_transport.writeCoil(address, value, CommandPriority::Normal)) {
-        emit commandAccepted(Command::Bypass);
-        emit commandResult(Command::Bypass, true, QString());
-        return {true, QString()};
-    }
-    emit commandRejected(Command::Bypass, QStringLiteral("命令发送失败"));
-    return {false, QStringLiteral("命令发送失败")};
+
+    m_manualPending.append(
+        {Command::Bypass, address, value, m_nowMs() + kManualConfirmTimeoutMs});
+    emit commandAccepted(Command::Bypass);
+    emitPending(Command::Bypass);
+    return {true, QString()};
 }
 
 void ControlCoordinator::logoutClear()
@@ -421,6 +475,10 @@ void ControlCoordinator::onSnapshot(const DeviceSnapshot &s)
                       QStringLiteral("急停解除超时, 请检查设备"));
     }
 
+    // Hold/latch/bypass confirmation and defensive timeout (D4): the terminal
+    // success only follows a snapshot that shows the requested machine state.
+    confirmManualFromSnapshot(s);
+
     // Estop confirmation (spec §8.4: 直到 M0=1 或读回 M100=1).
     if (m_estopSetPending && (s.m0() || s.m100())) {
         m_estopSetPending = false;
@@ -431,9 +489,20 @@ void ControlCoordinator::onSnapshot(const DeviceSnapshot &s)
     // (spec §8.4, §10.6: 解除请求成功 ≠ 设备可运行, which is decided later by
     // M0/M14/M60). Without the M100 readback a stuck physical estop would hold
     // M0=1 and the release would hang on 待确认 forever.
+    //
+    // Wording (contract invariant 464, PLC-HMI-001 D5): clearing M100 only
+    // releases the software request; while the physical estop still holds
+    // M0=1 the terminal detail must say so and must not claim a full release.
     if (m_estopReleasePending && (!s.m0() || !s.m100())) {
         m_estopReleasePending = false;
-        emit commandResult(Command::EstopRelease, true, QStringLiteral("急停已解除"));
+        if (s.m0()) {
+            emit commandResult(
+                Command::EstopRelease, true,
+                QStringLiteral("软件急停请求已解除, 实体急停 (M0) 仍然有效"));
+        } else {
+            emit commandResult(Command::EstopRelease, true,
+                               QStringLiteral("急停已解除"));
+        }
     }
 
     // Mode switch waits for M1/M2 (spec §11.2).
@@ -495,7 +564,7 @@ void ControlCoordinator::onWriteCompleted(quint16 address, bool ok)
                 plc = qBound<qint32>(10, plc, 360);
                 m_adjustDeadlineMs = m_nowMs() + (plc + 3) * 1000;
                 m_adjustTimeoutArmed = true;
-                emit commandPending(Command::AdjustWidth);
+                emitPending(Command::AdjustWidth);
             } else {
                 finishCommand(Command::AdjustWidth, false,
                               QStringLiteral("M43 脉冲发送失败"));
@@ -563,8 +632,19 @@ void ControlCoordinator::onConnectionChanged(bool online)
         m_modePending = false;
         emit commandResult(Command::ModeSwitch, false, QStringLiteral("通讯中断"));
     }
-    // Estop set/release stay pending: M100 is idempotent and confirmed by the
-    // next snapshot after reconnect (spec §8.4, §10.6).
+    // Estop set/release converge on link loss: M100 is idempotent, but the
+    // pending flow must not stay 待确认 forever (D3/OB-3); the operator sees
+    // communications-lost and can re-issue after reconnect.
+    if (m_estopSetPending) {
+        m_estopSetPending = false;
+        finishCommand(Command::EstopSet, false, QStringLiteral("通讯中断"));
+    }
+    if (m_estopReleasePending) {
+        m_estopReleasePending = false;
+        finishCommand(Command::EstopRelease, false, QStringLiteral("通讯中断"));
+    }
+    // Accepted hold/latch/bypass commands converge too (never pending forever).
+    failAllManualConfirms(QStringLiteral("通讯中断"));
 }
 
 // --- flow snapshot handlers -------------------------------------------------
@@ -575,7 +655,7 @@ void ControlCoordinator::onResetSnapshot(const DeviceSnapshot &s)
         if (s.m1()) {
             if (m_transport.startPulse && m_transport.startPulse(kM103)) {
                 m_resetPhase = ResetPhase::Homing;
-                emit commandPending(Command::Reset);
+                emitPending(Command::Reset);
             } else {
                 finishCommand(Command::Reset, false, QStringLiteral("M103 脉冲发送失败"));
             }
@@ -706,6 +786,77 @@ void ControlCoordinator::finishCommand(Command cmd, bool ok, const QString &deta
         break;
     }
     emit commandResult(cmd, ok, detail);
+}
+
+void ControlCoordinator::emitPending(Command cmd)
+{
+    emit commandPending(cmd);
+    emit commandPendingDetail(cmd, pendingDetail(cmd));
+}
+
+QString ControlCoordinator::pendingDetail(Command cmd) const
+{
+    switch (cmd) {
+    case Command::Reset:
+        return m_resetPhase == ResetPhase::WaitManual
+            ? QStringLiteral("复位中: 正在切换到手动模式")
+            : QStringLiteral("复位中: 回原点进行中");
+    case Command::AdjustWidth:
+        return m_adjustPhase == AdjustPhase::WaitTargetWrite
+            ? QStringLiteral("调宽: 正在写入目标宽度")
+            : QStringLiteral("调宽: 等待 PLC 结果");
+    case Command::Start:
+        return QStringLiteral("启动中: 等待设备运行确认");
+    case Command::Stop:
+        return QStringLiteral("停止中: 等待设备停止确认");
+    case Command::ModeSwitch:
+        return QStringLiteral("模式切换中: 等待 PLC 确认");
+    case Command::EstopSet:
+        return QStringLiteral("急停置位中: 等待 PLC 确认");
+    case Command::EstopRelease:
+        return QStringLiteral("急停解除中: 等待 PLC 确认");
+    case Command::ManualCommand:
+        return QStringLiteral("手动命令已发送: 等待 PLC 确认");
+    case Command::Bypass:
+        return QStringLiteral("屏蔽命令已发送: 等待 PLC 确认");
+    default:
+        return QStringLiteral("命令已发送: 等待 PLC 确认");
+    }
+}
+
+bool ControlCoordinator::hasManualConfirm(Command cmd, quint16 address, bool value) const
+{
+    for (const ManualConfirm &c : m_manualPending) {
+        if (c.cmd == cmd && c.address == address && c.value == value)
+            return true;
+    }
+    return false;
+}
+
+void ControlCoordinator::confirmManualFromSnapshot(const DeviceSnapshot &s)
+{
+    for (int i = 0; i < m_manualPending.size();) {
+        const ManualConfirm c = m_manualPending.at(i);
+        if (commandCoilValue(s, c.address) == c.value) {
+            m_manualPending.removeAt(i);
+            emit commandResult(c.cmd, true, manualConfirmDetail(c.cmd));
+            continue;
+        }
+        if (m_nowMs() >= c.deadlineMs) {
+            m_manualPending.removeAt(i);
+            emit commandResult(c.cmd, false, manualTimeoutDetail(c.cmd));
+            continue;
+        }
+        ++i;
+    }
+}
+
+void ControlCoordinator::failAllManualConfirms(const QString &detail)
+{
+    const QVector<ManualConfirm> pending = m_manualPending;
+    m_manualPending.clear();
+    for (const ManualConfirm &c : pending)
+        emit commandResult(c.cmd, false, detail);
 }
 
 void ControlCoordinator::setResetTimeoutSec(int sec)

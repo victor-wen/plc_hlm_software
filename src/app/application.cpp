@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QDateTime>
+#include <QDebug>
 #include <QMessageBox>
 #include <QSerialPort>
 #include <QThread>
@@ -43,6 +44,21 @@ constexpr const char *kSerialReadRetries = "serial.readRetries";
 constexpr quint16 kD122 = 122; // 皮带速度
 constexpr quint16 kD204 = 204; // 脉冲当量
 constexpr quint16 kD220 = 220; // 调宽速度
+
+// Maps a coordinator terminal result onto the projected lifecycle state. The
+// coordinator's existing commandResult(cmd, ok, detail) signature is unchanged
+// (independent tests depend on it); the detail it produces is the authoritative
+// human-readable outcome and is never discarded.
+OperatorCommandState lifecycleStateForResult(bool ok, const QString &detail)
+{
+    if (ok)
+        return OperatorCommandState::Succeeded;
+    if (detail.contains(QStringLiteral("超时")))
+        return OperatorCommandState::TimedOut;
+    if (detail.contains(QStringLiteral("通讯中断")))
+        return OperatorCommandState::CommunicationsLost;
+    return OperatorCommandState::Failed;
+}
 
 // Maps a persisted SerialConfig onto the real gateway's Config (spec §8.1).
 QtModbusPlcGateway::Config toModbusConfig(const SerialConfig &s)
@@ -183,13 +199,28 @@ void Application::wireSignals()
     wireGateway(m_gw);
 
     // --- coordinator -> shell / recipe page ----------------------------------
+    // Every rejection, pending phase and terminal result is projected into the
+    // one OperatorCommandStatus on ShellModel (D6); no reason or detail is
+    // discarded here. The legacy pending flag stays for existing consumers.
     connect(m_coordinator, &ControlCoordinator::commandAccepted, this,
-            [this](Command cmd) { m_shell->setCommandPending(cmd, true); });
+            [this](Command cmd) {
+                m_shell->setCommandPending(cmd, true);
+                publishOperatorStatus(cmd, OperatorCommandState::Accepted,
+                                      QStringLiteral("命令已提交, 等待 PLC 确认"),
+                                      /*newRequest=*/true);
+            });
     connect(m_coordinator, &ControlCoordinator::commandPending, this,
             [this](Command cmd) { m_shell->setCommandPending(cmd, true); });
+    connect(m_coordinator, &ControlCoordinator::commandPendingDetail, this,
+            [this](Command cmd, const QString &detail) {
+                publishOperatorStatus(cmd, OperatorCommandState::Pending, detail,
+                                      /*newRequest=*/false);
+            });
     connect(m_coordinator, &ControlCoordinator::commandRejected, this,
-            [this](Command cmd, const QString &) {
+            [this](Command cmd, const QString &reason) {
                 m_shell->setCommandPending(cmd, false);
+                publishOperatorStatus(cmd, OperatorCommandState::Rejected, reason,
+                                      /*newRequest=*/true);
             });
     connect(m_coordinator, &ControlCoordinator::commandResult, this,
             &Application::handleCommandResult);
@@ -765,13 +796,39 @@ void Application::onCommandRequested(Command cmd)
         m_coordinator->stop();
         break;
     default:
-        break; // other commands are not routed from the action bar
+        // An unhandled command must never be a silent no-op (D11/ARCH-016):
+        // emit a Qt warning and a visible rejected diagnostic with detail.
+        {
+            const QString detail = QStringLiteral("未知命令 (代码 %1), 未执行任何操作")
+                                       .arg(int(cmd));
+            qWarning("PLC-HMI-001: unhandled operator command %d rejected", int(cmd));
+            publishOperatorStatus(cmd, OperatorCommandState::Rejected, detail,
+                                  /*newRequest=*/true);
+        }
+        break;
     }
+}
+
+void Application::publishOperatorStatus(Command cmd, OperatorCommandState state,
+                                        const QString &detail, bool newRequest)
+{
+    if (newRequest)
+        ++m_commandGeneration;
+    OperatorCommandStatus status;
+    status.command = cmd;
+    status.lifecycle_state = state;
+    status.human_readable_detail = detail;
+    status.command_generation = m_commandGeneration;
+    // request_id/gateway_generation stay empty/0 until PLC-HMI-003 wires the
+    // real request-identity/gateway-generation correlation.
+    m_shell->setOperatorCommandStatus(status);
 }
 
 void Application::handleCommandResult(Command cmd, bool ok, const QString &detail)
 {
     m_shell->setCommandPending(cmd, false);
+    publishOperatorStatus(cmd, lifecycleStateForResult(ok, detail), detail,
+                          /*newRequest=*/false);
     if (cmd == Command::AdjustWidth)
         m_recipePage->setAdjustResult(ok, detail);
 }

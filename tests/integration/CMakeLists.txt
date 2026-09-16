@@ -40,3 +40,35 @@ set_tests_properties(full_flow PROPERTIES
     # async waits on shared hosted runners even though the flow is correct.
     RUN_SERIAL TRUE
 )
+
+# --- PLC-HMI-001: operator command routing integration black-box tests --------
+
+add_executable(test_operator_command_application operator_command_application_test.cpp)
+target_link_libraries(test_operator_command_application PRIVATE
+    hlm_app_core
+    hlm_simulator
+    hlm_sqlite
+    hlm_ui
+    Qt6::Test
+)
+
+add_test(NAME operator_command_application COMMAND test_operator_command_application)
+set_tests_properties(operator_command_application PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
+)
+
+# --- PLC-HMI-001: developer-owned composition-root projection tests (D12) -----
+
+add_executable(test_operator_command_projection_developer operator_command_projection_developer_test.cpp)
+target_link_libraries(test_operator_command_projection_developer PRIVATE
+    hlm_app_core
+    hlm_simulator
+    hlm_sqlite
+    hlm_ui
+    Qt6::Test
+)
+
+add_test(NAME operator_command_projection_developer COMMAND test_operator_command_projection_developer)
+set_tests_properties(operator_command_projection_developer PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
+)

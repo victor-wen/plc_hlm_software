@@ -272,6 +272,44 @@ target_link_libraries(test_control_panel PRIVATE
 
 add_test(NAME control_panel COMMAND test_control_panel)
 
-set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page control_panel PROPERTIES
+# --- PLC-HMI-001: operator command lifecycle black-box tests -----------------
+
+add_executable(test_operator_command_lifecycle operator_command_lifecycle_test.cpp)
+target_link_libraries(test_operator_command_lifecycle PRIVATE
+    hlm_ui
+    hlm_simulator
+    Qt6::Test
+)
+
+add_test(NAME operator_command_lifecycle COMMAND test_operator_command_lifecycle)
+
+add_executable(test_command_status_projection command_status_projection_test.cpp)
+target_link_libraries(test_command_status_projection PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+
+add_test(NAME command_status_projection COMMAND test_command_status_projection)
+
+add_executable(test_command_feedback_pages command_feedback_pages_test.cpp)
+target_link_libraries(test_command_feedback_pages PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+
+add_test(NAME command_feedback_pages COMMAND test_command_feedback_pages)
+
+# --- PLC-HMI-001: developer-owned lifecycle/regression tests (D12) -----------
+
+add_executable(test_operator_lifecycle_developer operator_lifecycle_developer_test.cpp)
+target_link_libraries(test_operator_lifecycle_developer PRIVATE
+    hlm_ui
+    hlm_simulator
+    Qt6::Test
+)
+
+add_test(NAME operator_lifecycle_developer COMMAND test_operator_lifecycle_developer)
+
+set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page control_panel operator_command_lifecycle command_status_projection command_feedback_pages operator_lifecycle_developer PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )

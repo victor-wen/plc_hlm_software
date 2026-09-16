@@ -6,6 +6,7 @@
 #include "application/permission_policy.h"
 
 class QVBoxLayout;
+class QLabel;
 
 namespace hlm {
 
@@ -35,6 +36,11 @@ public:
     PermissionButton *autoButton() const { return m_auto; }
     PermissionButton *loginButton() const { return m_login; }
 
+    // Persistent, non-modal machine-command status text (state + detail) for
+    // the latest projected OperatorCommandStatus (D8, contract presentation
+    // "machine_commands: persistent non-modal shell status").
+    QLabel *commandStatusLabel() const { return m_commandStatus; }
+
 public slots:
     // Recomputes permission/interlock reasons from the model.
     void refresh();
@@ -49,6 +55,9 @@ signals:
     void loginLogoutRequested();
 
 private:
+    // Renders the latest OperatorCommandStatus into the status label.
+    void refreshCommandStatus();
+
     ShellModel &m_model;
     PermissionButton *m_manual = nullptr;
     PermissionButton *m_auto = nullptr;
@@ -57,6 +66,7 @@ private:
     PermissionButton *m_reset = nullptr;
     PermissionButton *m_login = nullptr;
     PermissionButton *m_estop = nullptr; // separated danger button
+    QLabel *m_commandStatus = nullptr;   // persistent command status text
 };
 
 } // namespace hlm

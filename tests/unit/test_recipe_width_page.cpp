@@ -297,6 +297,9 @@ void RecipeWidthPageTest::pendingStateShowsWaitingNotSuccess()
 
 void RecipeWidthPageTest::successOnlyWhenM44AndD130EqualsAppliedTarget()
 {
+    // PLC-HMI-001 D9 / ARCH-017: the coordinator result is the sole terminal
+    // adjust authority. Success-like snapshots (M44=1, D130 == applied target)
+    // no longer derive a verdict; only setAdjustResult() may.
     ShellModel model;
     model.setUser(QStringLiteral("admin"), Role::Admin);
     model.updateSnapshot(DeviceSnapshot(validSnapshotData()));
@@ -304,18 +307,16 @@ void RecipeWidthPageTest::successOnlyWhenM44AndD130EqualsAppliedTarget()
 
     m.beginApply(300);
 
-    // M34=0, M44=1, M45=0, D130 == applied target (300): success
-    // (spec §10.3 step 7).
     DeviceSnapshotData ok = validSnapshotData();
     ok.statusWord3 = (quint16(1) << 14); // M44
     ok.currentWidth = 300;               // D130 == applied target
     model.updateSnapshot(DeviceSnapshot(ok));
-    QVERIFY(m.adjustSucceeded());
+    QVERIFY(m.adjustPending());
+    QVERIFY(!m.adjustSucceeded());
     QVERIFY(!m.adjustFailed());
-    QCOMPARE(m.adjustStatusText(), QStringLiteral("调宽成功"));
+    QVERIFY(m.adjustStatusText().contains(QStringLiteral("等待 PLC 结果")));
 
-    // D130 != applied target: NOT success even with M44=1. A fresh apply
-    // starts a new wait; the wrong-width snapshot must not derive success.
+    // D130 != applied target: never success from a snapshot either.
     m.beginApply(300);
     DeviceSnapshotData wrongWidth = validSnapshotData();
     wrongWidth.statusWord3 = (quint16(1) << 14); // M44
@@ -332,10 +333,20 @@ void RecipeWidthPageTest::successOnlyWhenM44AndD130EqualsAppliedTarget()
     model.updateSnapshot(DeviceSnapshot(both));
     QVERIFY(!m.adjustSucceeded());
     QVERIFY(m.adjustPending());
+
+    // The coordinator result is the sole terminal authority: success is
+    // rendered verbatim.
+    m.setAdjustResult(true, QStringLiteral("调宽完成"));
+    QVERIFY(m.adjustSucceeded());
+    QVERIFY(!m.adjustFailed());
+    QCOMPARE(m.adjustStatusText(), QStringLiteral("调宽完成"));
 }
 
 void RecipeWidthPageTest::failureOnM45()
 {
+    // PLC-HMI-001 D9 / ARCH-017: an M45 failure-like snapshot never derives a
+    // terminal verdict; the coordinator result does, and later snapshots can
+    // never override it.
     ShellModel model;
     model.setUser(QStringLiteral("admin"), Role::Admin);
     model.updateSnapshot(DeviceSnapshot(validSnapshotData()));
@@ -343,10 +354,25 @@ void RecipeWidthPageTest::failureOnM45()
 
     m.beginApply(300);
 
-    // M34=0, M44=0, M45=1: failure (spec §10.3 step 8).
     DeviceSnapshotData fail = validSnapshotData();
     fail.statusWord3 = (quint16(1) << 15); // M45
     model.updateSnapshot(DeviceSnapshot(fail));
+    QVERIFY(m.adjustPending());
+    QVERIFY(!m.adjustFailed());
+    QVERIFY(!m.adjustSucceeded());
+    QVERIFY(m.adjustStatusText().contains(QStringLiteral("等待 PLC 结果")));
+
+    // The coordinator terminal failure is displayed.
+    m.setAdjustResult(false, QStringLiteral("调宽失败"));
+    QVERIFY(m.adjustFailed());
+    QVERIFY(!m.adjustSucceeded());
+    QCOMPARE(m.adjustStatusText(), QStringLiteral("调宽失败"));
+
+    // A later success-like snapshot cannot override the coordinator failure.
+    DeviceSnapshotData ok = validSnapshotData();
+    ok.statusWord3 = (quint16(1) << 14); // M44
+    ok.currentWidth = 300;
+    model.updateSnapshot(DeviceSnapshot(ok));
     QVERIFY(m.adjustFailed());
     QVERIFY(!m.adjustSucceeded());
     QCOMPARE(m.adjustStatusText(), QStringLiteral("调宽失败"));

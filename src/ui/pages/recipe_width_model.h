@@ -15,19 +15,13 @@ class ShellModel;
 
 // 配方与调宽 page model (spec §10.3, §11.3, §11.4). Maps the latest
 // ShellModel snapshot + recipe data (fed by the app shell, Task 20) to the
-// page's gating and result state. No I/O, no commands: the page emits the
-// apply/save/delete intents; this model only computes permission/interlock
-// gating and derives the adjust result from CONFIRMED snapshots (spec §11.2:
-// 命令不得乐观更新状态).
+// page's gating state. No I/O, no commands: the page emits the apply/save/
+// delete intents; this model only computes permission/interlock gating.
 //
-// The model subscribes to ShellModel::stateChanged and re-evaluates the
-// pending adjust result on every snapshot (spec §10.3 steps 5-8):
-//   - M34=1: still adjusting, keep waiting.
-//   - M34=0 ∧ M44=1 ∧ M45=0 ∧ D130 == applied target: success (step 7).
-//   - M34=0 ∧ M44=0 ∧ M45=1: failure (step 8).
-//   - Transient idle (all clear): keep waiting.
-// Results fed from the coordinator's commandResult (setAdjustResult) are
-// shown verbatim and stop snapshot re-evaluation.
+// Single adjust-result authority (contract ARCH-017, PLC-HMI-001 D9): the
+// displayed terminal adjust verdict comes solely from the coordinator result
+// fed through setAdjustResult(); snapshots only render live measurement values
+// (D128/D130/D210) and never re-derive or override the verdict.
 class RecipeWidthModel : public QObject
 {
     Q_OBJECT
@@ -59,10 +53,10 @@ public:
 
     // --- apply lifecycle (spec §10.3) ----------------------------------------
     // Called by the page when applyAdjustRequested is dispatched. Records the
-    // applied target and enters the waiting state; the result is derived from
-    // later snapshots or fed from the coordinator.
+    // applied target and enters the waiting state; the terminal verdict is
+    // ONLY fed from the coordinator result via setAdjustResult().
     void beginApply(quint16 targetWidth);
-    // Result fed from the coordinator's commandResult (snapshot-confirmed).
+    // Result fed from the coordinator's commandResult (the sole authority).
     void setAdjustResult(bool ok, const QString &detail);
 
     bool adjustPending() const { return m_adjustPending; }
@@ -71,10 +65,6 @@ public:
     bool adjustResultOk() const { return m_adjustResultOk; }
     std::optional<quint16> appliedTarget() const { return m_appliedTarget; }
     QString adjustStatusText() const;
-
-private slots:
-    // Re-evaluates the pending adjust result from the current snapshot.
-    void onShellStateChanged();
 
 private:
     const ShellModel &m_model;
