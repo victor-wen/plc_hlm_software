@@ -825,7 +825,10 @@ void FullFlowTest::applicationAdjustWidthConverges()
         Q_ARG(QString, QStringLiteral("s3cret!"))));
     QTRY_VERIFY_WITH_TIMEOUT(loginSpy.size() > 0, 5000);
     QVERIFY(loginSpy[0][0].value<LoginResult>().ok);
-    QCOMPARE(coord->role(), Role::Admin);
+    // QSignalSpy records the worker-thread emission synchronously, while
+    // Application::handleLoginResult is a queued sibling receiver that applies
+    // the role on this thread; wait for the propagated end state.
+    QTRY_COMPARE_WITH_TIMEOUT(coord->role(), Role::Admin, 5000);
 
     // D204 re-auth is single-flight and bound to the current session. A second
     // request cannot replace the value protected by the first verification.
@@ -847,7 +850,7 @@ void FullFlowTest::applicationAdjustWidthConverges()
     emit usersPage->logoutRequested();
     QTRY_COMPARE_WITH_TIMEOUT(passwordSpy.count(), 2, 5000);
     QCOMPARE(gw->model().readRegister(kD204), quint16(5000));
-    QCOMPARE(coord->role(), Role::Anonymous);
+    QTRY_COMPARE_WITH_TIMEOUT(coord->role(), Role::Anonymous, 5000);
 
     loginSpy.clear();
     QVERIFY(QMetaObject::invokeMethod(
@@ -856,7 +859,7 @@ void FullFlowTest::applicationAdjustWidthConverges()
         Q_ARG(QString, QStringLiteral("s3cret!"))));
     QTRY_VERIFY_WITH_TIMEOUT(loginSpy.size() > 0, 5000);
     QVERIFY(loginSpy[0][0].value<LoginResult>().ok);
-    QCOMPARE(coord->role(), Role::Admin);
+    QTRY_COMPARE_WITH_TIMEOUT(coord->role(), Role::Admin, 5000);
 
     // The administrator can add an operator through the real page -> database
     // wiring, and the confirmed result refreshes the visible list.
