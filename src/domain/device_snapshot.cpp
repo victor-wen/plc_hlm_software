@@ -1,5 +1,7 @@
 #include "domain/device_snapshot.h"
 
+#include <algorithm>
+
 namespace hlm {
 
 namespace {
@@ -17,13 +19,26 @@ void checkRange(DeviceSnapshotData &d, SnapshotField f, quint16 value,
 
 DataQuality aggregateQuality(const DeviceSnapshotData &d)
 {
-    DataQuality q = d.fastQuality;
-    q = worstQuality(q, d.homeQuality);
-    q = worstQuality(q, d.commandQuality);
-    q = worstQuality(q, d.slowQuality);
+    DataQuality q = d.fast_quality;
+    q = worstQuality(q, d.home_quality);
+    q = worstQuality(q, d.command_quality);
+    q = worstQuality(q, d.slow_quality);
     if (d.invalidFields != 0)
         q = worstQuality(q, DataQuality::OutOfRange);
     return q;
+}
+
+void recomputeDerivedQuality(DeviceSnapshotData &d)
+{
+    // Overall age is the maximum age of the source blocks required by the
+    // published snapshot; it is never a hard-coded zero (contract D6).
+    d.overall_age_ms = std::max(
+        {d.fast_age_ms, d.home_age_ms, d.command_age_ms, d.slow_age_ms});
+    // WidthDelta validity requires a valid slow block and signed D210 in the
+    // authoritative -350..350 range; it never aliases CurrentWidth validity.
+    d.width_delta_valid = d.slow_quality == DataQuality::Valid
+        && d.widthDelta >= -350 && d.widthDelta <= 350;
+    d.overall_quality = aggregateQuality(d);
 }
 
 namespace decode {
@@ -77,7 +92,8 @@ DeviceSnapshotData decodeFastBlock(const quint16 raw[41], quint64 sequence,
     d.sequence = sequence;
     d.connected = connected;
     d.dataAgeMs = dataAgeMs;
-    d.fastQuality = quality;
+    d.fast_quality = quality;
+    d.fast_age_ms = dataAgeMs;
 
     // D100-D105 raw status words (indices 0,2,3,4,5).
     d.statusWord1 = raw[0];
@@ -115,7 +131,7 @@ DeviceSnapshotData decodeFastBlock(const quint16 raw[41], quint64 sequence,
     checkRange(d, SnapshotField::CurrentWidth, d.currentWidth, 50, 400);
     checkRange(d, SnapshotField::Heartbeat, d.heartbeat, 0, 0xFFFF);
 
-    d.overallQuality = aggregateQuality(d);
+    d.overall_quality = aggregateQuality(d);
     return d;
 }
 
@@ -129,16 +145,32 @@ void checkSlowBlockRange(DeviceSnapshotData &d)
     d.invalidFields &= ~slowMask;
     checkRange(d, SnapshotField::PulsePerMm, d.pulsePerMm, 1, 32767);
     checkRange(d, SnapshotField::WidthSpeed, d.widthSpeed, 1, 15);
-    d.overallQuality = aggregateQuality(d);
+    // D210 has its own validity metadata (never aliases CurrentWidth).
+    d.width_delta_valid = d.slow_quality == DataQuality::Valid
+        && d.widthDelta >= -350 && d.widthDelta <= 350;
+    d.overall_quality = aggregateQuality(d);
 }
 
 DeviceSnapshot::DeviceSnapshot(const DeviceSnapshotData &d)
-    : m_captureStarted(d.captureStarted)
+    : fast_quality(d.fast_quality)
+    , fast_age_ms(d.fast_age_ms)
+    , home_quality(d.home_quality)
+    , home_age_ms(d.home_age_ms)
+    , command_quality(d.command_quality)
+    , command_age_ms(d.command_age_ms)
+    , slow_quality(d.slow_quality)
+    , slow_age_ms(d.slow_age_ms)
+    , overall_quality(aggregateQuality(d))
+    , overall_age_ms(std::max(
+          {d.fast_age_ms, d.home_age_ms, d.command_age_ms, d.slow_age_ms}))
+    , width_delta_valid(d.slow_quality == DataQuality::Valid
+                        && d.widthDelta >= -350 && d.widthDelta <= 350)
+    , m_captureStarted(d.captureStarted)
     , m_captureCompleted(d.captureCompleted)
     , m_sequence(d.sequence)
     , m_connected(d.connected)
     , m_dataAgeMs(d.dataAgeMs)
-    , m_overallQuality(d.overallQuality)
+    , m_overall_quality(aggregateQuality(d))
     , m_statusWord1(d.statusWord1)
     , m_statusWord2(d.statusWord2)
     , m_statusWord3(d.statusWord3)
@@ -200,11 +232,6 @@ DeviceSnapshot::DeviceSnapshot(const DeviceSnapshotData &d)
     , m_m109((d.commandBits & 0x0200) != 0)
     , m_m110((d.commandBits & 0x0400) != 0)
     , m_m111((d.commandBits & 0x0800) != 0)
-    , m_m112((d.commandBits & 0x1000) != 0)
-    , m_fastQuality(d.fastQuality)
-    , m_homeQuality(d.homeQuality)
-    , m_commandQuality(d.commandQuality)
-    , m_slowQuality(d.slowQuality)
     , m_invalidFields(d.invalidFields)
 {
 }

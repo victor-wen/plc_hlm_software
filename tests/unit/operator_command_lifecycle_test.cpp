@@ -5,9 +5,12 @@
 // the approved .ai/project-contract.yaml. No production implementation source
 // was consulted.
 //
-// These tests use the existing public ControlCoordinator signal surface
-// (commandAccepted/commandRejected/commandPending/commandResult) so their
-// expected RED is a runtime assertion failure, not a compile failure.
+// PLC-HMI-003 revision: the coordinator seam now returns SubmissionResult from
+// every PulseTransport callback and reports terminal completions through
+// onSubmissionCompleted(); this file was migrated to that revised seam without
+// changing any assertion intent. The SimulatedPlcGateway is used only for
+// snapshots and connection state, so the target fails to compile until the
+// revised API exists (expected PLC-HMI-003 RED).
 
 #include <QtTest>
 #include <QSignalSpy>
@@ -32,39 +35,64 @@ constexpr quint16 kM109 = 109;
 constexpr quint16 kM110 = 110;
 constexpr quint16 kD128 = 128;
 
+quint64 nextRequestId()
+{
+    static quint64 next = 1;
+    return next++;
+}
+
+SubmissionResult acceptedResult()
+{
+    SubmissionResult r;
+    r.accepted = true;
+    r.request_id = nextRequestId();
+    r.gateway_generation = 1;
+    return r;
+}
+
+SubmissionResult rejectedResult(const QString &reason)
+{
+    SubmissionResult r;
+    r.accepted = false;
+    r.request_id = 0;
+    r.gateway_generation = 1;
+    r.immediate_rejection_reason = reason;
+    return r;
+}
+
 void homeReady(SimulatedPlcGateway &gw)
 {
-    gw.writeCoil(kM103, true);
-    gw.writeCoil(kM103, false);
+    gw.model().writeCoil(kM103, true);
+    gw.model().writeCoil(kM103, false);
     gw.tick();
     gw.tick(); // home return takes 2 s
 }
 
 void putInAutoMode(SimulatedPlcGateway &gw)
 {
-    gw.writeCoil(kM104, true);
+    gw.model().writeCoil(kM104, true);
     gw.tick();
 }
 
 ControlCoordinator::PulseTransport gatewayTransport(SimulatedPlcGateway &gw)
 {
     ControlCoordinator::PulseTransport t;
-    t.startPulse = [&gw](quint16 a) {
-        gw.writeCoil(a, true);
-        gw.writeCoil(a, false);
-        return true;
+    t.startPulse = [&gw](quint16 a) -> SubmissionResult {
+        gw.model().writeCoil(a, true);
+        gw.model().writeCoil(a, false);
+        return acceptedResult();
     };
-    t.writeHold = [&gw](quint16 a, bool v) {
-        gw.writeCoil(a, v);
-        return true;
+    t.writeHold = [&gw](quint16 a, bool v) -> SubmissionResult {
+        gw.model().writeCoil(a, v);
+        return acceptedResult();
     };
-    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) {
-        gw.writeCoil(a, v);
-        return true;
+    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) -> SubmissionResult {
+        gw.model().writeCoil(a, v);
+        return acceptedResult();
     };
-    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) {
-        gw.writeRegister(a, v);
-        return true;
+    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) -> SubmissionResult {
+        gw.model().writeRegister(a, v);
+        return acceptedResult();
     };
     return t;
 }
@@ -75,13 +103,9 @@ ControlCoordinator *wire(SimulatedPlcGateway &gw, qint64 &now,
 {
     auto *c = new ControlCoordinator(t, cfg, [&now]() { return now; });
     QObject::connect(&gw, &SimulatedPlcGateway::snapshotReady, c,
-                     [c](const DeviceSnapshot &s) { c->onSnapshot(s); });
+                     [c](quint64, const DeviceSnapshot &s) { c->onSnapshot(s); });
     QObject::connect(&gw, &SimulatedPlcGateway::connectionStateChanged, c,
-                     [c](bool online) { c->onConnectionChanged(online); });
-    QObject::connect(&gw, &SimulatedPlcGateway::writeCompleted, c,
-                     [c](quint16 a, bool ok, const QString &) {
-                         c->onWriteCompleted(a, ok);
-                     });
+                     [c](quint64, bool online) { c->onConnectionChanged(online); });
     if (gw.hasSnapshot())
         c->onSnapshot(gw.lastSnapshot());
     return c;
@@ -99,7 +123,7 @@ ControlCoordinator *makeNoPulseCoordinator(SimulatedPlcGateway &gw, qint64 &now,
                                            ControlCoordinator::Config cfg = {})
 {
     ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-    t.startPulse = [](quint16) { return true; };
+    t.startPulse = [](quint16) { return acceptedResult(); };
     return wire(gw, now, t, cfg);
 }
 
@@ -222,8 +246,8 @@ void OperatorCommandLifecycleTest::duplicateStopRejectedVisibly()
     putInAutoMode(gw);
 
     // Machine running: M3=1 via the raw gateway.
-    gw.writeCoil(kM101, true);
-    gw.writeCoil(kM101, false);
+    gw.model().writeCoil(kM101, true);
+    gw.model().writeCoil(kM101, false);
     gw.tick();
     QVERIFY(gw.lastSnapshot().m3());
 
@@ -273,7 +297,7 @@ void OperatorCommandLifecycleTest::duplicateModeSwitchRejectedVisibly()
     // The M104 select write is accepted by the transport but never reaches the
     // PLC, so the mode switch stays pending.
     ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-    t.writeCoil = [](quint16, bool, CommandPriority) { return true; };
+    t.writeCoil = [](quint16, bool, CommandPriority) { return acceptedResult(); };
     std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
     c->setRole(Role::Admin);
     homeReady(gw);
@@ -326,7 +350,7 @@ void OperatorCommandLifecycleTest::overlappingModeSwitchThenResetNeverSilent()
     gw.start();
     qint64 now = 0;
     ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-    t.writeCoil = [](quint16, bool, CommandPriority) { return true; };
+    t.writeCoil = [](quint16, bool, CommandPriority) { return acceptedResult(); };
     std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
     c->setRole(Role::Admin);
     homeReady(gw);
@@ -364,7 +388,7 @@ void OperatorCommandLifecycleTest::duplicateManualHoldWhilePendingVisiblyRejecte
     gw.start();
     qint64 now = 0;
     ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-    t.writeHold = [](quint16, bool) { return true; }; // accepted, not applied
+    t.writeHold = [](quint16, bool) { return acceptedResult(); }; // accepted, not applied
     std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
     c->setRole(Role::Admin);
     homeReady(gw);
@@ -427,8 +451,8 @@ void OperatorCommandLifecycleTest::stopTimeoutConvergesToExactlyOneFailure()
     homeReady(gw);
     putInAutoMode(gw);
 
-    gw.writeCoil(kM101, true);
-    gw.writeCoil(kM101, false);
+    gw.model().writeCoil(kM101, true);
+    gw.model().writeCoil(kM101, false);
     gw.tick();
     QVERIFY(gw.lastSnapshot().m3());
 
@@ -460,7 +484,7 @@ void OperatorCommandLifecycleTest::modeSwitchTimeoutConvergesToExactlyOneFailure
     gw.start();
     qint64 now = 0;
     ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-    t.writeCoil = [](quint16, bool, CommandPriority) { return true; };
+    t.writeCoil = [](quint16, bool, CommandPriority) { return acceptedResult(); };
     std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
     c->setRole(Role::Admin);
     homeReady(gw);
@@ -552,8 +576,8 @@ void OperatorCommandLifecycleTest::linkLossConvergesStopToTerminal()
     std::unique_ptr<ControlCoordinator> c(makeNoPulseCoordinator(gw, now));
     c->setRole(Role::Anonymous);
 
-    gw.writeCoil(kM101, true);
-    gw.writeCoil(kM101, false);
+    gw.model().writeCoil(kM101, true);
+    gw.model().writeCoil(kM101, false);
     gw.tick();
 
     QVector<ResultRecord> results;
@@ -580,7 +604,7 @@ void OperatorCommandLifecycleTest::linkLossConvergesModeSwitchToTerminal()
     gw.start();
     qint64 now = 0;
     ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-    t.writeCoil = [](quint16, bool, CommandPriority) { return true; };
+    t.writeCoil = [](quint16, bool, CommandPriority) { return acceptedResult(); };
     std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
     c->setRole(Role::Admin);
     homeReady(gw);
@@ -733,7 +757,7 @@ void OperatorCommandLifecycleTest::linkLossConvergesManualHoldToTerminal()
     gw.start();
     qint64 now = 0;
     ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-    t.writeHold = [](quint16, bool) { return true; }; // accepted, not applied
+    t.writeHold = [](quint16, bool) { return acceptedResult(); }; // accepted, not applied
     std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
     c->setRole(Role::Admin);
     homeReady(gw);
@@ -764,13 +788,13 @@ void OperatorCommandLifecycleTest::linkLossConvergesManualLatchToTerminal()
     ControlCoordinator::PulseTransport t = gatewayTransport(gw);
     t.writeHold = [&gw](quint16 a, bool v) {
         if (a == kM109)
-            return true; // accepted, not applied
-        gw.writeCoil(a, v);
-        return true;
+            return acceptedResult(); // accepted, not applied
+        gw.model().writeCoil(a, v);
+        return acceptedResult();
     };
     t.writeCoil = [&gw](quint16 a, bool v, CommandPriority p) {
         if (a == kM109)
-            return true;
+            return acceptedResult();
         return gatewayTransport(gw).writeCoil(a, v, p);
     };
     std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
@@ -803,9 +827,9 @@ void OperatorCommandLifecycleTest::linkLossConvergesBypassToTerminal()
     ControlCoordinator::PulseTransport t = gatewayTransport(gw);
     t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) {
         if (a == kM110)
-            return true; // accepted, not applied
-        gw.writeCoil(a, v);
-        return true;
+            return acceptedResult(); // accepted, not applied
+        gw.model().writeCoil(a, v);
+        return acceptedResult();
     };
     std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
     c->setRole(Role::Admin);
@@ -839,7 +863,7 @@ void OperatorCommandLifecycleTest::manualHoldNotSuccessfulBeforeConfirmation()
     // The hold write is accepted by the transport but does not change the PLC
     // state until the test writes it directly.
     ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-    t.writeHold = [](quint16, bool) { return true; };
+    t.writeHold = [](quint16, bool) { return acceptedResult(); };
     std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
     c->setRole(Role::Admin);
     homeReady(gw);
@@ -863,7 +887,7 @@ void OperatorCommandLifecycleTest::manualHoldNotSuccessfulBeforeConfirmation()
     QVERIFY(results.isEmpty());
 
     // Confirmed snapshot shows the requested state: success is now visible.
-    gw.writeCoil(kM106, true);
+    gw.model().writeCoil(kM106, true);
     gw.tick();
     QCOMPARE(results.size(), 1);
     QVERIFY(results[0].ok);
@@ -881,7 +905,10 @@ void OperatorCommandLifecycleTest::manualHoldTransportRejectionIsVisible()
     qint64 now = 0;
 
     ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-    t.writeHold = [](quint16, bool) { return false; }; // transport rejects
+    // The transport rejects the submission with an immediate reason.
+    t.writeHold = [](quint16, bool) {
+        return rejectedResult(QStringLiteral("transport rejected the hold write"));
+    };
     std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
     c->setRole(Role::Admin);
     homeReady(gw);
@@ -916,7 +943,7 @@ void OperatorCommandLifecycleTest::manualHoldNoConfirmationConvergesToFailure()
     qint64 now = 0;
 
     ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-    t.writeHold = [](quint16, bool) { return true; }; // accepted but lost
+    t.writeHold = [](quint16, bool) { return acceptedResult(); }; // accepted but lost
     std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
     c->setRole(Role::Admin);
     homeReady(gw);
@@ -949,13 +976,13 @@ void OperatorCommandLifecycleTest::manualLatchNoConfirmationConvergesToFailure()
     ControlCoordinator::PulseTransport t = gatewayTransport(gw);
     t.writeHold = [&gw](quint16 a, bool v) {
         if (a == kM109)
-            return true; // accepted, not applied
-        gw.writeCoil(a, v);
-        return true;
+            return acceptedResult(); // accepted, not applied
+        gw.model().writeCoil(a, v);
+        return acceptedResult();
     };
     t.writeCoil = [&gw](quint16 a, bool v, CommandPriority p) {
         if (a == kM109)
-            return true;
+            return acceptedResult();
         return gatewayTransport(gw).writeCoil(a, v, p);
     };
     std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
@@ -989,9 +1016,9 @@ void OperatorCommandLifecycleTest::bypassNoConfirmationConvergesToFailure()
     ControlCoordinator::PulseTransport t = gatewayTransport(gw);
     t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) {
         if (a == kM110)
-            return true; // accepted, not applied
-        gw.writeCoil(a, v);
-        return true;
+            return acceptedResult(); // accepted, not applied
+        gw.model().writeCoil(a, v);
+        return acceptedResult();
     };
     std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
     c->setRole(Role::Admin);
@@ -1022,13 +1049,13 @@ void OperatorCommandLifecycleTest::manualLatchNotSuccessfulBeforeConfirmation()
     ControlCoordinator::PulseTransport t = gatewayTransport(gw);
     t.writeHold = [&gw](quint16 a, bool v) {
         if (a == kM109)
-            return true; // accepted but not applied
-        gw.writeCoil(a, v);
-        return true;
+            return acceptedResult(); // accepted but not applied
+        gw.model().writeCoil(a, v);
+        return acceptedResult();
     };
     t.writeCoil = [&gw](quint16 a, bool v, CommandPriority p) {
         if (a == kM109)
-            return true;
+            return acceptedResult();
         return gatewayTransport(gw).writeCoil(a, v, p);
     };
     std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
@@ -1045,7 +1072,7 @@ void OperatorCommandLifecycleTest::manualLatchNotSuccessfulBeforeConfirmation()
     QVERIFY2(results.isEmpty(), "manual latch reported success before the PLC "
                                 "confirmed the requested latch state");
 
-    gw.writeCoil(kM109, true);
+    gw.model().writeCoil(kM109, true);
     gw.tick();
     QCOMPARE(results.size(), 1);
     QVERIFY(results[0].ok);
@@ -1061,9 +1088,9 @@ void OperatorCommandLifecycleTest::bypassNotSuccessfulBeforeConfirmation()
     ControlCoordinator::PulseTransport t = gatewayTransport(gw);
     t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) {
         if (a == kM110)
-            return true; // accepted but not applied
-        gw.writeCoil(a, v);
-        return true;
+            return acceptedResult(); // accepted but not applied
+        gw.model().writeCoil(a, v);
+        return acceptedResult();
     };
     std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
     c->setRole(Role::Admin);
@@ -1078,7 +1105,7 @@ void OperatorCommandLifecycleTest::bypassNotSuccessfulBeforeConfirmation()
     QVERIFY2(results.isEmpty(), "bypass reported success before the PLC "
                                 "confirmed the requested state");
 
-    gw.writeCoil(kM110, true);
+    gw.model().writeCoil(kM110, true);
     gw.tick();
     QCOMPARE(results.size(), 1);
     QVERIFY(results[0].ok);
@@ -1092,7 +1119,9 @@ void OperatorCommandLifecycleTest::bypassTransportRejectionIsVisible()
     qint64 now = 0;
 
     ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-    t.writeCoil = [](quint16, bool, CommandPriority) { return false; };
+    t.writeCoil = [](quint16, bool, CommandPriority) {
+        return rejectedResult(QStringLiteral("transport rejected the bypass write"));
+    };
     std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
     c->setRole(Role::Admin);
 

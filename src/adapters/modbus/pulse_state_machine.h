@@ -41,16 +41,18 @@ public:
         std::function<bool(quint16 address)> readCoil;
         // Pulse outcome: ok=true when the pulse was delivered and cleared;
         // ok=false when it was aborted (offline, reset, or the set never
-        // took effect).
-        std::function<void(quint16 address, bool ok)> finished;
+        // took effect). Carries the submission identity allocated by the port
+        // so the terminal completion is correlated to its submission.
+        std::function<void(quint16 address, bool ok, quint64 submissionId)> finished;
     };
 
     PulseStateMachine(Callbacks callbacks, std::function<qint64()> nowMs);
 
-    // Start a pulse on `address`. Returns false (and reports finished(false))
+    // Start a pulse on `address` under the given submission identity. Returns
+    // false (without emitting finished: a rejected submission never completes)
     // when offline or when a pulse on the same address is already active
     // (clear-before-set priority).
-    bool startPulse(quint16 address);
+    bool startPulse(quint16 address, quint64 submissionId);
 
     // Drive the hold timer. Call from the owner's timer tick (no sleep).
     void onTick();
@@ -77,6 +79,7 @@ private:
         Phase phase = Phase::Idle;
         qint64 holdStartMs = 0; // clock time of the write-1 ack
         bool uncertain = false; // last write result was uncertain (timeout)
+        quint64 submissionId = 0; // port-level request identity of this pulse
     };
 
     void abortPulse(quint16 address, bool ok);

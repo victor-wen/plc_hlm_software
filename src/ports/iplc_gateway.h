@@ -3,26 +3,72 @@
 #include <QMetaType>
 #include <QObject>
 #include <QString>
+#include <QtGlobal>
 
 #include "domain/device_snapshot.h"
 
 namespace hlm {
 
-// Command priority hint (spec §8.3). Maps onto the request queue's internal
-// priority levels. PulseClear and Heartbeat are reserved for Task 5's pulse
-// state machine and M112 watchdog; the gateway only needs to route them to
-// the right queue level.
+// Command priority hint (spec §8.3). Heartbeat was removed with M112
+// (PLC-HMI-003 D3/ARCH-002): only Normal, Safety and PulseClear remain.
 enum class CommandPriority {
     Normal = 0,     // user writes (queue level 4: other user writes)
     Safety = 1,     // online stop / estop set / continuous-motion clear (level 2)
-    PulseClear = 2, // pulse clear requests (level 1) - used by Task 5
-    Heartbeat = 3,  // M112 heartbeat flip (level 3) - used by Task 5
+    PulseClear = 2, // pulse clear requests (level 1)
+};
+
+// Operation carried by a submission and its correlated terminal completion
+// (PLC-HMI-003 D1).
+enum class PlcOperation {
+    WriteCoil = 0,
+    WriteRegister = 1,
+    Pulse = 2,
+};
+
+// Result of a submission attempt. A rejected submission carries request_id 0
+// and a non-empty immediate_rejection_reason and never emits a completion.
+struct SubmissionResult {
+    bool accepted = false;
+    quint64 request_id = 0;
+    quint64 gateway_generation = 0;
+    QString immediate_rejection_reason;
+};
+
+// Terminal, correlated outcome of exactly one accepted submission. Consumers
+// match by (request_id, gateway_generation); a completion for an unknown
+// request or an obsolete generation is ignored.
+struct SubmissionCompletion {
+    quint64 request_id = 0;
+    quint64 gateway_generation = 0;
+    PlcOperation operation = PlcOperation::WriteCoil;
+    quint16 address = 0;
+    bool result = false;
+    QString error;
+};
+
+// Communication statistics emitted by the port itself (contract IPlcGateway
+// event_fields): no concrete-gateway cast is needed to obtain them.
+struct PlcCommStats {
+    quint64 gateway_generation = 0;
+    quint64 snapshot_sequence = 0;
+    qint64 per_block_age_ms = 0;
+    quint64 reconnect_count = 0;
+    quint64 failed_polls = 0;
 };
 
 // Port interface for the PLC gateway (spec §7.2, §8). Implemented by the real
-// Modbus gateway (Task 4) and later by the in-process SimulatedPlcGateway
-// (Task 6). All methods are thread-safe: commands are marshalled onto the
-// gateway's own worker thread; results and events arrive via signals.
+// Modbus gateway and by the in-process SimulatedPlcGateway. All methods are
+// thread-safe: commands are marshalled onto the gateway's own worker thread;
+// results and events arrive via signals.
+//
+// Correlation contract (PLC-HMI-003 D1/D2):
+//  - request_id is unique within a gateway generation and never reused while
+//    an outcome can still arrive.
+//  - every accepted submission emits exactly one correlated terminal
+//    completion, or is explicitly converged as communications-lost/replaced
+//    during shutdown, reconnect or gateway replacement.
+//  - every connection, snapshot, completion and statistics event identifies
+//    its gateway generation.
 class IPlcGateway : public QObject
 {
     Q_OBJECT
@@ -39,27 +85,42 @@ public:
     // delivered at least one full valid snapshot.
     virtual bool isOnline() const = 0;
 
-    // Asynchronous writes. Results arrive via writeCompleted().
-    virtual void writeCoil(quint16 address, bool value,
-                          CommandPriority priority = CommandPriority::Normal) = 0;
-    virtual void writeRegister(quint16 address, quint16 value,
-                               CommandPriority priority = CommandPriority::Normal) = 0;
+    // The composition root increments its generation counter before replacing
+    // a gateway and assigns the new value here; implementations may advance it
+    // further on their own reconnects. Events carry this generation so stale
+    // events from a replaced gateway can be rejected.
+    virtual void setGatewayGeneration(quint64 generation) = 0;
+    virtual quint64 gatewayGeneration() const = 0;
 
-    // Start a pulse on `address` (spec §8.5): serially write 1, hold at
-    // least 100 ms, then clear. Returns false when the pulse could not be
-    // started (offline, or a pulse on the same address is already active).
-    // The pulse outcome is reported via writeCompleted(address, ok).
-    virtual bool startPulse(quint16 address) = 0;
+    // Asynchronous submissions. The terminal outcome arrives via
+    // submissionCompleted() for every accepted request.
+    virtual SubmissionResult submitWriteCoil(
+        quint16 address, bool value,
+        CommandPriority priority = CommandPriority::Normal) = 0;
+    virtual SubmissionResult submitWriteRegister(
+        quint16 address, quint16 value,
+        CommandPriority priority = CommandPriority::Normal) = 0;
+    virtual SubmissionResult submitPulse(quint16 address) = 0;
 
 signals:
-    // A complete, immutable device snapshot (spec §9).
-    void snapshotReady(const DeviceSnapshot &snapshot);
-    // Link state: true when online and a full snapshot has been delivered.
-    void connectionStateChanged(bool online);
-    // Result of a writeCoil/writeRegister call.
-    void writeCompleted(quint16 address, bool ok, const QString &error);
+    // Exactly one terminal outcome for every accepted submission.
+    void submissionCompleted(const SubmissionCompletion &completion);
+    // A complete, immutable device snapshot plus its gateway generation.
+    void snapshotReady(quint64 gateway_generation, const DeviceSnapshot &snapshot);
+    // Link state plus its gateway generation.
+    void connectionStateChanged(quint64 gateway_generation, bool online);
+    // Port-level communication statistics (never obtained by a concrete cast).
+    void commStatsChanged(const PlcCommStats &stats);
 };
+
+// Registers the port value types for queued cross-thread delivery. Called by
+// the gateway adapters; safe to call repeatedly.
+void registerPlcGatewayMetaTypes();
 
 } // namespace hlm
 
 Q_DECLARE_METATYPE(hlm::CommandPriority)
+Q_DECLARE_METATYPE(hlm::PlcOperation)
+Q_DECLARE_METATYPE(hlm::SubmissionResult)
+Q_DECLARE_METATYPE(hlm::SubmissionCompletion)
+Q_DECLARE_METATYPE(hlm::PlcCommStats)

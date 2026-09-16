@@ -9,17 +9,15 @@ int RequestQueue::levelOf(const ModbusRequest &req)
         return 1;
     case RequestClass::SafetyWrite:
         return 2;
-    case RequestClass::Heartbeat:
-        return 3;
     case RequestClass::UserWrite:
-        return 4;
+        return 3;
     case RequestClass::FastPoll:
     case RequestClass::HomePoll:
-        return 5;
+        return 4;
     case RequestClass::CommandPoll:
-        return 6;
+        return 5;
     case RequestClass::SlowPoll:
-        return 7;
+        return 6;
     }
     return 7;
 }

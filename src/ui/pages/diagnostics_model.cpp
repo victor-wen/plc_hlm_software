@@ -67,14 +67,13 @@ const char *homeCommandBitName(int m)
     case 109: return "手动挡停";
     case 110: return "光栅屏蔽";
     case 111: return "门磁屏蔽";
-    case 112: return "HMI 心跳回读";
     default: return "";
     }
 }
 
 // A source block is trusted only when linked and its quality is Valid. The
-// current adapters always report Valid, but this keeps the page correct if an
-// adapter starts reporting age/transport quality (spec §9).
+// adapters publish evidence-based quality/age (PLC-HMI-003 D6), so a failed
+// or stale transfer blanks exactly the affected rows (spec §9).
 bool blockFresh(const DeviceSnapshot &s, DataQuality quality)
 {
     return s.connected() && quality == DataQuality::Valid;
@@ -170,8 +169,9 @@ bool DiagnosticsModel::bitState(int mNumber) const
         default: return s.m53();
         }
     }
-    if (mNumber >= 100 && mNumber <= 112) {
-        // M100-M112 command readback (function code 01, command block).
+    if (mNumber >= 100 && mNumber <= 111) {
+        // M100-M111 command readback (function code 01, command block).
+        // M112 was removed from the live path (PLC-HMI-003 D3).
         if (!commandFresh())
             return false;
         switch (mNumber) {
@@ -186,8 +186,7 @@ bool DiagnosticsModel::bitState(int mNumber) const
         case 108: return s.m108();
         case 109: return s.m109();
         case 110: return s.m110();
-        case 111: return s.m111();
-        default: return s.m112();
+        default: return s.m111();
         }
     }
     return false; // undefined M (D102/D104/D105 bits never exposed)
@@ -226,12 +225,12 @@ QVector<BitRow> DiagnosticsModel::homeCommandBits() const
 {
     QVector<BitRow> rows;
     const int defined[] = {50, 51, 52, 53, 100, 101, 102, 103, 104,
-                           105, 106, 107, 108, 109, 110, 111, 112};
+                           105, 106, 107, 108, 109, 110, 111};
     for (int m : defined) {
         BitRow r;
         r.mNumber = m;
         r.name = QString::fromUtf8(homeCommandBitName(m));
-        // M50-M53 come from the home block, M100-M112 from the command block.
+        // M50-M53 come from the home block, M100-M111 from the command block.
         r.known = (m <= 53) ? homeFresh() : commandFresh();
         r.state = r.known && bitState(m);
         rows.append(r);
@@ -338,10 +337,12 @@ DiagnosticsField DiagnosticsModel::pulsePerMm() const
 
 DiagnosticsField DiagnosticsModel::widthDelta() const
 {
-    // D210 is decoded in the slow block (no separate range field).
-    if (!slowFresh())
+    // D210 has its own validity metadata (never aliases CurrentWidth):
+    // a valid slow block plus signed D210 in -350..350 (PLC-HMI-003 D6/D7).
+    const DeviceSnapshot &s = m_model.snapshot();
+    if (!slowFresh() || !s.width_delta_valid)
         return {};
-    return {QString::number(m_model.snapshot().widthDelta()), true}; // D210
+    return {QString::number(s.widthDelta()), true}; // D210
 }
 
 DiagnosticsField DiagnosticsModel::widthSpeed() const

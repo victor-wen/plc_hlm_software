@@ -382,12 +382,18 @@ void RecipeWidthPage::refresh()
         const bool valid = fresh && s.fieldValid(f);
         m_displays[key]->setValue(valid ? text : QString(), unit, valid);
     };
+    const auto fieldWithValidity = [&](const QString &key, const QString &text,
+                                       bool valid, const QString &unit) {
+        m_displays[key]->setValue(valid ? text : QString(), unit, valid);
+    };
     field(QStringLiteral("targetWidth"), QString::number(s.targetWidth()),
           SnapshotField::TargetWidth, QStringLiteral("mm"));
     field(QStringLiteral("currentWidth"), QString::number(s.currentWidth()),
           SnapshotField::CurrentWidth, QStringLiteral("mm"));
-    field(QStringLiteral("widthDelta"), QString::number(s.widthDelta()),
-          SnapshotField::CurrentWidth, QStringLiteral("mm"));
+    // D210 has its own validity metadata (PLC-HMI-003 D7): a valid slow block
+    // plus signed D210 in -350..350; it never aliases CurrentWidth validity.
+    fieldWithValidity(QStringLiteral("widthDelta"), QString::number(s.widthDelta()),
+                      fresh && s.width_delta_valid, QStringLiteral("mm"));
     field(QStringLiteral("pulsePerMm"), QString::number(s.pulsePerMm()),
           SnapshotField::PulsePerMm, QStringLiteral("脉冲/mm"));
     field(QStringLiteral("widthSpeed"), QString::number(s.widthSpeed()),

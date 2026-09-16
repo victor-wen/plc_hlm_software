@@ -48,7 +48,7 @@ struct CommStats
 // Bit exposure is strictly limited to the DEFINED bits (spec §8.2):
 //   - D100 bit0-14 -> M0-M14 (bit15 reserved, never exposed)
 //   - D103 bit0-15 -> M30-M45
-//   - M50-M53 (homeBits) and M100-M112 (commandBits)
+//   - M50-M53 (homeBits) and M100-M111 (commandBits; M112 removed)
 // D102/D104/D105 have no defined bits (acceptance): they are exposed ONLY as
 // raw hex words, never parsed into bits.
 //
@@ -70,13 +70,13 @@ public:
     // True when the snapshot is fresh enough to trust bit states.
     bool bitValid() const;
     // State of a DEFINED bit: M0-M14 (D100), M30-M45 (D103), M50-M53,
-    // M100-M112. Returns false for any undefined M number (e.g. D102/D104/
+    // M100-M111. Returns false for any undefined M number (e.g. D102/D104/
     // D105 bits M200/M300/M316 are never exposed).
     bool bitState(int mNumber) const;
     // All defined bit rows for the page tables.
     QVector<BitRow> d100Bits() const;   // M0-M14
     QVector<BitRow> d103Bits() const;  // M30-M35, M40-M45
-    QVector<BitRow> homeCommandBits() const; // M50-M53, M100-M112
+    QVector<BitRow> homeCommandBits() const; // M50-M53, M100-M111
 
     // --- D140 heartbeat activity (spec §13) ----------------------------------
     bool heartbeatKnown() const;
@@ -116,7 +116,7 @@ private:
     bool fastFresh() const;     // D100-D140: raw words, M0-M14, M30-M45, D110/D120/D122/D126-D140
     bool slowFresh() const;     // D204/D210/D220
     bool homeFresh() const;     // M50-M53
-    bool commandFresh() const;  // M100-M112
+    bool commandFresh() const;  // M100-M111
     DiagnosticsField field(const QString &text, quint8 f, bool sourceFresh) const;
 
     const ShellModel &m_model;

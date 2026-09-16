@@ -50,7 +50,7 @@ DeviceSnapshotData validSnapshotData()
     d.targetWidth = 100;
     d.currentWidth = 100;
     d.heartbeat = 1;
-    d.fastQuality = DataQuality::Valid;
+    d.fast_quality = DataQuality::Valid;
     return d;
 }
 
@@ -204,7 +204,7 @@ void ShellTest::modelStaleSnapshotMarksInvalid()
     ShellModel model;
     DeviceSnapshotData d = validSnapshotData();
     d.dataAgeMs = 99999; // stale
-    d.fastQuality = DataQuality::Stale;
+    d.fast_quality = DataQuality::Stale;
     model.updateSnapshot(DeviceSnapshot(d));
     QVERIFY(model.hasSnapshot());
     QCOMPARE(model.snapshotFresh(), false);
@@ -241,8 +241,8 @@ void ShellTest::modelFlagsUseOwningBlockOnly()
     // Fast block stale: the fast-derived flags are unknown again.
     DeviceSnapshotData stale = validSnapshotData();
     stale.statusWord1 = (1 << 2) | (1 << 9);
-    stale.fastQuality = DataQuality::Stale;
-    stale.overallQuality = aggregateQuality(stale);
+    stale.fast_quality = DataQuality::Stale;
+    stale.overall_quality = aggregateQuality(stale);
     model.updateSnapshot(DeviceSnapshot(stale));
     QVERIFY(!model.modeKnown());
     QVERIFY(!model.isAutoMode());
@@ -255,14 +255,14 @@ void ShellTest::modelFlagsUseOwningBlockOnly()
     // block must not let M100=1 report 急停 as confirmed...
     DeviceSnapshotData cmd = validSnapshotData();
     cmd.commandBits = 0x0001; // M100 = software estop set
-    cmd.commandQuality = DataQuality::Stale;
-    cmd.overallQuality = aggregateQuality(cmd);
+    cmd.command_quality = DataQuality::Stale;
+    cmd.overall_quality = aggregateQuality(cmd);
     model.updateSnapshot(DeviceSnapshot(cmd));
     QVERIFY(!model.isEstop());
 
     // ...and a valid command block confirms it.
-    cmd.commandQuality = DataQuality::Valid;
-    cmd.overallQuality = aggregateQuality(cmd);
+    cmd.command_quality = DataQuality::Valid;
+    cmd.overall_quality = aggregateQuality(cmd);
     model.updateSnapshot(DeviceSnapshot(cmd));
     QVERIFY(model.isEstop());
 
@@ -270,8 +270,8 @@ void ShellTest::modelFlagsUseOwningBlockOnly()
     // untrusted (M100 unknown) -> 急停 is still reported (fail-safe).
     DeviceSnapshotData m0 = validSnapshotData();
     m0.statusWord1 = 0x0001;                  // M0 estop
-    m0.commandQuality = DataQuality::Stale;   // M100 unknown
-    m0.overallQuality = aggregateQuality(m0);
+    m0.command_quality = DataQuality::Stale;   // M100 unknown
+    m0.overall_quality = aggregateQuality(m0);
     model.updateSnapshot(DeviceSnapshot(m0));
     QVERIFY(model.isEstop());
 }
@@ -358,8 +358,8 @@ void ShellTest::topBarReadyShowsUnknownWhenStateUnknown()
 
     // Fast block stale: still unknown, not "未准备".
     DeviceSnapshotData stale = validSnapshotData();
-    stale.fastQuality = DataQuality::Stale;
-    stale.overallQuality = aggregateQuality(stale);
+    stale.fast_quality = DataQuality::Stale;
+    stale.overall_quality = aggregateQuality(stale);
     w.shellModel()->updateSnapshot(DeviceSnapshot(stale));
     text = w.topBarText();
     QVERIFY2(text.contains(QStringLiteral("准备 —")), qPrintable(text));
@@ -481,7 +481,7 @@ void ShellTest::modeButtonsStillRequireAdminOnOutOfRangeSnapshot()
     d.statusWord1 = 0; // M3=0: the interlock alone would allow mode switch
     d.currentWidth = 0;
     d.invalidFields = (quint32(1) << quint8(SnapshotField::CurrentWidth));
-    d.overallQuality = aggregateQuality(d);
+    d.overall_quality = aggregateQuality(d);
     model->updateSnapshot(DeviceSnapshot(d));
 
     auto *manual = w.findChild<QPushButton *>(QStringLiteral("manualModeButton"));
@@ -531,8 +531,8 @@ void ShellTest::staleFastBlockDisablesDependentActionsOnly()
 
     DeviceSnapshotData d = validSnapshotData();
     d.statusWord1 = (1 << 2) | (1 << 8); // would satisfy mode/start if fresh
-    d.fastQuality = DataQuality::Stale;
-    d.overallQuality = aggregateQuality(d);
+    d.fast_quality = DataQuality::Stale;
+    d.overall_quality = aggregateQuality(d);
     model->updateSnapshot(DeviceSnapshot(d));
     QVERIFY(!model->snapshotFresh());
 
@@ -566,8 +566,8 @@ void ShellTest::protocolErrorFastBlockDisablesDependentActionsOnly()
 
     DeviceSnapshotData d = validSnapshotData();
     d.statusWord1 = (1 << 2) | (1 << 8);
-    d.fastQuality = DataQuality::ProtocolError;
-    d.overallQuality = aggregateQuality(d);
+    d.fast_quality = DataQuality::ProtocolError;
+    d.overall_quality = aggregateQuality(d);
     model->updateSnapshot(DeviceSnapshot(d));
 
     auto *manual = w.findChild<QPushButton *>(QStringLiteral("manualModeButton"));
@@ -594,9 +594,9 @@ void ShellTest::slowBlockStaleKeepsFastDependentActionsEnabled()
 
     DeviceSnapshotData d = validSnapshotData();
     d.statusWord1 = (1 << 2) | (1 << 8); // M2 auto, M8 ready, M3=0
-    d.slowQuality = DataQuality::Stale;  // fast block stays Valid
-    d.homeQuality = DataQuality::Stale;
-    d.overallQuality = aggregateQuality(d);
+    d.slow_quality = DataQuality::Stale;  // fast block stays Valid
+    d.home_quality = DataQuality::Stale;
+    d.overall_quality = aggregateQuality(d);
     model->updateSnapshot(DeviceSnapshot(d));
     QVERIFY(!model->snapshotFresh()); // whole-snapshot freshness is false
 

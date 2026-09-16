@@ -9,9 +9,9 @@ namespace hlm {
 // Shared state model of the H3U PLC (spec §14.1). Simulates the control
 // behavior of spec §10.2-§10.6 and the corrected reference ladder of
 // §10.3.1: home return, width adjustment (M43/M34/M44/M45), dynamic
-// timeout, mode switching, start/stop, software estop, D140 heartbeat and
-// the M112 watchdog. Time is injected via SimulationClock and advanced
-// explicitly, so all scenarios run deterministically.
+// timeout, mode switching, start/stop, software estop and the D140
+// heartbeat. Time is injected via SimulationClock and advanced explicitly,
+// so all scenarios run deterministically.
 //
 // The model is a plain class (no QObject): it only holds state and reacts
 // to writes/advance calls. Both the in-process SimulatedPlcGateway (Task 6)
@@ -38,7 +38,7 @@ public:
     void setEstopReleaseStuck(bool stuck);
 
     // Advance simulated time by `seconds`, driving the D140 heartbeat,
-    // positioning progress, dynamic timeout, home return and M112 watchdog.
+    // positioning progress, dynamic timeout and home return.
     void advance(quint64 seconds);
 
 private:
@@ -48,7 +48,6 @@ private:
     void onM101RisingEdge();
     void onM102RisingEdge();
     void onM100Write(bool value);
-    void onM112Write(bool value);
     void updateM49();
     void updateM60();
     void updateD210();
@@ -64,7 +63,8 @@ private:
 
     SimulationClock &m_clock;
 
-    // Coils M0-M112 (index = protocol address). Includes derived state bits
+    // Coil storage (index = protocol address, extent 0-112). Address 112 is
+    // in range but unused after the M112 removal; includes derived state bits
     // (M0, M1, M2, M60, M61) kept in sync by the handlers.
     bool m_coils[113] = {};
 
@@ -87,10 +87,6 @@ private:
     quint64 m_homeRemaining = 0;
     int m_homeFault = 0; // injected fault code (0 = none)
     bool m_estopReleaseStuck = false; // physical estop holds M0 despite M100=0
-
-    // M112 watchdog: seconds since the last M112 rising edge.
-    quint64 m_watchdogElapsed = 0;
-    bool m_watchdogArmed = false;
 };
 
 } // namespace hlm

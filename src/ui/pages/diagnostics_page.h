@@ -16,8 +16,8 @@ class StatusLight;
 class ValueDisplay;
 
 // I/O 与诊断 page (spec §8.2, §9, §11.3, §13): D100-D105 原始状态字、
-// 已定义位 (M0-M14, M30-M45, M50-M53, M100-M112)、关键寄存器、D140 心跳
-// 活性、通讯统计 (延迟/序号/重连/失败轮询) 和 OpenCV 版本与自检.
+// 已定义位 (M0-M14, M30-M45, M50-M53, M100-M111)、关键寄存器、D140 心跳
+// 活性、通讯统计 (实际数据年龄/序号/重连/失败轮询) 和 OpenCV 版本与自检.
 //
 // Strictly read-only: the page declares NO signals and contains no command
 // widgets — it can never emit a write intent (spec §11.3). 查看诊断 = 任何人
@@ -28,9 +28,9 @@ class ValueDisplay;
 // marks the vision section red; PLC data display and the rest of the page stay
 // normal, and no control command is ever sent.
 //
-// Comm statistics (延迟=最近快照 dataAgeMs、序号、重连次数、失败轮询) are fed
-// in via setCommStats (Task 20 wires the gateway counters); the page only
-// displays them. 延迟/序号 also derive from the current snapshot.
+// Comm statistics (延迟=实际整体数据年龄 overall_age_ms、序号、重连次数、
+// 失败轮询) are fed in via setCommStats from the port-level signal; the page
+// only displays them (PLC-HMI-003 D7: no hard-coded zero age).
 //
 // Stale/invalid fields show "—" (spec §9). D102/D104/D105 are shown as raw
 // hex only, never parsed into bits (acceptance).

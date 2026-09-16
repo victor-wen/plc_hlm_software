@@ -106,14 +106,12 @@ private slots:
     void fastPollPreservesHomeAndCommandBits();
     void packCoilBitsPacksLsbFirst();
     void makeTransferResultConvertsByKind();
-    // Task 20: pulse state machine + M112 watchdog wiring, comm stats.
+    // Task 20: pulse state machine, comm stats.
     void startPulseRoutesThroughStateMachine();
     void pulseHoldThenClearAtMin100ms();
     void pulseClearPriorityLevel1();
     void pulseAbortsOnOffline();
     void uncertainPulseSetConvergesViaReadback();
-    void heartbeatFlipsM112Every500ms();
-    void heartbeatStopsOffline();
     void commStatsEmitted();
 
 private:
@@ -140,11 +138,6 @@ void GatewayTest::init()
     // Only the fast poll fires (home/command/slow effectively disabled) so
     // the tests are deterministic about which request is in flight.
     m_worker->setPollIntervals(250, 1000000, 1000000, 1000000);
-    // The M112 watchdog would inject a flip into the request stream on the
-    // first online tick; disable it so the existing tests keep their exact
-    // dispatch-order assumptions. Heartbeat tests re-enable it explicitly.
-    m_worker->setWatchdogEnabled(false);
-
     m_now = 0;
     m_snapshots = 0;
     m_online = false;
@@ -154,21 +147,21 @@ void GatewayTest::init()
     m_statFailedPolls.clear();
 
     connect(m_worker, &ModbusGatewayWorker::snapshotReady, this,
-            [this](const DeviceSnapshot &s) {
+            [this](quint64, const DeviceSnapshot &s) {
                 ++m_snapshots;
                 m_lastSnapshot = s;
             });
     connect(m_worker, &ModbusGatewayWorker::connectionStateChanged, this,
-            [this](bool online) { m_online = online; });
-    connect(m_worker, &ModbusGatewayWorker::writeCompleted, this,
-            [this](quint16 addr, bool ok, const QString &) {
-                m_writeResults.append({addr, ok});
+            [this](quint64, bool online) { m_online = online; });
+    connect(m_worker, &ModbusGatewayWorker::submissionCompleted, this,
+            [this](const SubmissionCompletion &completion) {
+                m_writeResults.append({completion.address, completion.result});
             });
     connect(m_worker, &ModbusGatewayWorker::commStatsChanged, this,
-            [this](quint64 seq, int reconnects, int failed) {
-                m_statSequences.append(seq);
-                m_statReconnects.append(reconnects);
-                m_statFailedPolls.append(failed);
+            [this](const PlcCommStats &stats) {
+                m_statSequences.append(stats.snapshot_sequence);
+                m_statReconnects.append(int(stats.reconnect_count));
+                m_statFailedPolls.append(int(stats.failed_polls));
             });
 
     m_worker->start();
@@ -211,10 +204,13 @@ void GatewayTest::offlineRejectsCommands()
     m_transport->completeOk(fastBlock(1));
     QVERIFY(!m_worker->isOnline());
 
-    // A command arriving while offline must be rejected, not queued.
-    m_worker->submitWriteCoil(100, true, CommandPriority::Normal);
-    QCOMPARE(m_writeResults.size(), 1);
-    QCOMPARE(m_writeResults.first().second, false); // rejected
+    // A command arriving while offline must be rejected synchronously, not
+    // queued and not completed (contract: rejected submissions emit none).
+    const SubmissionResult rejected =
+        m_worker->submitWriteCoil(100, true, CommandPriority::Normal);
+    QVERIFY(!rejected.accepted);
+    QVERIFY(!rejected.immediate_rejection_reason.isEmpty());
+    QVERIFY(m_writeResults.isEmpty());
     QCOMPARE(m_transport->sent.size(), 2);          // no new request sent
 }
 
@@ -677,10 +673,11 @@ void GatewayTest::writeRejectedUntilFirstSnapshotAfterReconnect()
     // A write submitted in the reconnect window must be rejected, not
     // dispatched (spec §8.4: no control before a full valid snapshot).
     const int sentBeforeWrite = m_transport->sent.size();
-    m_worker->submitWriteCoil(100, true, CommandPriority::Normal);
-    QCOMPARE(m_writeResults.size(), 1);
-    QCOMPARE(m_writeResults.first().first, quint16(100));
-    QCOMPARE(m_writeResults.first().second, false); // rejected
+    const SubmissionResult rejected =
+        m_worker->submitWriteCoil(100, true, CommandPriority::Normal);
+    QVERIFY(!rejected.accepted);
+    QVERIFY(!rejected.immediate_rejection_reason.isEmpty());
+    QVERIFY(m_writeResults.isEmpty());
     QCOMPARE(m_transport->sent.size(), sentBeforeWrite); // no new request sent
 
     // A successful fast poll arrives: the first full snapshot reopens the
@@ -698,7 +695,7 @@ void GatewayTest::writeRejectedUntilFirstSnapshotAfterReconnect()
     QCOMPARE(m_transport->sent.last().kind, ModbusRequest::Kind::WriteCoil);
     m_transport->completeOk({}); // write acknowledged
     m_transport->completeOk({0x0001}); // readback confirms
-    QCOMPARE(m_writeResults.size(), 2);
+    QCOMPARE(m_writeResults.size(), 1);
     QCOMPARE(m_writeResults.last().second, true);
 }
 
@@ -749,7 +746,7 @@ void GatewayTest::fastPollPreservesHomeAndCommandBits()
     // Regression: HomePoll/CommandPoll write m_data.homeBits/commandBits but do
     // NOT publish. FastPoll rebuilds m_data from decodeFastBlock (which zeroes
     // those fields). Without saving/restoring them, every published snapshot
-    // reports M50-M53/M100-M112 as 0, breaking the diagnostics bit tables and
+    // reports M50-M53/M100-M111 as 0, breaking the diagnostics bit tables and
     // ShellModel::isEstop()'s M100 branch on a real PLC link.
     m_transport->completeOk(fastBlock(1)); // first fast poll -> online
     QVERIFY(m_worker->isOnline());
@@ -763,7 +760,7 @@ void GatewayTest::fastPollPreservesHomeAndCommandBits()
     QCOMPARE(m_transport->sent.last().cls, RequestClass::HomePoll);
     m_transport->completeOk({0x000A}); // M51 + M53
     QCOMPARE(m_transport->sent.last().cls, RequestClass::CommandPoll);
-    m_transport->completeOk({0x1001}); // M100 + M112
+    m_transport->completeOk({0x0801}); // M100 + M111 (M112 removed)
 
     // The next fast poll publishes a snapshot that must still carry the bits
     // read by HomePoll/CommandPoll.
@@ -774,14 +771,13 @@ void GatewayTest::fastPollPreservesHomeAndCommandBits()
     QVERIFY(m_lastSnapshot.m51());
     QVERIFY(m_lastSnapshot.m53());
     QVERIFY(m_lastSnapshot.m100());
-    QVERIFY(m_lastSnapshot.m112());
+    QVERIFY(m_lastSnapshot.m111());
     QVERIFY(!m_lastSnapshot.m50());
     QVERIFY(!m_lastSnapshot.m101());
 }
 
 // ---------------------------------------------------------------------------
-// Task 20: pulse state machine + M112 watchdog wiring, comm stats (spec §8.5,
-// §8.6, §16).
+// Task 20: pulse state machine + comm stats (spec §8.5, §16).
 // ---------------------------------------------------------------------------
 
 void GatewayTest::startPulseRoutesThroughStateMachine()
@@ -790,7 +786,7 @@ void GatewayTest::startPulseRoutesThroughStateMachine()
     QVERIFY(m_worker->isOnline());
 
     // startPulse(101) -> the state machine enqueues write-1 (user priority).
-    QVERIFY(m_worker->startPulse(101));
+    QVERIFY(m_worker->submitPulse(101).accepted);
     QCOMPARE(m_transport->sent.size(), 2);
     QCOMPARE(m_transport->sent.last().kind, ModbusRequest::Kind::WriteCoil);
     QCOMPARE(m_transport->sent.last().address, quint16(101));
@@ -803,7 +799,7 @@ void GatewayTest::pulseHoldThenClearAtMin100ms()
     m_transport->completeOk(fastBlock(1)); // first fast poll
     QVERIFY(m_worker->isOnline());
 
-    QVERIFY(m_worker->startPulse(101));
+    QVERIFY(m_worker->submitPulse(101).accepted);
     m_transport->completeOk({}); // write-1 ack -> holding, timing starts at t=0
     m_transport->completeOk({0x0001}); // write-1 readback confirms (M101=1)
 
@@ -821,11 +817,11 @@ void GatewayTest::pulseHoldThenClearAtMin100ms()
     QCOMPARE(m_transport->sent.last().value, quint16(0));
     QCOMPARE(m_transport->sent.last().cls, RequestClass::PulseClear);
 
-    // Clear ack + readback confirm -> pulse complete, reported via
-    // writeCompleted(address, true).
+    // Clear ack + readback confirm -> the pulse submission completes exactly
+    // once via submissionCompleted(address, true).
     m_transport->completeOk({}); // clear ack
     m_transport->completeOk({0x0000}); // clear readback confirms (M101=0)
-    QCOMPARE(m_writeResults.size(), 2);
+    QCOMPARE(m_writeResults.size(), 1);
     QCOMPARE(m_writeResults.last().first, quint16(101));
     QCOMPARE(m_writeResults.last().second, true);
 }
@@ -835,7 +831,7 @@ void GatewayTest::pulseClearPriorityLevel1()
     m_transport->completeOk(fastBlock(1)); // first fast poll
     QVERIFY(m_worker->isOnline());
 
-    QVERIFY(m_worker->startPulse(101));
+    QVERIFY(m_worker->submitPulse(101).accepted);
     m_transport->completeOk({}); // write-1 ack -> readback dispatched
 
     // A user write queued behind the pulse must not preempt the clear: the
@@ -862,7 +858,7 @@ void GatewayTest::pulseAbortsOnOffline()
 
     // Offline startPulse: rejected, nothing queued.
     const int sentBefore = m_transport->sent.size();
-    QVERIFY(!m_worker->startPulse(101));
+    QVERIFY(!m_worker->submitPulse(101).accepted);
     QCOMPARE(m_transport->sent.size(), sentBefore); // no new request
 }
 
@@ -871,14 +867,14 @@ void GatewayTest::uncertainPulseSetConvergesViaReadback()
     m_transport->completeOk(fastBlock(1)); // first fast poll
     QVERIFY(m_worker->isOnline());
 
-    QVERIFY(m_worker->startPulse(101));
+    QVERIFY(m_worker->submitPulse(101).accepted);
     m_transport->completeFail(); // write-1 times out (uncertain)
 
-    // The failed write reports its result; the machine must NOT re-send 1:
-    // it requests a dedicated single-coil readback (isReadback, matched by
-    // request identity, NOT the write confirmation table).
-    QCOMPARE(m_writeResults.size(), 1);
-    QCOMPARE(m_writeResults.first().second, false);
+    // The pulse's internal write has no submission identity of its own; the
+    // machine must NOT re-send 1: it requests a dedicated single-coil readback
+    // (isReadback, matched by request identity, NOT the write confirmation
+    // table). Nothing is completed yet.
+    QCOMPARE(m_writeResults.size(), 0);
     QCOMPARE(m_transport->sent.size(), 3);
     QCOMPARE(m_transport->sent.last().kind, ModbusRequest::Kind::ReadCoils);
     QCOMPARE(m_transport->sent.last().address, quint16(101));
@@ -888,67 +884,8 @@ void GatewayTest::uncertainPulseSetConvergesViaReadback()
     // aborted (finished(false) path) — no clear write is queued.
     m_transport->completeOk({0x0000});
     QCOMPARE(m_transport->sent.size(), 3); // no re-send, no clear
-    QCOMPARE(m_writeResults.size(), 1);    // only the failed write reported
-}
-
-void GatewayTest::heartbeatFlipsM112Every500ms()
-{
-    m_transport->completeOk(fastBlock(1)); // first fast poll
-    QVERIFY(m_worker->isOnline());
-
-    // Re-enable the watchdog: the next online tick flips M112 immediately.
-    m_worker->setWatchdogEnabled(true);
-    m_worker->onPollTick();
-    QCOMPARE(m_transport->sent.size(), 2);
-    QCOMPARE(m_transport->sent.last().kind, ModbusRequest::Kind::WriteCoil);
-    QCOMPARE(m_transport->sent.last().address, quint16(112));
-    QCOMPARE(m_transport->sent.last().value, quint16(1));
-    QCOMPARE(m_transport->sent.last().cls, RequestClass::Heartbeat);
-    m_transport->completeOk({}); // flip ack
-    m_transport->completeOk({0x0001}); // flip readback confirms
-
-    // 499 ms later: no flip yet (a fast poll fires at 250 ms; complete it).
-    m_now = 499;
-    m_worker->onPollTick();
-    QCOMPARE(m_transport->sent.last().cls, RequestClass::FastPoll);
-    m_transport->completeOk(fastBlock(1));
-
-    // 500 ms: flip to 0 (dispatches before the fast poll, level 3 < 5).
-    m_now = 500;
-    m_worker->onPollTick();
-    QCOMPARE(m_transport->sent.size(), 5);
-    QCOMPARE(m_transport->sent.last().address, quint16(112));
-    QCOMPARE(m_transport->sent.last().value, quint16(0));
-    QCOMPARE(m_transport->sent.last().cls, RequestClass::Heartbeat);
-}
-
-void GatewayTest::heartbeatStopsOffline()
-{
-    m_transport->completeOk(fastBlock(1)); // first fast poll
-    QVERIFY(m_worker->isOnline());
-    m_worker->setWatchdogEnabled(true);
-    m_worker->onPollTick(); // flip #1 (M112=1)
-    QCOMPARE(m_transport->sent.size(), 2);
-    m_transport->completeOk({}); // flip ack
-    m_transport->completeOk({0x0001}); // flip readback confirms
-
-    // Drive offline via heartbeat freeze. At t=3200 the watchdog also flips
-    // (M112=0, level 3) and dispatches before the fast poll (level 5);
-    // complete that flip before the poll.
-    m_now = 3200;
-    m_worker->onPollTick();
-    QCOMPARE(m_transport->sent.last().cls, RequestClass::Heartbeat);
-    m_transport->completeOk({}); // flip ack
-    m_transport->completeOk({0x0000}); // flip readback confirms
-    QCOMPARE(m_transport->sent.last().cls, RequestClass::FastPoll);
-    m_transport->completeOk(fastBlock(1)); // heartbeat unchanged -> freeze
-    QVERIFY(!m_worker->isOnline());
-
-    // Offline: no further flips queued.
-    const int sentAfterOffline = m_transport->sent.size();
-    m_now = 4000;
-    m_worker->onPollTick();
-    QCOMPARE(m_transport->sent.size(), sentAfterOffline);
+    QCOMPARE(m_writeResults.size(), 1);    // exactly the pulse submission
+    QCOMPARE(m_writeResults.first().second, false);
 }
 
 void GatewayTest::commStatsEmitted()
@@ -966,11 +903,18 @@ void GatewayTest::commStatsEmitted()
     m_transport->completeFail(); // fast poll fails -> retry
     m_transport->completeFail(); // retry fails -> failure #1 (not offline)
     QVERIFY(m_worker->isOnline());
-    m_now = 600;
-    m_worker->onPollTick();
-    m_transport->completeOk(fastBlock(2)); // snapshot #2
+    // A failed transfer marks only its block ProtocolError and publishes the
+    // degraded quality immediately (PLC-HMI-003 D6): that is snapshot #2, so
+    // it carries the real counters (failed polls = 1).
     QCOMPARE(m_statSequences.size(), 2);
     QCOMPARE(m_statFailedPolls.last(), 1);
+    QVERIFY(m_lastSnapshot.fastQuality() == DataQuality::ProtocolError);
+    m_now = 600;
+    m_worker->onPollTick();
+    m_transport->completeOk(fastBlock(2)); // successful refresh -> snapshot #3
+    QCOMPARE(m_statSequences.size(), 3);
+    QCOMPARE(m_statFailedPolls.last(), 1);
+    QVERIFY(m_lastSnapshot.fastQuality() == DataQuality::Valid);
 
     // Drive offline (3 consecutive failures) and reconnect: reconnectCount
     // increments when the reconnect is scheduled (enterOffline).
@@ -988,8 +932,16 @@ void GatewayTest::commStatsEmitted()
     m_transport->completeFail();
     QVERIFY(!m_worker->isOnline());
     m_worker->onReconnectTick();
-    m_transport->completeOk(fastBlock(3)); // snapshot #3
-    QCOMPARE(m_statSequences.size(), 3);
+    m_transport->completeOk(fastBlock(3)); // reconnect success -> snapshot #8
+    // Published snapshots: initial, degraded(failure@300), successful refresh,
+    // degraded(failure@900), stale-crossing(home@1200, its no-success age
+    // crosses the 1000 ms threshold even though its 1000000 ms interval means
+    // it is never polled), degraded(failure@1200), degraded(failure@1500,
+    // which takes the link offline), reconnect refresh. A failed poll
+    // publishes its ProtocolError quality immediately (D6), and a block without
+    // a successful transfer publishes its Stale crossing once (D6), hence one
+    // extra snapshot beyond the per-failure-cycle ones.
+    QCOMPARE(m_statSequences.size(), 8);
     QCOMPARE(m_statReconnects.last(), 1);
     // 1 (earlier) + 3 offline-driving cycles = 4 failed polls.
     QCOMPARE(m_statFailedPolls.last(), 4);
@@ -1000,10 +952,12 @@ void GatewayTest::packCoilBitsPacksLsbFirst()
     // Contract (modbus_transport.h): a ReadCoils result packs one bit per coil
     // into values[0], bit i = coil i.
 
-    // Command block (13 coils): M100 + M112.
+    // Generic 13-coil response fixture (bit0 + bit12, arbitrary positions):
+    // packCoilBits is block-size agnostic. The live command poll block is
+    // 12 coils M100-M111 (M112 removed, D3).
     QList<quint16> command(13, 0);
-    command[0] = 1;  // M100
-    command[12] = 1; // M112
+    command[0] = 1;
+    command[12] = 1;
     QCOMPARE(packCoilBits(command), quint16((1 << 0) | (1 << 12)));
 
     // Home block (4 coils): M51 + M53.
@@ -1033,7 +987,9 @@ void GatewayTest::makeTransferResultConvertsByKind()
     QCOMPARE(four.values.size(), 1); // guards against per-coil append
     QCOMPARE(four.values.first(), quint16(0b0101));
 
-    // 13-coil command block: M100 (bit0) + M112 (bit12).
+    // Generic 13-coil response (bit0 + bit12, arbitrary positions): the
+    // conversion packs any coil block, not just the live 12-coil M100-M111
+    // command block (M112 removed, D3).
     QList<quint16> command(13, 0);
     command[0] = 1;
     command[12] = 1;

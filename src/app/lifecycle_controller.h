@@ -16,8 +16,9 @@
 //  - Restricted mode (spec §13): when the database is unavailable only
 //    online-stop and software-estop remain; every other command is blocked
 //    at the application layer.
-//  - Shutdown (spec §13): clear M42/M106-M111, stop the M112 heartbeat, then
-//    stop the gateway and the database. M100 is never auto-cleared.
+//  - Shutdown (spec §13): clear M42/M106-M111 (logoutClear), then the gateway
+//    stop ends polling and disconnects; the database is stopped afterwards.
+//    M100 is never auto-cleared.
 
 #include <QObject>
 #include <QString>

@@ -8,21 +8,21 @@ PulseStateMachine::PulseStateMachine(Callbacks callbacks, std::function<qint64()
 {
 }
 
-bool PulseStateMachine::startPulse(quint16 address)
+bool PulseStateMachine::startPulse(quint16 address, quint64 submissionId)
 {
     // Clear has priority over set: a pulse already active on this address
     // must not be disturbed by a new set (spec §8.5).
     if (m_pulses.contains(address))
         return false;
 
-    // Offline: rejected, never queued for replay (spec §8.4).
-    if (!m_cb.writeCoil || !m_cb.writeCoil(address, true, CommandPriority::Normal)) {
-        abortPulse(address, false);
+    // Offline: rejected, never queued for replay (spec §8.4). A rejected
+    // submission emits no completion (contract IPlcGateway submission rule).
+    if (!m_cb.writeCoil || !m_cb.writeCoil(address, true, CommandPriority::Normal))
         return false;
-    }
 
     Pulse p;
     p.phase = Phase::SetInFlight;
+    p.submissionId = submissionId;
     m_pulses.insert(address, p);
     return true;
 }
@@ -71,9 +71,10 @@ void PulseStateMachine::onWriteCompleted(quint16 address, bool ok)
     case Phase::ClearInFlight:
         if (ok) {
             // Clear acked: pulse complete (spec §8.5 step 5).
+            const quint64 submissionId = p.submissionId;
             m_pulses.erase(it);
             if (m_cb.finished)
-                m_cb.finished(address, true);
+                m_cb.finished(address, true, submissionId);
         } else {
             // Uncertain clear: read back and converge (spec §8.4).
             p.phase = Phase::Readback;
@@ -106,18 +107,19 @@ void PulseStateMachine::onReadback(quint16 address, bool value)
     // is complete (spec §8.5 step 5: 收到清零应答或回读为 0 后完成脉冲).
     // Copy before erase: erasing the entry invalidates `p`.
     const bool uncertain = p.uncertain;
+    const quint64 submissionId = p.submissionId;
     m_pulses.erase(it);
     if (m_cb.finished)
-        m_cb.finished(address, !uncertain);
+        m_cb.finished(address, !uncertain, submissionId);
 }
 
 void PulseStateMachine::reset()
 {
-    const auto addresses = m_pulses.keys();
+    const QHash<quint16, Pulse> pulses = m_pulses;
     m_pulses.clear();
-    for (quint16 a : addresses) {
+    for (auto it = pulses.constBegin(); it != pulses.constEnd(); ++it) {
         if (m_cb.finished)
-            m_cb.finished(a, false);
+            m_cb.finished(it.key(), false, it.value().submissionId);
     }
 }
 
@@ -128,9 +130,11 @@ bool PulseStateMachine::isActive(quint16 address) const
 
 void PulseStateMachine::abortPulse(quint16 address, bool ok)
 {
+    const auto it = m_pulses.constFind(address);
+    const quint64 submissionId = it != m_pulses.constEnd() ? it.value().submissionId : 0;
     m_pulses.remove(address);
     if (m_cb.finished)
-        m_cb.finished(address, ok);
+        m_cb.finished(address, ok, submissionId);
 }
 
 bool PulseStateMachine::enqueueClear(quint16 address)

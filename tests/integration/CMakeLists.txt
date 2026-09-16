@@ -88,3 +88,35 @@ add_test(NAME recipe_database_routing_developer COMMAND test_recipe_database_rou
 set_tests_properties(recipe_database_routing_developer PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )
+
+# --- PLC-HMI-003: developer regression tests (D9) -----------------------------
+
+add_executable(test_plc_correlation_developer plc_correlation_developer_test.cpp)
+target_link_libraries(test_plc_correlation_developer PRIVATE
+    hlm_app_core
+    hlm_simulator
+    hlm_modbus
+    hlm_sqlite
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME plc_correlation_developer COMMAND test_plc_correlation_developer)
+set_tests_properties(plc_correlation_developer PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
+)
+
+# --- PLC-HMI-003: independent M112-removal / D140 liveness session test ------
+# QTEST_MAIN (QApplication) through the composition root; offscreen headless.
+
+add_executable(test_plc_m112_d140_session plc_m112_d140_session_test.cpp)
+target_link_libraries(test_plc_m112_d140_session PRIVATE
+    hlm_app_core
+    hlm_simulator
+    hlm_sqlite
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME plc_m112_d140_session COMMAND test_plc_m112_d140_session)
+set_tests_properties(plc_m112_d140_session PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
+)

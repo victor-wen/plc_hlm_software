@@ -30,6 +30,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QVector>
 
 #include <optional>
 
@@ -89,7 +90,7 @@ private:
     void rebuildGateway(const SerialConfig &cfg);
     void persistSerialConfig(const SerialConfig &cfg);
     void handleSettingLoaded(const std::optional<SettingRecord> &setting);
-    void handleWriteCompleted(quint16 address, bool ok, const QString &error);
+    void handleSubmissionCompleted(const SubmissionCompletion &completion);
     void handleParameterWrite(quint16 address, quint16 value);
     bool validateParameterWrite(quint16 address, quint16 value,
                                 QString *error) const;
@@ -148,11 +149,22 @@ private:
     // gateway (Task 20 review).
     bool m_shutdownDone = false;
 
-    // Parameter write routing: FIFO of in-flight D122/D220/D204 addresses, so
-    // writeCompleted can be fed back to setParameterWriteResult in order.
-    // A queue (not a single slot) so rapid consecutive writes do not drop the
-    // first result (Task 20 review).
-    QList<int> m_pendingParamAddrs;
+    // Parameter writes (D122/D220/D204): correlated by request identity +
+    // gateway generation, with a defensive timeout so a lost completion never
+    // leaves the page pending (PLC-HMI-003 D4).
+    struct PendingParamWrite {
+        quint64 request_id = 0;
+        quint64 gateway_generation = 0;
+        quint16 address = 0;
+        qint64 deadline_ms = 0;
+    };
+    QVector<PendingParamWrite> m_pendingParamWrites;
+    void submitParameterWrite(quint16 address, quint16 value);
+    void failAllPendingParamWrites(const QString &reason);
+    // Gateway generation: incremented before a gateway replacement; events
+    // from older generations are rejected (PLC-HMI-003 D4).
+    quint64 m_gatewayGeneration = 0;
+    bool acceptGatewayGeneration(quint64 generation) const;
     // D204 flow: value waiting for the password verification result.
     bool m_d204Pending = false;
     bool m_d204Cancelled = false;

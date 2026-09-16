@@ -14,10 +14,9 @@ enum class RequestClass {
     UserWrite,    // level 4: other user writes + write-then-readback
     SafetyWrite,  // level 2: online stop / estop set / continuous-motion clear
     PulseClear,   // level 1: pulse clear requests (Task 5)
-    Heartbeat,    // level 3: M112 heartbeat flip (Task 5)
     FastPoll,     // level 5: D100-D140 fast status poll
     HomePoll,     // level 5: M50-M53 home-return poll
-    CommandPoll,  // level 6: M100-M112 command bit readback
+    CommandPoll,  // level 6: M100-M111 command bit readback (M112 removed)
     SlowPoll,     // level 7: D204-D223 slow param poll
 };
 
@@ -32,7 +31,12 @@ struct ModbusRequest {
     quint16 value = 0;     // write value (coil: 0/1, register: raw)
     bool writeThenReadback = false; // spec §8.4: confirm writes by readback
     bool isReadback = false;        // this read confirms a previous write
-    quint64 requestId = 0;          // id of the write this readback confirms
+    quint64 requestId = 0;          // queue id of the write this readback confirms
+    // Port-level submission identity. >0 only for accepted submissions that
+    // owe exactly one terminal completion (PLC-HMI-003 D2).
+    quint64 submissionId = 0;
+    PlcOperation operation = PlcOperation::WriteCoil;
+    quint64 gatewayGeneration = 0;
     RequestClass cls = RequestClass::UserWrite;
     quint64 id = 0;        // monotonically increasing, for stable ordering
     int skipped = 0;      // anti-starvation: times a poll was passed over
@@ -42,8 +46,8 @@ struct ModbusRequest {
 // Single-flight serialized request queue (spec §8.3). At most one request is
 // dispatched at a time; the next is popped only after the current one
 // completes. Priority levels (high -> low):
-//   1. pulse clear, 2. safety writes, 3. M112 heartbeat, 4. user writes,
-//   5. fast/home status polls, 6. command readback, 7. slow param poll.
+//   1. pulse clear, 2. safety writes, 3. user writes,
+//   4. fast/home status polls, 5. command readback, 6. slow param poll.
 // Anti-starvation: a poll that has been passed over kAntiStarvationThreshold
 // times is forced to the front, so a continuous write stream can never
 // postpone the fast snapshot indefinitely (spec §8.3).

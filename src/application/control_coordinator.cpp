@@ -32,10 +32,6 @@ constexpr quint16 kD128 = 128; // target width
 constexpr qint64 kStartStopTimeoutMs = 10'000;
 // Mode switch wait (spec §11.2: 模式切换等待 M1/M2).
 constexpr qint64 kModeTimeoutMs = 5'000;
-// D128 target-width write wait (spec §13: the adjust flow must never hang —
-// even if a concurrent safety write overwrites the pending write and the D128
-// writeCompleted is dropped, the flow still converges to a defined failure).
-constexpr qint64 kAdjustWriteTimeoutMs = 5'000;
 // Estop set/release wait (spec §13: every flow converges). If the PLC accepts
 // the M100 write but never reflects M0/M100 in the snapshot, the pending state
 // must not stay 待确认 forever — the flow fails with a defined result.
@@ -165,7 +161,7 @@ ControlCoordinator::CommandResult ControlCoordinator::reset()
 
     if (s.m1()) {
         // Already manual: pulse M103 directly (spec §10.2 step 2).
-        if (m_transport.startPulse && m_transport.startPulse(kM103)) {
+        if (submitPulse(Command::Reset, kM103)) {
             m_resetPhase = ResetPhase::Homing;
             emitPending(Command::Reset);
         } else {
@@ -176,7 +172,8 @@ ControlCoordinator::CommandResult ControlCoordinator::reset()
         // The pending phase is visible before the write result so the operator
         // sees the manual-switch phase (D4/OB-5).
         emitPending(Command::Reset);
-        beginWrite(Command::Reset, kM104, false, CommandPriority::Normal);
+        if (!submitCoil(Command::Reset, kM104, false, CommandPriority::Normal))
+            finishCommand(Command::Reset, false, QStringLiteral("命令发送失败"));
     }
     return {true, QString()};
 }
@@ -205,14 +202,31 @@ ControlCoordinator::CommandResult ControlCoordinator::adjustWidth(quint16 target
     m_adjustSpeed = s.fieldValid(SnapshotField::WidthSpeed) ? s.widthSpeed() : 0;
 
     m_adjustPhase = AdjustPhase::WaitTargetWrite;
-    // Arm a defensive timeout for the D128 write (spec §13): if a concurrent
-    // safety command overwrites m_pendingWriteCmd and this writeCompleted is
-    // dropped, the flow still converges to a defined failure instead of
-    // hanging forever. The result timeout replaces this once M43 is pulsed.
-    m_adjustDeadlineMs = m_nowMs() + kAdjustWriteTimeoutMs;
-    m_adjustTimeoutArmed = true;
     emit commandAccepted(Command::AdjustWidth);
-    beginWriteReg(Command::AdjustWidth, kD128, targetWidth, CommandPriority::Normal);
+    if (!submitRegister(Command::AdjustWidth, kD128, targetWidth,
+                        CommandPriority::Normal)) {
+        finishCommand(Command::AdjustWidth, false, QStringLiteral("命令发送失败"));
+        return {true, QString()};
+    }
+    // The submission was accepted with a request identity: pulse M43 now
+    // (spec §10.3 step 4). A failed D128 completion still converges the flow
+    // through onSubmissionCompleted; an asynchronous M43 failure converges
+    // through its own completion. The result deadline replaces the short
+    // write deadline once the pulse is in flight.
+    m_adjustPhase = AdjustPhase::WaitResult;
+    if (!submitPulse(Command::AdjustWidth, kM43)) {
+        finishCommand(Command::AdjustWidth, false, QStringLiteral("M43 脉冲发送失败"));
+        return {true, QString()};
+    }
+    // hmi_timeout = plc_timeout + 3 (spec §10.3).
+    const qint32 diff = qAbs(qint32(m_adjustTarget.value_or(0))
+                             - qint32(m_adjustStartWidth.value_or(0)));
+    const qint32 speed = qMax<qint32>(1, m_adjustSpeed.value_or(1));
+    qint32 plc = (diff + speed - 1) / speed + 5;
+    plc = qBound<qint32>(10, plc, 360);
+    m_adjustDeadlineMs = m_nowMs() + (plc + 3) * 1000;
+    m_adjustTimeoutArmed = true;
+    emitPending(Command::AdjustWidth);
     return {true, QString()};
 }
 
@@ -234,7 +248,8 @@ ControlCoordinator::CommandResult ControlCoordinator::setMode(bool autoMode)
     m_modeTarget = autoMode;
     m_modeDeadlineMs = m_nowMs() + kModeTimeoutMs;
     emit commandAccepted(Command::ModeSwitch);
-    beginWrite(Command::ModeSwitch, kM104, autoMode, CommandPriority::Normal);
+    if (!submitCoil(Command::ModeSwitch, kM104, autoMode, CommandPriority::Normal))
+        finishCommand(Command::ModeSwitch, false, QStringLiteral("命令发送失败"));
     return {true, QString()};
 }
 
@@ -252,7 +267,7 @@ ControlCoordinator::CommandResult ControlCoordinator::start()
     m_startDeadlineMs = m_nowMs() + kStartStopTimeoutMs;
     m_startTimeoutArmed = true;
     emit commandAccepted(Command::Start);
-    if (m_transport.startPulse && m_transport.startPulse(kM101)) {
+    if (submitPulse(Command::Start, kM101)) {
         emitPending(Command::Start);
     } else {
         finishCommand(Command::Start, false, QStringLiteral("M101 脉冲发送失败"));
@@ -274,7 +289,7 @@ ControlCoordinator::CommandResult ControlCoordinator::stop()
     m_stopDeadlineMs = m_nowMs() + kStartStopTimeoutMs;
     m_stopTimeoutArmed = true;
     emit commandAccepted(Command::Stop);
-    if (m_transport.startPulse && m_transport.startPulse(kM102)) {
+    if (submitPulse(Command::Stop, kM102)) {
         emitPending(Command::Stop);
     } else {
         finishCommand(Command::Stop, false, QStringLiteral("M102 脉冲发送失败"));
@@ -305,7 +320,8 @@ ControlCoordinator::CommandResult ControlCoordinator::estopSet()
                            QStringLiteral("已被新的急停置位取代"));
     }
     emit commandAccepted(Command::EstopSet);
-    beginWrite(Command::EstopSet, kM100, true, CommandPriority::Safety);
+    if (!submitCoil(Command::EstopSet, kM100, true, CommandPriority::Safety))
+        finishCommand(Command::EstopSet, false, QStringLiteral("命令发送失败"));
     return {true, QString()};
 }
 
@@ -327,7 +343,8 @@ ControlCoordinator::CommandResult ControlCoordinator::estopRelease()
                            QStringLiteral("已被新的急停解除取代"));
     }
     emit commandAccepted(Command::EstopRelease);
-    beginWrite(Command::EstopRelease, kM100, false, CommandPriority::Safety);
+    if (!submitCoil(Command::EstopRelease, kM100, false, CommandPriority::Safety))
+        finishCommand(Command::EstopRelease, false, QStringLiteral("命令发送失败"));
     return {true, QString()};
 }
 
@@ -357,7 +374,7 @@ ControlCoordinator::CommandResult ControlCoordinator::manualHold(quint16 address
     if (hasManualConfirm(Command::ManualCommand, address, pressed))
         return rejectCommand(Command::ManualCommand,
                              QStringLiteral("手动命令正在等待确认"));
-    if (!m_transport.writeHold || !m_transport.writeHold(address, pressed))
+    if (!submitHold(Command::ManualCommand, address, pressed))
         return rejectCommand(Command::ManualCommand, QStringLiteral("命令发送失败"));
 
     // Accepted: pending until a confirmed snapshot shows the requested state
@@ -382,10 +399,8 @@ ControlCoordinator::CommandResult ControlCoordinator::manualLatch(quint16 addres
     if (hasManualConfirm(Command::ManualCommand, address, value))
         return rejectCommand(Command::ManualCommand,
                              QStringLiteral("手动命令正在等待确认"));
-    if (!m_transport.writeCoil
-        || !m_transport.writeCoil(address, value, CommandPriority::Normal)) {
+    if (!submitCoil(Command::ManualCommand, address, value, CommandPriority::Normal))
         return rejectCommand(Command::ManualCommand, QStringLiteral("命令发送失败"));
-    }
 
     m_manualPending.append(
         {Command::ManualCommand, address, value, m_nowMs() + kManualConfirmTimeoutMs});
@@ -406,10 +421,8 @@ ControlCoordinator::CommandResult ControlCoordinator::bypass(quint16 address, bo
     if (hasManualConfirm(Command::Bypass, address, value))
         return rejectCommand(Command::Bypass,
                              QStringLiteral("屏蔽命令正在等待确认"));
-    if (!m_transport.writeCoil
-        || !m_transport.writeCoil(address, value, CommandPriority::Normal)) {
+    if (!submitCoil(Command::Bypass, address, value, CommandPriority::Normal))
         return rejectCommand(Command::Bypass, QStringLiteral("命令发送失败"));
-    }
 
     m_manualPending.append(
         {Command::Bypass, address, value, m_nowMs() + kManualConfirmTimeoutMs});
@@ -530,68 +543,78 @@ void ControlCoordinator::onSnapshot(const DeviceSnapshot &s)
         onStopSnapshot(s);
 }
 
-void ControlCoordinator::onWriteCompleted(quint16 address, bool ok)
+void ControlCoordinator::onSubmissionCompleted(const SubmissionCompletion &completion)
 {
-    if (!m_pendingWriteCmd.has_value() || m_pendingWriteAddr != address)
-        return;
-    const Command cmd = *m_pendingWriteCmd;
-    m_pendingWriteCmd.reset();
-
-    switch (cmd) {
-    case Command::Reset:
-        // A late async write failure only matters while the reset flow is
-        // still waiting on that write; otherwise the flow has already
-        // converged (spec §13: never double-report after convergence).
-        if (!ok && m_resetPhase != ResetPhase::Idle) {
-            finishCommand(Command::Reset, false, QStringLiteral("写 M104 失败"));
-        }
-        // ok: stay in WaitManual until the snapshot shows M1=1.
-        break;
-    case Command::AdjustWidth:
-        if (!ok && m_adjustPhase != AdjustPhase::Idle) {
-            finishCommand(Command::AdjustWidth, false, QStringLiteral("写 D128 失败"));
+    // Correlate by request identity + gateway generation only (contract
+    // invariant: never by address or FIFO position). An unknown request id, a
+    // stale/obsolete generation or a duplicate completion is ignored.
+    int index = -1;
+    for (int i = 0; i < m_pendingSubmissions.size(); ++i) {
+        const PendingSubmission &p = m_pendingSubmissions.at(i);
+        if (p.request_id == completion.request_id
+            && p.gateway_generation == completion.gateway_generation) {
+            index = i;
             break;
         }
-        if (m_adjustPhase == AdjustPhase::WaitTargetWrite) {
-            // D128 confirmed: send the M43 pulse (spec §10.3 step 4).
-            if (m_transport.startPulse && m_transport.startPulse(kM43)) {
-                m_adjustPhase = AdjustPhase::WaitResult;
-                // hmi_timeout = plc_timeout + 3 (spec §10.3).
-                const qint32 diff = qAbs(qint32(m_adjustTarget.value_or(0))
-                                         - qint32(m_adjustStartWidth.value_or(0)));
-                const qint32 speed = qMax<qint32>(1, m_adjustSpeed.value_or(1));
-                qint32 plc = (diff + speed - 1) / speed + 5;
-                plc = qBound<qint32>(10, plc, 360);
-                m_adjustDeadlineMs = m_nowMs() + (plc + 3) * 1000;
-                m_adjustTimeoutArmed = true;
-                emitPending(Command::AdjustWidth);
-            } else {
+    }
+    if (index < 0)
+        return;
+    const PendingSubmission pending = m_pendingSubmissions.takeAt(index);
+
+    // A successful completion is not machine confirmation: the snapshot still
+    // decides (spec §11.2 no optimistic success). Only a failed transfer
+    // converges the correlated command here.
+    if (completion.result)
+        return;
+
+    switch (pending.cmd) {
+    case Command::Reset:
+        // Only converge while the reset flow is still waiting; otherwise the
+        // flow already converged (spec §13: never double-report).
+        if (m_resetPhase == ResetPhase::Homing) {
+            finishCommand(Command::Reset, false, QStringLiteral("M103 脉冲发送失败"));
+        } else if (m_resetPhase != ResetPhase::Idle) {
+            finishCommand(Command::Reset, false, QStringLiteral("写 M104 失败"));
+        }
+        break;
+    case Command::AdjustWidth:
+        if (pending.operation == PlcOperation::Pulse) {
+            // A failed M43 pulse means the width adjustment never started.
+            if (m_adjustPhase != AdjustPhase::Idle) {
                 finishCommand(Command::AdjustWidth, false,
                               QStringLiteral("M43 脉冲发送失败"));
             }
+        } else if (m_adjustPhase != AdjustPhase::Idle) {
+            finishCommand(Command::AdjustWidth, false, QStringLiteral("写 D128 失败"));
         }
         break;
     case Command::EstopSet:
-        if (!ok && m_estopSetPending) {
-            m_estopSetPending = false;
+        if (m_estopSetPending)
             finishCommand(Command::EstopSet, false, QStringLiteral("写 M100 失败"));
-        }
-        // ok: the snapshot still decides (spec §8.4).
         break;
     case Command::EstopRelease:
-        if (!ok && m_estopReleasePending) {
-            m_estopReleasePending = false;
+        if (m_estopReleasePending)
             finishCommand(Command::EstopRelease, false, QStringLiteral("写 M100 失败"));
-        }
         break;
     case Command::ModeSwitch:
-        if (!ok && m_modePending) {
-            // A failed M104 write surfaces as a write failure, not 模式切换超时.
-            m_modePending = false;
-            emit commandResult(Command::ModeSwitch, false, QStringLiteral("写 M104 失败"));
-        }
-        // ok: stay pending until the snapshot shows M1/M2 (spec §11.2).
+        // A failed M104 write surfaces as a write failure, not 模式切换超时.
+        if (m_modePending)
+            finishCommand(Command::ModeSwitch, false, QStringLiteral("写 M104 失败"));
         break;
+    case Command::ManualCommand:
+    case Command::Bypass: {
+        // Fail exactly the hold/latch/bypass request that owns this identity.
+        for (int i = 0; i < m_manualPending.size(); ++i) {
+            const ManualConfirm &c = m_manualPending.at(i);
+            if (c.cmd == pending.cmd && c.address == pending.address) {
+                m_manualPending.removeAt(i);
+                emit commandResult(pending.cmd, false,
+                                   QStringLiteral("命令发送失败"));
+                break;
+            }
+        }
+        break;
+    }
     default:
         break;
     }
@@ -627,7 +650,9 @@ void ControlCoordinator::onConnectionChanged(bool online)
         m_stopTimeoutArmed = false;
         emit commandResult(Command::Stop, false, QStringLiteral("通讯中断"));
     }
-    m_pendingWriteCmd.reset();
+    // Every in-flight submission identity is dropped: a late completion for
+    // the old generation must never converge a command of the new one.
+    m_pendingSubmissions.clear();
     if (m_modePending) {
         m_modePending = false;
         emit commandResult(Command::ModeSwitch, false, QStringLiteral("通讯中断"));
@@ -653,7 +678,7 @@ void ControlCoordinator::onResetSnapshot(const DeviceSnapshot &s)
 {
     if (m_resetPhase == ResetPhase::WaitManual) {
         if (s.m1()) {
-            if (m_transport.startPulse && m_transport.startPulse(kM103)) {
+            if (submitPulse(Command::Reset, kM103)) {
                 m_resetPhase = ResetPhase::Homing;
                 emitPending(Command::Reset);
             } else {
@@ -728,25 +753,65 @@ void ControlCoordinator::onStopSnapshot(const DeviceSnapshot &s)
 
 // --- helpers ----------------------------------------------------------------
 
-void ControlCoordinator::beginWrite(Command cmd, quint16 address, bool value,
+bool ControlCoordinator::submitCoil(Command cmd, quint16 address, bool value,
                                     CommandPriority priority)
 {
-    m_pendingWriteCmd = cmd;
-    m_pendingWriteAddr = address;
-    if (!m_transport.writeCoil || !m_transport.writeCoil(address, value, priority)) {
-        m_pendingWriteCmd.reset();
-        finishCommand(cmd, false, QStringLiteral("命令发送失败"));
-    }
+    if (!m_transport.writeCoil)
+        return false;
+    const SubmissionResult result = m_transport.writeCoil(address, value, priority);
+    if (!result.accepted)
+        return false;
+    trackSubmission(cmd, result, PlcOperation::WriteCoil, address);
+    return true;
 }
 
-void ControlCoordinator::beginWriteReg(Command cmd, quint16 address, quint16 value,
-                                       CommandPriority priority)
+bool ControlCoordinator::submitHold(Command cmd, quint16 address, bool value)
 {
-    m_pendingWriteCmd = cmd;
-    m_pendingWriteAddr = address;
-    if (!m_transport.writeRegister || !m_transport.writeRegister(address, value, priority)) {
-        m_pendingWriteCmd.reset();
-        finishCommand(cmd, false, QStringLiteral("命令发送失败"));
+    if (!m_transport.writeHold)
+        return false;
+    const SubmissionResult result = m_transport.writeHold(address, value);
+    if (!result.accepted)
+        return false;
+    trackSubmission(cmd, result, PlcOperation::WriteCoil, address);
+    return true;
+}
+
+bool ControlCoordinator::submitRegister(Command cmd, quint16 address, quint16 value,
+                                        CommandPriority priority)
+{
+    if (!m_transport.writeRegister)
+        return false;
+    const SubmissionResult result =
+        m_transport.writeRegister(address, value, priority);
+    if (!result.accepted)
+        return false;
+    trackSubmission(cmd, result, PlcOperation::WriteRegister, address);
+    return true;
+}
+
+bool ControlCoordinator::submitPulse(Command cmd, quint16 address)
+{
+    if (!m_transport.startPulse)
+        return false;
+    const SubmissionResult result = m_transport.startPulse(address);
+    if (!result.accepted)
+        return false;
+    trackSubmission(cmd, result, PlcOperation::Pulse, address);
+    return true;
+}
+
+void ControlCoordinator::trackSubmission(Command cmd, const SubmissionResult &result,
+                                         PlcOperation operation, quint16 address)
+{
+    m_pendingSubmissions.append(
+        {result.request_id, result.gateway_generation, cmd, operation, address});
+}
+
+void ControlCoordinator::clearPendingSubmissions(Command cmd)
+{
+    for (int i = m_pendingSubmissions.size() - 1; i >= 0; --i) {
+        if (m_pendingSubmissions.at(i).cmd == cmd)
+            m_pendingSubmissions.removeAt(i);
     }
 }
 
@@ -785,6 +850,9 @@ void ControlCoordinator::finishCommand(Command cmd, bool ok, const QString &deta
     default:
         break;
     }
+    // The command converged: its in-flight submission identities can no longer
+    // produce a terminal outcome for it (late completions are ignored).
+    clearPendingSubmissions(cmd);
     emit commandResult(cmd, ok, detail);
 }
 

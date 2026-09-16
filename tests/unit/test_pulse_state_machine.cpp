@@ -46,7 +46,7 @@ public:
             reads.append(a);
             return true;
         };
-        cb.finished = [this](quint16 a, bool ok) { finished.append({a, ok}); };
+        cb.finished = [this](quint16 a, bool ok, quint64) { finished.append({a, ok}); };
         return cb;
     }
 
@@ -85,7 +85,7 @@ void PulseStateMachineTest::holdAtLeast100ms()
     PulseHarness h;
     PulseStateMachine sm(h.callbacks(), [&h]() { return h.now; });
 
-    QVERIFY(sm.startPulse(101));
+    QVERIFY(sm.startPulse(101, 1));
     QCOMPARE(h.writes.size(), 1);
     QCOMPARE(h.writes.first(), pw(101, true));
 
@@ -119,7 +119,7 @@ void PulseStateMachineTest::clearAtHighestPriority()
     PulseHarness h;
     PulseStateMachine sm(h.callbacks(), [&h]() { return h.now; });
 
-    QVERIFY(sm.startPulse(43));
+    QVERIFY(sm.startPulse(43, 1));
     QCOMPARE(h.priorities.first(), CommandPriority::Normal); // set is a user write
 
     sm.onWriteCompleted(43, true);
@@ -136,7 +136,7 @@ void PulseStateMachineTest::uncertainWriteDoesNotResendOne()
     PulseHarness h;
     PulseStateMachine sm(h.callbacks(), [&h]() { return h.now; });
 
-    QVERIFY(sm.startPulse(101));
+    QVERIFY(sm.startPulse(101, 1));
     QCOMPARE(h.writes.size(), 1);
 
     // Write-1 times out (uncertain result, spec §8.4): the machine must NOT
@@ -162,7 +162,7 @@ void PulseStateMachineTest::uncertainSetReadbackZeroFinishesFailed()
     PulseHarness h;
     PulseStateMachine sm(h.callbacks(), [&h]() { return h.now; });
 
-    QVERIFY(sm.startPulse(102));
+    QVERIFY(sm.startPulse(102, 1));
     sm.onWriteCompleted(102, false); // uncertain write-1
     QCOMPARE(h.reads.size(), 1);
 
@@ -180,7 +180,7 @@ void PulseStateMachineTest::clearFailureConvergesViaReadback()
     PulseHarness h;
     PulseStateMachine sm(h.callbacks(), [&h]() { return h.now; });
 
-    QVERIFY(sm.startPulse(101));
+    QVERIFY(sm.startPulse(101, 1));
     sm.onWriteCompleted(101, true);
     h.now = 100;
     sm.onTick();
@@ -206,7 +206,7 @@ void PulseStateMachineTest::clearFailureReadbackZeroCompletes()
     PulseHarness h;
     PulseStateMachine sm(h.callbacks(), [&h]() { return h.now; });
 
-    QVERIFY(sm.startPulse(101));
+    QVERIFY(sm.startPulse(101, 1));
     sm.onWriteCompleted(101, true);
     h.now = 100;
     sm.onTick();
@@ -226,11 +226,11 @@ void PulseStateMachineTest::offlineRejectsPulse()
     h.rejectWrites = true; // queue closed (offline)
     PulseStateMachine sm(h.callbacks(), [&h]() { return h.now; });
 
-    // Offline: the pulse is rejected, not queued (spec §8.4 no-replay).
-    QVERIFY(!sm.startPulse(101));
+    // Offline: the pulse is rejected, not queued (spec §8.4 no-replay) and a
+    // rejected submission emits no completion (PLC-HMI-003 submission rule).
+    QVERIFY(!sm.startPulse(101, 1));
     QCOMPARE(h.writes.size(), 0);
-    QCOMPARE(h.finished.size(), 1);
-    QCOMPARE(h.finished.first(), pw(101, false));
+    QCOMPARE(h.finished.size(), 0);
     QVERIFY(!sm.isActive(101));
 }
 
@@ -239,7 +239,7 @@ void PulseStateMachineTest::offlineMidPulseAborts()
     PulseHarness h;
     PulseStateMachine sm(h.callbacks(), [&h]() { return h.now; });
 
-    QVERIFY(sm.startPulse(101));
+    QVERIFY(sm.startPulse(101, 1));
     sm.onWriteCompleted(101, true); // holding
 
     // Link drops while holding: the clear write is rejected -> abort.
@@ -260,7 +260,7 @@ void PulseStateMachineTest::offlineClearDuringTickConvergesSafely()
     PulseHarness h;
     PulseStateMachine sm(h.callbacks(), [&h]() { return h.now; });
 
-    QVERIFY(sm.startPulse(101));
+    QVERIFY(sm.startPulse(101, 1));
     sm.onWriteCompleted(101, true); // holding
 
     // Link drops while holding: the clear write is rejected -> abort.
@@ -286,12 +286,12 @@ void PulseStateMachineTest::clearBeforeSetPriority()
     PulseHarness h;
     PulseStateMachine sm(h.callbacks(), [&h]() { return h.now; });
 
-    QVERIFY(sm.startPulse(101));
+    QVERIFY(sm.startPulse(101, 1));
     sm.onWriteCompleted(101, true); // holding
 
     // A second start on the same address while the pulse is active is
     // rejected: the active pulse's clear has priority over a new set.
-    QVERIFY(!sm.startPulse(101));
+    QVERIFY(!sm.startPulse(101, 1));
     QCOMPARE(h.writes.size(), 1); // no second write-1
 
     h.now = 100;
@@ -305,9 +305,9 @@ void PulseStateMachineTest::resetAbortsActivePulses()
     PulseHarness h;
     PulseStateMachine sm(h.callbacks(), [&h]() { return h.now; });
 
-    QVERIFY(sm.startPulse(101));
+    QVERIFY(sm.startPulse(101, 1));
     sm.onWriteCompleted(101, true); // holding
-    QVERIFY(sm.startPulse(102));    // write-1 in flight
+    QVERIFY(sm.startPulse(102, 1));    // write-1 in flight
 
     sm.reset(); // offline / stop
     QCOMPARE(h.finished.size(), 2);
@@ -328,7 +328,7 @@ void PulseStateMachineTest::lateTickExtendsHold()
     PulseHarness h;
     PulseStateMachine sm(h.callbacks(), [&h]() { return h.now; });
 
-    QVERIFY(sm.startPulse(101));
+    QVERIFY(sm.startPulse(101, 1));
     sm.onWriteCompleted(101, true);
 
     // The owner's timer tick arrives late (queue busy / coarse timer): the

@@ -48,11 +48,11 @@ DeviceSnapshotData validSnapshotData()
     d.pulsePerMm = 1280;   // D204
     d.widthSpeed = 15;     // D220
     d.heartbeat = 1;       // D140
-    d.fastQuality = DataQuality::Valid;
-    d.homeQuality = DataQuality::Valid;
-    d.commandQuality = DataQuality::Valid;
-    d.slowQuality = DataQuality::Valid;
-    d.overallQuality = aggregateQuality(d);
+    d.fast_quality = DataQuality::Valid;
+    d.home_quality = DataQuality::Valid;
+    d.command_quality = DataQuality::Valid;
+    d.slow_quality = DataQuality::Valid;
+    d.overall_quality = aggregateQuality(d);
     return d;
 }
 

@@ -368,7 +368,8 @@ void RtuSimulatorTest::outOfRangeAddressReturnsIllegalDataAddress()
     FaultInjector faults;
     RtuRequestHandler handler(model, faults);
 
-    // Coil space is M0-M112 (113 coils): address 113 is out of range.
+    // Coil address space is 0-112 (113 coils retained after the M112 removal;
+    // address 112 is an in-range but unused coil): address 113 is out of range.
     const QModbusResponse coil = handler.handleRequest(readCoilsReq(113, 1));
     QVERIFY(coil.isException());
     QCOMPARE(coil.exceptionCode(), QModbusExceptionResponse::IllegalDataAddress);

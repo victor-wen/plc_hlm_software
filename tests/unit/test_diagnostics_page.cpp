@@ -2,7 +2,7 @@
 //
 // Coverage required by the task brief:
 // - D100/D103 位展示: m0-m14、m30-m45 逐位正确.
-// - M50-M53 / M100-M112 展示.
+// - M50-M53 / M100-M111 展示.
 // - D140 活性: 心跳变化 = 活性, 不变 = 失效 (spec §13).
 // - 过期值显示 "—" (spec §9).
 // - 视觉失败隔离: setVisionStatus 失败后页面其他区域正常, 无控制命令
@@ -59,12 +59,12 @@ DeviceSnapshotData validSnapshotData()
     d.widthDelta = -50;     // D210
     d.widthSpeed = 2;       // D220
     d.homeBits = 0;         // M50-M53
-    d.commandBits = 0;      // M100-M112
-    d.fastQuality = DataQuality::Valid;
-    d.homeQuality = DataQuality::Valid;
-    d.commandQuality = DataQuality::Valid;
-    d.slowQuality = DataQuality::Valid;
-    d.overallQuality = aggregateQuality(d);
+    d.commandBits = 0;      // M100-M111
+    d.fast_quality = DataQuality::Valid;
+    d.home_quality = DataQuality::Valid;
+    d.command_quality = DataQuality::Valid;
+    d.slow_quality = DataQuality::Valid;
+    d.overall_quality = aggregateQuality(d);
     return d;
 }
 
@@ -112,7 +112,7 @@ private slots:
     // --- DiagnosticsModel: D103 bits M30-M45 ----------------------------------
     void modelMapsD103Bits();
 
-    // --- DiagnosticsModel: M50-M53 / M100-M112 --------------------------------
+    // --- DiagnosticsModel: M50-M53 / M100-M111 --------------------------------
     void modelMapsHomeAndCommandBits();
 
     // --- DiagnosticsModel: D140 heartbeat activity (spec §13) ----------------
@@ -191,7 +191,7 @@ void DiagnosticsPageTest::modelD102D104D105RawOnly()
     QCOMPARE(m.rawWordHex(3), QStringLiteral("0x0001"));
     QCOMPARE(m.rawWordHex(4), QStringLiteral("0x5555"));
     // No bit accessor exists for D102/D104/D105 bits: bitState only accepts
-    // the defined M numbers (M0-M14, M30-M45, M50-M53, M100-M112).
+    // the defined M numbers (M0-M14, M30-M45, M50-M53, M100-M111).
     QVERIFY(!m.bitState(200)); // M200 (D102) is not defined
     QVERIFY(!m.bitState(300)); // M300 (D104) is not defined
     QVERIFY(!m.bitState(316)); // M316 (D105) is not defined
@@ -242,14 +242,14 @@ void DiagnosticsPageTest::modelMapsD103Bits()
     QVERIFY(m.bitState(45));  // bit15
 }
 
-// --- M50-M53 / M100-M112 -------------------------------------------------------
+// --- M50-M53 / M100-M111 -------------------------------------------------------
 
 void DiagnosticsPageTest::modelMapsHomeAndCommandBits()
 {
     ShellModel model;
     DeviceSnapshotData d = validSnapshotData();
     d.homeBits = 0x000A;   // M51 + M53
-    d.commandBits = 0x1001; // M100 + M112
+    d.commandBits = 0x0801; // M100 + M111 (M112 removed)
     model.updateSnapshot(DeviceSnapshot(d));
     DiagnosticsModel m(model);
 
@@ -269,8 +269,8 @@ void DiagnosticsPageTest::modelMapsHomeAndCommandBits()
     QVERIFY(!m.bitState(108));
     QVERIFY(!m.bitState(109));
     QVERIFY(!m.bitState(110));
-    QVERIFY(!m.bitState(111));
-    QVERIFY(m.bitState(112));
+    QVERIFY(m.bitState(111));
+    QVERIFY2(!m.bitState(112), "M112 must not be exposed (PLC-HMI-003 D3)");
 }
 
 // --- D140 heartbeat activity (spec §13) ----------------------------------------
@@ -341,8 +341,8 @@ void DiagnosticsPageTest::modelStaleShowsInvalid()
 {
     ShellModel model;
     DeviceSnapshotData d = validSnapshotData();
-    d.fastQuality = DataQuality::Stale;
-    d.overallQuality = aggregateQuality(d);
+    d.fast_quality = DataQuality::Stale;
+    d.overall_quality = aggregateQuality(d);
     model.updateSnapshot(DeviceSnapshot(d));
     DiagnosticsModel m(model);
 
@@ -373,7 +373,7 @@ void DiagnosticsPageTest::modelOutOfRangeFieldKeepsOtherFields()
     DeviceSnapshotData d = validSnapshotData();
     d.currentWidth = 0; // D130 range 50-400
     d.invalidFields = (quint32(1) << quint8(SnapshotField::CurrentWidth));
-    d.overallQuality = aggregateQuality(d);
+    d.overall_quality = aggregateQuality(d);
     model.updateSnapshot(DeviceSnapshot(d));
     DiagnosticsModel m(model);
 
@@ -396,8 +396,8 @@ void DiagnosticsPageTest::modelSlowStaleOnlyAffectsSlowFields()
     // Slow block stale: D204/D220 -> "—", fast items unaffected.
     ShellModel model;
     DeviceSnapshotData d = validSnapshotData();
-    d.slowQuality = DataQuality::Stale;
-    d.overallQuality = aggregateQuality(d);
+    d.slow_quality = DataQuality::Stale;
+    d.overall_quality = aggregateQuality(d);
     model.updateSnapshot(DeviceSnapshot(d));
     DiagnosticsModel m(model);
 
@@ -413,15 +413,15 @@ void DiagnosticsPageTest::modelSlowStaleOnlyAffectsSlowFields()
 
 void DiagnosticsPageTest::modelHomeCommandGatingPerBlock()
 {
-    // Home (M50-M53) and command (M100-M112) readback blocks stale: those bit
+    // Home (M50-M53) and command (M100-M111) readback blocks stale: those bit
     // rows become unknown, while fast D100/D103 bits and registers stay valid.
     ShellModel model;
     DeviceSnapshotData d = validSnapshotData();
     d.homeBits = 0x0002;    // M51
     d.commandBits = 0x0001; // M100
-    d.homeQuality = DataQuality::Stale;
-    d.commandQuality = DataQuality::Stale;
-    d.overallQuality = aggregateQuality(d);
+    d.home_quality = DataQuality::Stale;
+    d.command_quality = DataQuality::Stale;
+    d.overall_quality = aggregateQuality(d);
     model.updateSnapshot(DeviceSnapshot(d));
     DiagnosticsModel m(model);
 
@@ -449,7 +449,7 @@ void DiagnosticsPageTest::modelSlowOutOfRangeKeepsFastFields()
     d.widthSpeed = 0; // D220 below 1
     checkSlowBlockRange(d); // marks invalid + overallQuality OutOfRange
     QVERIFY(d.invalidFields != 0);
-    QVERIFY(d.overallQuality == DataQuality::OutOfRange);
+    QVERIFY(d.overall_quality == DataQuality::OutOfRange);
 
     ShellModel model;
     model.updateSnapshot(DeviceSnapshot(d));
@@ -557,7 +557,7 @@ void DiagnosticsPageTest::pageRendersSnapshot()
     // Bit tables: only the defined bits are shown.
     QCOMPARE(page.d100BitTable()->rowCount(), 15);   // M0-M14
     QCOMPARE(page.d103BitTable()->rowCount(), 12);   // M30-M35, M40-M45
-    QCOMPARE(page.homeCommandTable()->rowCount(), 17); // M50-M53 + M100-M112
+    QCOMPARE(page.homeCommandTable()->rowCount(), 16); // M50-M53 + M100-M111
 
     // Spot-check bit states.
     QCOMPARE(page.d100BitTable()->item(0, 2)->text(), QStringLiteral("1"));   // M0
@@ -590,8 +590,8 @@ void DiagnosticsPageTest::pageStaleShowsDash()
 
     // Stale snapshot keeps "—".
     DeviceSnapshotData d = validSnapshotData();
-    d.fastQuality = DataQuality::Stale;
-    d.overallQuality = aggregateQuality(d);
+    d.fast_quality = DataQuality::Stale;
+    d.overall_quality = aggregateQuality(d);
     model.updateSnapshot(DeviceSnapshot(d));
     QCOMPARE(page.rawWordTable()->item(0, 1)->text(), QStringLiteral("—"));
     QCOMPARE(page.d100BitTable()->item(0, 2)->text(), QStringLiteral("—"));
@@ -639,8 +639,8 @@ void DiagnosticsPageTest::pageHeartbeatShowsDashWhenStale()
     DeviceSnapshotData stale = validSnapshotData();
     stale.sequence = 2;
     stale.heartbeat = 1;
-    stale.fastQuality = DataQuality::Stale;
-    stale.overallQuality = aggregateQuality(stale);
+    stale.fast_quality = DataQuality::Stale;
+    stale.overall_quality = aggregateQuality(stale);
     model.updateSnapshot(DeviceSnapshot(stale));
     QCOMPARE(page.heartbeatLight()->text(), QStringLiteral("心跳 —"));
 

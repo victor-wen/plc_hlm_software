@@ -91,7 +91,6 @@ add_library(hlm_modbus STATIC
     src/adapters/modbus/pulse_state_machine.cpp
     src/adapters/modbus/request_queue.cpp
     src/adapters/modbus/reconnect_policy.cpp
-    src/adapters/modbus/watchdog_timer.cpp
     src/adapters/modbus/qt_modbus_plc_gateway.cpp
 )
 target_include_directories(hlm_modbus PUBLIC src)

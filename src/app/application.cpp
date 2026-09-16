@@ -45,6 +45,10 @@ constexpr quint16 kD122 = 122; // 皮带速度
 constexpr quint16 kD204 = 204; // 脉冲当量
 constexpr quint16 kD220 = 220; // 调宽速度
 
+// Defensive parameter-write confirmation timeout (PLC-HMI-003 D4): a lost
+// completion must never leave the settings page pending forever.
+constexpr int kParamWriteTimeoutMs = 5000;
+
 // Maps a coordinator terminal result onto the projected lifecycle state. The
 // coordinator's existing commandResult(cmd, ok, detail) signature is unchanged
 // (independent tests depend on it); the detail it produces is the authoritative
@@ -129,6 +133,9 @@ void Application::createObjects()
     } else {
         m_gw = new QtModbusPlcGateway(toModbusConfig(m_cfg.serial), this);
     }
+    // The composition root owns the gateway generation: it increments before
+    // every replacement and rejects events from older generations (D4).
+    m_gw->setGatewayGeneration(++m_gatewayGeneration);
 
     // SimulatedPlcGateway itself remains deterministic for unit/integration
     // tests. The composition root supplies the real-time clock only for the
@@ -140,24 +147,24 @@ void Application::createObjects()
             sim->tick();
     });
 
-    // Coordinator: PulseTransport routes into the gateway (spec §8.5).
+    // Coordinator: PulseTransport routes into the revised submission port
+    // (spec §8.5, PLC-HMI-003 D1/D5). Every callback returns the structured
+    // SubmissionResult so the coordinator can correlate completions by
+    // request identity + gateway generation.
     ControlCoordinator::PulseTransport transport;
     transport.startPulse = [this](quint16 address) {
-        return m_gw->startPulse(address);
+        return m_gw->submitPulse(address);
     };
     transport.writeHold = [this](quint16 address, bool value) {
-        m_gw->writeCoil(address, value, CommandPriority::Normal);
-        return true;
+        return m_gw->submitWriteCoil(address, value, CommandPriority::Normal);
     };
     transport.writeCoil = [this](quint16 address, bool value,
                                  CommandPriority priority) {
-        m_gw->writeCoil(address, value, priority);
-        return true;
+        return m_gw->submitWriteCoil(address, value, priority);
     };
     transport.writeRegister = [this](quint16 address, quint16 value,
                                      CommandPriority priority) {
-        m_gw->writeRegister(address, value, priority);
-        return true;
+        return m_gw->submitWriteRegister(address, value, priority);
     };
     m_coordinator = new ControlCoordinator(
         std::move(transport), ControlCoordinator::Config(m_cfg.resetTimeoutSec),
@@ -418,54 +425,59 @@ void Application::wireSignals()
     }
 }
 
+// True when an event's gateway generation is not older than the generation
+// the composition root assigned to the current gateway (D4: reject stale
+// events from a replaced gateway).
+bool Application::acceptGatewayGeneration(quint64 generation) const
+{
+    return generation >= m_gatewayGeneration;
+}
+
 // Wires every gateway signal. Called for the initial gateway and again after a
-// serial-config rebuild (spec §8.1).
+// serial-config rebuild (spec §8.1). Every event is generation-checked and
+// routed; no qobject_cast on the concrete gateway type is needed (D4).
 void Application::wireGateway(IPlcGateway *gw)
 {
-    connect(gw, &IPlcGateway::snapshotReady, m_coordinator,
-            &ControlCoordinator::onSnapshot);
-    connect(gw, &IPlcGateway::snapshotReady, m_shell,
-            &ShellModel::updateSnapshot);
-    connect(gw, &IPlcGateway::snapshotReady, m_db,
-            [this](const DeviceSnapshot &s) {
+    connect(gw, &IPlcGateway::snapshotReady, this,
+            [this](quint64 generation, const DeviceSnapshot &s) {
+                if (!acceptGatewayGeneration(generation))
+                    return; // obsolete gateway generation: rejected
+                m_coordinator->onSnapshot(s);
+                m_shell->updateSnapshot(s);
                 m_db->feedPlcAlarmSnapshot(s.faultCode(), s.m14(), s.m4(),
                                            s.sequence());
             });
-    connect(gw, &IPlcGateway::connectionStateChanged, m_coordinator,
-            &ControlCoordinator::onConnectionChanged);
-    connect(gw, &IPlcGateway::connectionStateChanged, m_shell,
-            &ShellModel::setOnline);
-    connect(gw, &IPlcGateway::writeCompleted, this,
-            &Application::handleWriteCompleted);
-    // The coordinator drives the M43 pulse from writeCompleted (spec §10.3
-    // step 4); without this the adjustWidth flow times out (Task 20 review).
-    connect(gw, &IPlcGateway::writeCompleted, m_coordinator,
-            &ControlCoordinator::onWriteCompleted);
-
-    // commStatsChanged exists on both concrete gateway classes; connect via
-    // the concrete pointer (spec §16). A third gateway type would need its
-    // own branch here (Task 20 review).
-    if (auto *sim = qobject_cast<SimulatedPlcGateway *>(gw)) {
-        connect(sim, &SimulatedPlcGateway::commStatsChanged, m_diagPage,
-                [this](quint64 seq, int reconn, int failed) {
-                    CommStats stats;
-                    stats.lastDataAgeMs = 0;
-                    stats.sequence = seq;
-                    stats.reconnectCount = reconn;
-                    stats.failedPolls = failed;
-                    m_diagPage->setCommStats(stats);
-                });
-    } else if (auto *modbus = qobject_cast<QtModbusPlcGateway *>(gw)) {
-        connect(modbus, &QtModbusPlcGateway::commStatsChanged, m_diagPage,
-                [this](quint64 seq, int reconn, int failed) {
-                    CommStats stats;
-                    stats.lastDataAgeMs = 0;
-                    stats.sequence = seq;
-                    stats.reconnectCount = reconn;
-                    stats.failedPolls = failed;
-                    m_diagPage->setCommStats(stats);
-                });
-    }
+    connect(gw, &IPlcGateway::connectionStateChanged, this,
+            [this](quint64 generation, bool online) {
+                if (!acceptGatewayGeneration(generation))
+                    return; // obsolete gateway generation: rejected
+                m_coordinator->onConnectionChanged(online);
+                m_shell->setOnline(online);
+                if (!online) {
+                    // Never leave a parameter write pending across a link
+                    // loss or gateway stop (D4).
+                    failAllPendingParamWrites(QStringLiteral("通讯中断"));
+                }
+            });
+    connect(gw, &IPlcGateway::submissionCompleted, this,
+            &Application::handleSubmissionCompleted);
+    // The coordinator correlates completions by request identity + generation
+    // and converges failed writes (spec §10.3, D5).
+    connect(gw, &IPlcGateway::submissionCompleted, m_coordinator,
+            &ControlCoordinator::onSubmissionCompleted);
+    // Communication statistics come from the port signal itself (spec §16,
+    // D4): no concrete-gateway cast, and the real per-block age is displayed.
+    connect(gw, &IPlcGateway::commStatsChanged, this,
+            [this](const PlcCommStats &stats) {
+                if (!acceptGatewayGeneration(stats.gateway_generation))
+                    return;
+                CommStats display;
+                display.lastDataAgeMs = stats.per_block_age_ms;
+                display.sequence = stats.snapshot_sequence;
+                display.reconnectCount = int(stats.reconnect_count);
+                display.failedPolls = int(stats.failed_polls);
+                m_diagPage->setCommStats(display);
+            });
 }
 
 void Application::startGatewayIfNeeded()
@@ -615,16 +627,25 @@ void Application::handleSettingLoaded(const std::optional<SettingRecord> &settin
 void Application::rebuildGateway(const SerialConfig &cfg)
 {
     if (m_gw) {
+        // D4: disconnect every old-gateway signal before deletion, converge
+        // pending commands/parameter writes, and only then replace.
         m_gw->stop();
+        disconnect(m_gw, nullptr, nullptr, nullptr);
+        m_coordinator->onConnectionChanged(false);
+        failAllPendingParamWrites(QStringLiteral("串口配置已更换, 参数写入未确认"));
         m_gatewayStarted = false;
         m_gw->deleteLater();
         m_gw = nullptr;
     }
+    // Increment the generation before the new gateway exists so any late
+    // event from the old one is rejected.
+    ++m_gatewayGeneration;
     if (m_cfg.useSimulatedGateway) {
         m_gw = new SimulatedPlcGateway(this);
     } else {
         m_gw = new QtModbusPlcGateway(toModbusConfig(cfg), this);
     }
+    m_gw->setGatewayGeneration(m_gatewayGeneration);
     wireGateway(m_gw);
     startGatewayIfNeeded();
 }
@@ -685,8 +706,7 @@ void Application::handleParameterWrite(quint16 address, quint16 value)
         m_usersPage->setParameterWriteResult(false, error);
         return;
     }
-    m_pendingParamAddrs.append(int(address));
-    m_gw->writeRegister(address, value, CommandPriority::Normal);
+    submitParameterWrite(address, value);
 }
 
 void Application::handleD204Write(quint16 value, const QString &adminPassword)
@@ -740,19 +760,74 @@ void Application::handlePasswordVerified(bool ok)
         return;
     }
 
-    m_pendingParamAddrs.append(int(kD204));
-    m_gw->writeRegister(kD204, value, CommandPriority::Normal);
+    submitParameterWrite(kD204, value);
 }
 
-void Application::handleWriteCompleted(quint16 address, bool ok,
-                                       const QString &error)
+void Application::submitParameterWrite(quint16 address, quint16 value)
 {
-    // Feed the result back to the users page for D122/D220/D204 writes
-    // (spec §11.2: 无乐观状态). FIFO: results arrive in write order.
-    if (!m_pendingParamAddrs.isEmpty()
-        && quint16(m_pendingParamAddrs.first()) == address) {
-        m_pendingParamAddrs.removeFirst();
-        m_usersPage->setParameterWriteResult(ok, error);
+    const SubmissionResult result =
+        m_gw->submitWriteRegister(address, value, CommandPriority::Normal);
+    if (!result.accepted) {
+        // Rejected synchronously: the page sees the immediate reason, never
+        // silence (spec §11.2: 无乐观状态).
+        m_usersPage->setParameterWriteResult(
+            false, result.immediate_rejection_reason.isEmpty()
+                       ? QStringLiteral("参数写入被拒绝")
+                       : result.immediate_rejection_reason);
+        return;
+    }
+    PendingParamWrite pending;
+    pending.request_id = result.request_id;
+    pending.gateway_generation = result.gateway_generation;
+    pending.address = address;
+    pending.deadline_ms =
+        QDateTime::currentMSecsSinceEpoch() + kParamWriteTimeoutMs;
+    m_pendingParamWrites.append(pending);
+
+    // Defensive timeout for the parameter write (PLC-HMI-003 D4).
+    const quint64 requestId = result.request_id;
+    const quint64 generation = result.gateway_generation;
+    QTimer::singleShot(kParamWriteTimeoutMs, this,
+                       [this, requestId, generation]() {
+                           for (int i = 0; i < m_pendingParamWrites.size(); ++i) {
+                               const PendingParamWrite &p = m_pendingParamWrites.at(i);
+                               if (p.request_id == requestId
+                                   && p.gateway_generation == generation) {
+                                   m_pendingParamWrites.removeAt(i);
+                                   m_usersPage->setParameterWriteResult(
+                                       false, QStringLiteral("参数写入确认超时"));
+                                   return;
+                               }
+                           }
+                       });
+}
+
+void Application::handleSubmissionCompleted(const SubmissionCompletion &completion)
+{
+    if (!acceptGatewayGeneration(completion.gateway_generation))
+        return; // obsolete generation: rejected
+    // Correlate by request identity + generation only (contract invariant).
+    for (int i = 0; i < m_pendingParamWrites.size(); ++i) {
+        const PendingParamWrite &p = m_pendingParamWrites.at(i);
+        if (p.request_id != completion.request_id
+            || p.gateway_generation != completion.gateway_generation) {
+            continue;
+        }
+        const bool isParamWrite = completion.operation == PlcOperation::WriteRegister;
+        m_pendingParamWrites.removeAt(i);
+        if (isParamWrite)
+            m_usersPage->setParameterWriteResult(completion.result, completion.error);
+        return;
+    }
+}
+
+void Application::failAllPendingParamWrites(const QString &reason)
+{
+    const QVector<PendingParamWrite> pending = m_pendingParamWrites;
+    m_pendingParamWrites.clear();
+    for (const PendingParamWrite &p : pending) {
+        Q_UNUSED(p);
+        m_usersPage->setParameterWriteResult(false, reason);
     }
 }
 

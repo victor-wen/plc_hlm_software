@@ -234,7 +234,7 @@ void SnapshotDecodeTest::slowBlockOutOfRangeMarksFieldInvalid()
     DeviceSnapshotData d;
     d.pulsePerMm = 0;    // below 1
     d.widthSpeed = 99;   // above 15
-    d.overallQuality = aggregateQuality(d);
+    d.overall_quality = aggregateQuality(d);
     checkSlowBlockRange(d);
     DeviceSnapshot s(d);
     QVERIFY(!s.fieldValid(SnapshotField::PulsePerMm));
@@ -264,16 +264,16 @@ void SnapshotDecodeTest::slowBlockOutOfRangeMarksFieldInvalid()
 void SnapshotDecodeTest::aggregateQualityWorstWins()
 {
     DeviceSnapshotData d;
-    d.fastQuality = DataQuality::Valid;
-    d.homeQuality = DataQuality::Stale;
-    d.commandQuality = DataQuality::Valid;
-    d.slowQuality = DataQuality::Valid;
+    d.fast_quality = DataQuality::Valid;
+    d.home_quality = DataQuality::Stale;
+    d.command_quality = DataQuality::Valid;
+    d.slow_quality = DataQuality::Valid;
     QVERIFY(aggregateQuality(d) == DataQuality::Stale);
 
-    d.slowQuality = DataQuality::ProtocolError;
+    d.slow_quality = DataQuality::ProtocolError;
     QVERIFY(aggregateQuality(d) == DataQuality::ProtocolError);
 
-    d.slowQuality = DataQuality::Valid;
+    d.slow_quality = DataQuality::Valid;
     d.invalidFields = (quint32(1) << quint8(SnapshotField::TargetWidth));
     QVERIFY(aggregateQuality(d) == DataQuality::OutOfRange);
 }
@@ -370,11 +370,11 @@ void SnapshotDecodeTest::snapshotIsImmutable()
     d.widthSpeed = 2;
     d.homeBits = 0x0F;
     d.commandBits = 0x1FFF;
-    d.fastQuality = DataQuality::Valid;
-    d.homeQuality = DataQuality::Valid;
-    d.commandQuality = DataQuality::Valid;
-    d.slowQuality = DataQuality::Valid;
-    d.overallQuality = aggregateQuality(d);
+    d.fast_quality = DataQuality::Valid;
+    d.home_quality = DataQuality::Valid;
+    d.command_quality = DataQuality::Valid;
+    d.slow_quality = DataQuality::Valid;
+    d.overall_quality = aggregateQuality(d);
 
     DeviceSnapshot s(d);
     QCOMPARE(s.sequence(), quint64(7));
@@ -394,7 +394,7 @@ void SnapshotDecodeTest::snapshotIsImmutable()
     QCOMPARE(s.pulsePerMm(), quint16(1280));
     QCOMPARE(s.widthSpeed(), quint16(2));
     QVERIFY(s.m50() && s.m51() && s.m52() && s.m53());
-    QVERIFY(s.m100() && s.m112());
+    QVERIFY(s.m100() && s.m111());
     QVERIFY(s.overallQuality() == DataQuality::Valid);
 }
 

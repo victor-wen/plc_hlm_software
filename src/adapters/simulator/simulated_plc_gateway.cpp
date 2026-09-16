@@ -12,7 +12,7 @@ constexpr quint16 kFastCount = 41;     // D100-D140
 constexpr quint16 kHomeStart = 50;     // M50
 constexpr quint16 kHomeCount = 4;      // M50-M53
 constexpr quint16 kCommandStart = 100; // M100
-constexpr quint16 kCommandCount = 13;  // M100-M112
+constexpr quint16 kCommandCount = 12;  // M100-M111 (M112 removed, D3)
 constexpr quint16 kSlowStart = 204;    // D204
 constexpr quint16 kSlowCount = 20;     // D204-D223
 
@@ -30,7 +30,7 @@ quint16 packHomeBits(const H3uSimulationModel &m)
     return bits;
 }
 
-// Pack M100-M112 into the command-bits word (bit0 = M100, ... bit12 = M112).
+// Pack M100-M111 into the command-bits word (bit0 = M100, ... bit11 = M111).
 quint16 packCommandBits(const H3uSimulationModel &m)
 {
     quint16 bits = 0;
@@ -47,6 +47,7 @@ SimulatedPlcGateway::SimulatedPlcGateway(QObject *parent)
     : IPlcGateway(parent)
     , m_model(m_clock)
 {
+    registerPlcGatewayMetaTypes();
 }
 
 SimulatedPlcGateway::~SimulatedPlcGateway() = default;
@@ -61,7 +62,10 @@ void SimulatedPlcGateway::start()
     m_offlineDueToFreeze = false;
     m_sequence = 0;
     m_freezeTicks = 0;
+    m_pending.clear();
     m_lastSnapshot.reset();
+    if (!m_generationAssigned)
+        ++m_gatewayGeneration;
     publishSnapshot();
     setOnline(true);
 }
@@ -71,6 +75,9 @@ void SimulatedPlcGateway::stop()
     if (!m_started)
         return;
     m_started = false;
+    // Accepted-but-unfinished submissions converge; nothing is silently
+    // dropped (contract IPlcGateway lifecycle).
+    failPending(QStringLiteral("gateway stopped"));
     m_lastSnapshot.reset();
     setOnline(false);
 }
@@ -80,59 +87,80 @@ bool SimulatedPlcGateway::isOnline() const
     return m_online;
 }
 
-void SimulatedPlcGateway::writeCoil(quint16 address, bool value, CommandPriority priority)
+void SimulatedPlcGateway::setGatewayGeneration(quint64 generation)
 {
-    Q_UNUSED(priority);
-    if (!m_online) {
-        // Offline: rejected, never queued or replayed (spec §8.4).
-        emit writeCompleted(address, false,
-                            QStringLiteral("offline: command rejected, not replayed"));
-        return;
-    }
-    m_model.writeCoil(address, value);
-    // Write-then-readback confirmation (spec §8.4): the model ignores writes
-    // outside its address space, so the readback cannot confirm them.
-    const bool confirmed = m_model.readCoil(address) == value;
-    emit writeCompleted(address, confirmed,
-                        confirmed ? QString()
-                                  : QStringLiteral("write not confirmed by readback"));
+    m_gatewayGeneration = generation;
+    m_generationAssigned = true;
 }
 
-void SimulatedPlcGateway::writeRegister(quint16 address, quint16 value,
-                                        CommandPriority priority)
+quint64 SimulatedPlcGateway::gatewayGeneration() const
 {
-    Q_UNUSED(priority);
-    if (!m_online) {
-        emit writeCompleted(address, false,
-                            QStringLiteral("offline: command rejected, not replayed"));
-        return;
-    }
-    m_model.writeRegister(address, value);
-    const bool confirmed = m_model.readRegister(address) == value;
-    emit writeCompleted(address, confirmed,
-                        confirmed ? QString()
-                                  : QStringLiteral("write not confirmed by readback"));
+    return m_gatewayGeneration;
 }
 
-bool SimulatedPlcGateway::startPulse(quint16 address)
+SubmissionResult SimulatedPlcGateway::accept(PlcOperation operation, quint16 address,
+                                             bool coilValue, quint16 registerValue,
+                                             const QString &offlineReason)
 {
-    if (!m_online) {
-        // Offline: rejected, never queued or replayed (spec §8.4).
-        emit writeCompleted(address, false,
-                            QStringLiteral("offline: command rejected, not replayed"));
-        return false;
+    SubmissionResult r;
+    r.gateway_generation = m_gatewayGeneration;
+    if (!m_started || !m_online) {
+        r.accepted = false;
+        r.request_id = 0;
+        r.immediate_rejection_reason = offlineReason;
+        return r;
     }
-    // Pulse (spec §8.5): serially write 1 then 0. The model reacts to the
-    // rising edge (M101/M102/M103/M43), so the pair delivers the pulse.
-    m_model.writeCoil(address, true);
-    const bool setOk = m_model.readCoil(address);
-    m_model.writeCoil(address, false);
-    const bool clearOk = !m_model.readCoil(address);
-    const bool ok = setOk && clearOk;
-    emit writeCompleted(address, ok,
-                        ok ? QString()
-                           : QStringLiteral("pulse not confirmed by readback"));
-    return true;
+    r.accepted = true;
+    r.request_id = m_nextRequestId++;
+    // The in-process link delivers the request immediately: apply it to the
+    // model and capture the readback confirmation for the terminal completion
+    // (which is emitted on the next tick).
+    PendingSubmission pending{r.request_id, m_gatewayGeneration, operation,
+                              address, coilValue, registerValue, false};
+    switch (operation) {
+    case PlcOperation::WriteCoil:
+        m_model.writeCoil(address, coilValue);
+        pending.confirmed = m_model.readCoil(address) == coilValue;
+        break;
+    case PlcOperation::WriteRegister:
+        m_model.writeRegister(address, registerValue);
+        pending.confirmed = m_model.readRegister(address) == registerValue;
+        break;
+    case PlcOperation::Pulse: {
+        // Pulse (spec §8.5): serially write 1 then 0; the model reacts to the
+        // rising edge (M101/M102/M103/M43).
+        m_model.writeCoil(address, true);
+        const bool setOk = m_model.readCoil(address);
+        m_model.writeCoil(address, false);
+        const bool clearOk = !m_model.readCoil(address);
+        pending.confirmed = setOk && clearOk;
+        break;
+    }
+    }
+    m_pending.append(pending);
+    return r;
+}
+
+SubmissionResult SimulatedPlcGateway::submitWriteCoil(quint16 address, bool value,
+                                                      CommandPriority priority)
+{
+    Q_UNUSED(priority);
+    return accept(PlcOperation::WriteCoil, address, value, 0,
+                  QStringLiteral("offline: command rejected, not replayed"));
+}
+
+SubmissionResult SimulatedPlcGateway::submitWriteRegister(quint16 address, quint16 value,
+                                                          CommandPriority priority)
+{
+    Q_UNUSED(priority);
+    return accept(PlcOperation::WriteRegister, address, false, value,
+                  QStringLiteral("offline: command rejected, not replayed"));
+}
+
+SubmissionResult SimulatedPlcGateway::submitPulse(quint16 address)
+{
+    return accept(PlcOperation::Pulse, address, false, 0,
+                  QStringLiteral("offline: pulse rejected, not replayed"));
 }
 
 void SimulatedPlcGateway::tick()
@@ -153,19 +181,20 @@ void SimulatedPlcGateway::tick()
         return;
     }
 
+    const bool reconnecting = !m_online;
     m_model.advance(m_tickSeconds);
-
     if (m_offlineDueToFreeze) {
         // Heartbeat moving again: reconnect with a fresh snapshot.
         m_offlineDueToFreeze = false;
         m_freezeTicks = 0;
-        ++m_reconnectCount; // comm stats (spec §16)
-        publishSnapshot();
-        setOnline(true);
-        return;
+    }
+    if (reconnecting) {
+        ++m_gatewayGeneration; // post-reconnect events carry the new generation
+        ++m_reconnectCount;    // comm stats (spec §16)
     }
 
     publishSnapshot();
+    completePending();
     setOnline(true);
 }
 
@@ -175,12 +204,15 @@ void SimulatedPlcGateway::setLinkDown(bool down)
         return;
     m_linkDown = down;
     if (down) {
+        // Accepted-but-unfinished submissions converge as communications lost
+        // (never left pending, never replayed).
+        failPending(QStringLiteral("communications lost: command not replayed"));
         setOnline(false);
     } else {
         // Restored: still offline until the next tick reconnects with a
-        // fresh snapshot (mirrors the real gateway's reconnect rule).
+        // fresh snapshot (mirrors the real gateway's reconnect rule). The
+        // reconnect counter increments when that reconnect actually happens.
         m_freezeTicks = 0;
-        ++m_reconnectCount; // comm stats (spec §16)
     }
 }
 
@@ -208,24 +240,78 @@ void SimulatedPlcGateway::publishSnapshot()
     DeviceSnapshotData d = decodeFastBlock(raw, ++m_sequence, true, 0, now, now,
                                            DataQuality::Valid);
 
-    // Home bits M50-M53 and command bits M100-M112 (function code 01).
+    // Home bits M50-M53 and command bits M100-M111 (function code 01).
     d.homeBits = packHomeBits(m_model);
     d.commandBits = packCommandBits(m_model);
+    // The in-process model completes every poll inline, so each block was
+    // refreshed now: real zero ages and Valid quality (no hard-coded overall
+    // age; recomputeDerivedQuality derives the maximum).
+    d.fast_age_ms = 0;
+    d.home_age_ms = 0;
+    d.home_quality = DataQuality::Valid;
+    d.command_age_ms = 0;
+    d.command_quality = DataQuality::Valid;
+    d.slow_age_ms = 0;
+    d.slow_quality = DataQuality::Valid;
 
     // Slow block D204-D223 (spec §8.3): D204 -> 0, D210 -> 6, D220 -> 16.
     d.pulsePerMm = m_model.readRegister(kSlowStart);
     d.widthDelta = decode::i16(m_model.readRegister(kSlowStart + 6));
     d.widthSpeed = m_model.readRegister(kSlowStart + 16);
-    // Out-of-range D204/D220 mark the field invalid (spec §9).
+    // Out-of-range D204/D220 mark the field invalid (spec §9) and D210 gets
+    // its own validity metadata.
     checkSlowBlockRange(d);
+    recomputeDerivedQuality(d);
 
-    d.overallQuality = aggregateQuality(d);
     m_lastSnapshot = DeviceSnapshot(d);
-    emit snapshotReady(m_lastSnapshot.value());
+    emit snapshotReady(m_gatewayGeneration, m_lastSnapshot.value());
+
     // Communication statistics ride along with every published snapshot
-    // (spec §16). failedPolls is always 0: the in-process model never drops
-    // a poll.
-    emit commStatsChanged(d.sequence, m_reconnectCount, m_failedPolls);
+    // (spec §16, contract event_fields): the counters belong to this snapshot
+    // and are emitted by the port itself.
+    PlcCommStats stats;
+    stats.gateway_generation = m_gatewayGeneration;
+    stats.snapshot_sequence = m_sequence;
+    stats.per_block_age_ms = m_lastSnapshot->overall_age_ms;
+    stats.reconnect_count = m_reconnectCount;
+    stats.failed_polls = m_failedPolls;
+    emit commStatsChanged(stats);
+}
+
+void SimulatedPlcGateway::completePending()
+{
+    const QVector<PendingSubmission> pending = m_pending;
+    m_pending.clear();
+    for (const PendingSubmission &p : pending) {
+        SubmissionCompletion c;
+        c.request_id = p.request_id;
+        c.gateway_generation = p.gateway_generation;
+        c.operation = p.operation;
+        c.address = p.address;
+        c.result = p.confirmed;
+        if (!p.confirmed) {
+            c.error = p.operation == PlcOperation::Pulse
+                ? QStringLiteral("pulse not confirmed by readback")
+                : QStringLiteral("write not confirmed by readback");
+        }
+        emit submissionCompleted(c);
+    }
+}
+
+void SimulatedPlcGateway::failPending(const QString &reason)
+{
+    const QVector<PendingSubmission> pending = m_pending;
+    m_pending.clear();
+    for (const PendingSubmission &p : pending) {
+        SubmissionCompletion c;
+        c.request_id = p.request_id;
+        c.gateway_generation = p.gateway_generation;
+        c.operation = p.operation;
+        c.address = p.address;
+        c.result = false;
+        c.error = reason;
+        emit submissionCompleted(c);
+    }
 }
 
 void SimulatedPlcGateway::setOnline(bool online)
@@ -233,7 +319,7 @@ void SimulatedPlcGateway::setOnline(bool online)
     if (m_online == online)
         return;
     m_online = online;
-    emit connectionStateChanged(online);
+    emit connectionStateChanged(m_gatewayGeneration, online);
 }
 
 } // namespace hlm

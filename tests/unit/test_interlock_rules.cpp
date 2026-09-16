@@ -21,7 +21,7 @@ DeviceSnapshot makeSnapshot(quint16 statusWord1, quint16 statusWord3,
     d.currentWidth = currentWidth;
     d.pulsePerMm = pulsePerMm;
     d.widthSpeed = widthSpeed;
-    d.overallQuality = aggregateQuality(d);
+    d.overall_quality = aggregateQuality(d);
     return DeviceSnapshot(d);
 }
 

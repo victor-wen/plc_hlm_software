@@ -38,11 +38,11 @@ DeviceSnapshotData validSnapshotData()
     d.heartbeat = 1;         // D140
     d.pulsePerMm = 1280;     // D204
     d.widthSpeed = 2;        // D220
-    d.fastQuality = DataQuality::Valid;
-    d.homeQuality = DataQuality::Valid;
-    d.commandQuality = DataQuality::Valid;
-    d.slowQuality = DataQuality::Valid;
-    d.overallQuality = aggregateQuality(d);
+    d.fast_quality = DataQuality::Valid;
+    d.home_quality = DataQuality::Valid;
+    d.command_quality = DataQuality::Valid;
+    d.slow_quality = DataQuality::Valid;
+    d.overall_quality = aggregateQuality(d);
     return d;
 }
 
@@ -138,8 +138,8 @@ void OverviewPageTest::modelStaleSnapshotShowsInvalid()
     ShellModel model;
     DeviceSnapshotData d = validSnapshotData();
     d.dataAgeMs = 99999; // stale
-    d.fastQuality = DataQuality::Stale;
-    d.overallQuality = aggregateQuality(d);
+    d.fast_quality = DataQuality::Stale;
+    d.overall_quality = aggregateQuality(d);
     model.updateSnapshot(DeviceSnapshot(d));
     OverviewModel m(model);
 
@@ -158,7 +158,7 @@ void OverviewPageTest::modelOutOfRangeFieldShowsInvalid()
     DeviceSnapshotData d = validSnapshotData();
     d.targetWidth = 999; // D128 range is 50-400 -> out of range
     d.invalidFields = (quint32(1) << quint8(SnapshotField::TargetWidth));
-    d.overallQuality = aggregateQuality(d);
+    d.overall_quality = aggregateQuality(d);
     model.updateSnapshot(DeviceSnapshot(d));
     OverviewModel m(model);
 
@@ -230,8 +230,8 @@ void OverviewPageTest::pageStaleShowsDash()
 
     // A stale snapshot keeps everything at "—".
     DeviceSnapshotData d = validSnapshotData();
-    d.fastQuality = DataQuality::Stale;
-    d.overallQuality = aggregateQuality(d);
+    d.fast_quality = DataQuality::Stale;
+    d.overall_quality = aggregateQuality(d);
     model.updateSnapshot(DeviceSnapshot(d));
     QCOMPARE(page.fieldDisplay(QStringLiteral("step"))->text(),
              QStringLiteral("—"));

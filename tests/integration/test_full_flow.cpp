@@ -59,11 +59,26 @@ constexpr quint16 kM104 = 104;
 constexpr quint16 kD128 = 128;
 constexpr quint16 kD204 = 204;
 
+quint64 nextRequestId()
+{
+    static quint64 next = 1;
+    return next++;
+}
+
+SubmissionResult acceptedResult()
+{
+    SubmissionResult r;
+    r.accepted = true;
+    r.request_id = nextRequestId();
+    r.gateway_generation = 1;
+    return r;
+}
+
 // Drive a reset+home-return to a ready manual state via the raw gateway.
 void homeReady(SimulatedPlcGateway &gw)
 {
-    gw.writeCoil(kM103, true);
-    gw.writeCoil(kM103, false);
+    gw.model().writeCoil(kM103, true);
+    gw.model().writeCoil(kM103, false);
     gw.tick();
     gw.tick(); // home return takes 2 s
 }
@@ -73,31 +88,33 @@ void homeReady(SimulatedPlcGateway &gw)
 ControlCoordinator *makeCoordinator(SimulatedPlcGateway &gw, qint64 &now)
 {
     ControlCoordinator::PulseTransport t;
-    t.startPulse = [&gw](quint16 a) {
-        gw.writeCoil(a, true);
-        gw.writeCoil(a, false);
-        return true;
+    t.startPulse = [&gw](quint16 a) -> SubmissionResult {
+        gw.model().writeCoil(a, true);
+        gw.model().writeCoil(a, false);
+        return acceptedResult();
     };
-    t.writeHold = [&gw](quint16 a, bool v) {
-        gw.writeCoil(a, v);
-        return true;
+    t.writeHold = [&gw](quint16 a, bool v) -> SubmissionResult {
+        gw.model().writeCoil(a, v);
+        return acceptedResult();
     };
-    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) {
-        gw.writeCoil(a, v);
-        return true;
+    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) -> SubmissionResult {
+        gw.model().writeCoil(a, v);
+        return acceptedResult();
     };
-    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) {
-        gw.writeRegister(a, v);
-        return true;
+    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) -> SubmissionResult {
+        gw.model().writeRegister(a, v);
+        return acceptedResult();
     };
     auto *c = new ControlCoordinator(std::move(t), ControlCoordinator::Config(),
                                      [&now]() { return now; });
     QObject::connect(&gw, &SimulatedPlcGateway::snapshotReady, c,
-                     [c](const DeviceSnapshot &s) { c->onSnapshot(s); });
+                     [c](quint64, const DeviceSnapshot &s) { c->onSnapshot(s); });
     QObject::connect(&gw, &SimulatedPlcGateway::connectionStateChanged, c,
-                     [c](bool online) { c->onConnectionChanged(online); });
-    QObject::connect(&gw, &SimulatedPlcGateway::writeCompleted, c,
-                     [c](quint16 a, bool ok, const QString &) { c->onWriteCompleted(a, ok); });
+                     [c](quint64, bool online) { c->onConnectionChanged(online); });
+    QObject::connect(&gw, &SimulatedPlcGateway::submissionCompleted, c,
+                     [c](const SubmissionCompletion &completion) {
+                         c->onSubmissionCompleted(completion);
+                     });
     if (gw.hasSnapshot())
         c->onSnapshot(gw.lastSnapshot());
     return c;
@@ -449,18 +466,20 @@ void FullFlowTest::linkDownRejectsWritesAndRecovers()
     c->setRole(Role::Anonymous);
 
     QSignalSpy connSpy(&gw, &SimulatedPlcGateway::connectionStateChanged);
-    QSignalSpy writeSpy(&gw, &SimulatedPlcGateway::writeCompleted);
+    QSignalSpy completionSpy(&gw, &SimulatedPlcGateway::submissionCompleted);
 
     gw.setLinkDown(true);
     QVERIFY(!gw.isOnline());
     QVERIFY(!c->online());
     QCOMPARE(connSpy.size(), 1);
-    QCOMPARE(connSpy[0][0].toBool(), false);
+    QCOMPARE(connSpy[0][1].toBool(), false); // (generation, online)
 
-    // Writes rejected while offline, not applied.
-    gw.writeCoil(kM100, true);
-    QCOMPARE(writeSpy.size(), 1);
-    QVERIFY(!writeSpy[0][1].toBool());
+    // Submissions rejected synchronously while offline, not applied and not
+    // completed (contract: rejected submissions emit no completion).
+    const SubmissionResult rejected = gw.submitWriteCoil(kM100, true);
+    QVERIFY(!rejected.accepted);
+    QVERIFY(!rejected.immediate_rejection_reason.isEmpty());
+    QCOMPARE(completionSpy.size(), 0);
     QVERIFY(!gw.model().readCoil(kM100));
 
     // Restore: still offline until the next tick reconnects.
@@ -470,12 +489,16 @@ void FullFlowTest::linkDownRejectsWritesAndRecovers()
     QVERIFY(gw.isOnline());
     QVERIFY(c->online());
     QCOMPARE(connSpy.size(), 2);
-    QCOMPARE(connSpy[1][0].toBool(), true);
+    QCOMPARE(connSpy[1][1].toBool(), true);
 
-    // Writes accepted again.
-    gw.writeCoil(kM100, true);
-    QCOMPARE(writeSpy.size(), 2);
-    QVERIFY(writeSpy[1][0].toBool());
+    // Submissions accepted again and completed with a readback confirmation.
+    const SubmissionResult accepted = gw.submitWriteCoil(kM100, true);
+    QVERIFY(accepted.accepted);
+    gw.tick();
+    QCOMPARE(completionSpy.size(), 1);
+    QCOMPARE(completionSpy[0][0].value<SubmissionCompletion>().request_id,
+             accepted.request_id);
+    QVERIFY(completionSpy[0][0].value<SubmissionCompletion>().result);
     QVERIFY(gw.model().readCoil(kM100));
 }
 
@@ -746,10 +769,9 @@ void FullFlowTest::mainWindowOffscreenShell()
 // --- 7. composition root (Application) adjustWidth convergence ----------------
 //
 // Regression test for the Task 20 review finding: Application::wireGateway
-// must connect writeCompleted to ControlCoordinator::onWriteCompleted, or the
-// M43 pulse is never sent and every adjustWidth times out with
-// "调宽等待超时". This test drives the real composition root (Application),
-// not a hand-rolled coordinator, so the wiring bug is exercised.
+// must feed correlated completions into ControlCoordinator, or the adjust
+// width flow can never converge. This test drives the real composition root
+// (Application), not a hand-rolled coordinator, so the wiring is exercised.
 
 void FullFlowTest::applicationAdjustWidthConverges()
 {
@@ -846,15 +868,15 @@ void FullFlowTest::applicationAdjustWidthConverges()
     QTRY_COMPARE_WITH_TIMEOUT(usersPage->userList()->count(), 2, 5000);
 
     // Home the machine via the raw gateway (M103 pulse + 2 s home return).
-    gw->writeCoil(kM103, true);
-    gw->writeCoil(kM103, false);
+    gw->model().writeCoil(kM103, true);
+    gw->model().writeCoil(kM103, false);
     gw->tick();
     gw->tick();
     QVERIFY(gw->lastSnapshot().m9());
 
     // Drive adjustWidth through the composition root: the recipe page emits
     // applyAdjustRequested, Application routes it to the coordinator, and the
-    // coordinator's M43 pulse must be fed by writeCompleted (the wiring under
+    // M43 pulse must be submitted through the revised port (the wiring under
     // test). Converges on M44 + D130 == 300.
     QSignalSpy resultSpy(coord, &ControlCoordinator::commandResult);
     emit recipePage->applyAdjustRequested(300);

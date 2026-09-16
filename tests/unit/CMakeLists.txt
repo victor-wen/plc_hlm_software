@@ -57,14 +57,6 @@ target_link_libraries(test_pulse_state_machine PRIVATE
 
 add_test(NAME pulse_state_machine COMMAND test_pulse_state_machine)
 
-add_executable(test_watchdog_timer test_watchdog_timer.cpp)
-target_link_libraries(test_watchdog_timer PRIVATE
-    hlm_modbus
-    Qt6::Test
-)
-
-add_test(NAME watchdog_timer COMMAND test_watchdog_timer)
-
 add_executable(test_permission_policy test_permission_policy.cpp)
 target_link_libraries(test_permission_policy PRIVATE
     hlm_core
@@ -334,6 +326,41 @@ target_link_libraries(test_recipe_editor_developer PRIVATE
     Qt6::Test
 )
 add_test(NAME recipe_editor_developer COMMAND test_recipe_editor_developer)
+
+# --- PLC-HMI-003: independent PLC data-path integrity tests -----------------
+# All three use QTEST_GUILESS_MAIN (QCoreApplication), so they need no
+# QT_QPA_PLATFORM=offscreen environment entry.
+
+add_executable(test_plc_submission_identity plc_submission_identity_test.cpp)
+target_link_libraries(test_plc_submission_identity PRIVATE
+    hlm_simulator
+    Qt6::Test
+)
+add_test(NAME plc_submission_identity COMMAND test_plc_submission_identity)
+
+add_executable(test_plc_command_correlation plc_command_correlation_test.cpp)
+target_link_libraries(test_plc_command_correlation PRIVATE
+    hlm_simulator
+    Qt6::Test
+)
+add_test(NAME plc_command_correlation COMMAND test_plc_command_correlation)
+
+add_executable(test_plc_snapshot_quality plc_snapshot_quality_test.cpp)
+target_link_libraries(test_plc_snapshot_quality PRIVATE
+    hlm_simulator
+    Qt6::Test
+)
+add_test(NAME plc_snapshot_quality COMMAND test_plc_snapshot_quality)
+
+# --- PLC-HMI-003 rework 1: developer-owned stale-publication regression -------
+# QTEST_GUILESS_MAIN (QCoreApplication): no offscreen environment needed.
+
+add_executable(test_plc_stale_publication_developer plc_stale_publication_developer_test.cpp)
+target_link_libraries(test_plc_stale_publication_developer PRIVATE
+    hlm_modbus
+    Qt6::Test
+)
+add_test(NAME plc_stale_publication_developer COMMAND test_plc_stale_publication_developer)
 
 set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page control_panel operator_command_lifecycle command_status_projection command_feedback_pages operator_lifecycle_developer recipe_editor_state recipe_result_feedback recipe_editor_developer PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"

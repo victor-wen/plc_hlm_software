@@ -25,13 +25,10 @@ constexpr quint16 kM102 = 102; // HMI stop
 constexpr quint16 kM103 = 103; // HMI reset
 constexpr quint16 kM104 = 104; // auto mode select
 constexpr quint16 kM105 = 105; // passthrough mode
-constexpr quint16 kM106 = 106; // manual width forward
-constexpr quint16 kM107 = 107; // manual width reverse
-constexpr quint16 kM108 = 108; // manual belt jog
-constexpr quint16 kM109 = 109; // manual stop gate
-constexpr quint16 kM110 = 110; // light curtain bypass
-constexpr quint16 kM111 = 111; // door bypass
-constexpr quint16 kM112 = 112; // HMI watchdog
+
+// Coil address space stays 0-112 (113 coils): address 112 remains an
+// in-range but unused coil after the M112 removal (PLC-HMI-003 D3).
+constexpr quint16 kLastCoilAddress = 112;
 
 constexpr quint16 kD100 = 100; // status word 1: M0-M14 map, bit15 reserved
 constexpr quint16 kD103 = 103; // status word 3: M30-M45 map
@@ -57,7 +54,6 @@ constexpr quint16 kD220 = 220; // width speed (mm/s)
 constexpr quint16 kD222 = 222; // T6 preset in 100 ms units
 
 constexpr quint16 kHomeReturnSeconds = 2;
-constexpr quint16 kWatchdogSeconds = 2;
 
 } // namespace
 
@@ -79,7 +75,7 @@ H3uSimulationModel::H3uSimulationModel(SimulationClock &clock)
 
 void H3uSimulationModel::writeCoil(quint16 addr, bool value)
 {
-    if (addr > 112)
+    if (addr > kLastCoilAddress)
         return;
     const bool rising = value && !m_coils[addr];
     m_coils[addr] = value;
@@ -107,9 +103,6 @@ void H3uSimulationModel::writeCoil(quint16 addr, bool value)
     case kM100:
         onM100Write(value);
         break;
-    case kM112:
-        onM112Write(value);
-        break;
     default:
         break;
     }
@@ -117,7 +110,7 @@ void H3uSimulationModel::writeCoil(quint16 addr, bool value)
 
 bool H3uSimulationModel::readCoil(quint16 addr) const
 {
-    return addr <= 112 && m_coils[addr];
+    return addr <= kLastCoilAddress && m_coils[addr];
 }
 
 void H3uSimulationModel::writeRegister(quint16 addr, quint16 value)
@@ -359,16 +352,6 @@ void H3uSimulationModel::onM100Write(bool value)
     }
 }
 
-// --- M112: HMI watchdog (spec §8.6) -----------------------------------------
-
-void H3uSimulationModel::onM112Write(bool value)
-{
-    if (value) {
-        m_watchdogElapsed = 0;
-        m_watchdogArmed = true;
-    }
-}
-
 // --- continuous interlock M49 (spec §10.3.1) --------------------------------
 
 void H3uSimulationModel::updateM49()
@@ -463,18 +446,6 @@ void H3uSimulationModel::tick(quint64 seconds)
             m_t6Elapsed = 0;
         } else if (!m_stall) {
             m_remaining -= seconds;
-        }
-    }
-
-    // M112 watchdog: 2 s without an edge clears M42/M106-M111 (spec §8.6).
-    if (m_watchdogArmed) {
-        m_watchdogElapsed += seconds;
-        if (m_watchdogElapsed >= kWatchdogSeconds) {
-            m_coils[42] = false;
-            for (quint16 a = kM106; a <= kM111; ++a)
-                m_coils[a] = false;
-            m_watchdogArmed = false;
-            m_watchdogElapsed = 0;
         }
     }
 }

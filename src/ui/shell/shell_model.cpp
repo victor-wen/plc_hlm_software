@@ -78,13 +78,9 @@ bool ShellModel::modeKnown() const
     // The mode/run/homed state bits (M1/M2/M3/M9) come from the fast status
     // block (D100, spec §8.2). Only that block's transport/age quality gates
     // whether they are known: an unrelated out-of-range field (e.g. D130=0)
-    // must not blank the whole top bar (spec §9, §11.2).
-    //
-    // Note: the current adapters feed decodeFastBlock() a hard-coded
-    // DataQuality::Valid (qt_modbus_plc_gateway.cpp:774-775,
-    // simulated_plc_gateway.cpp:223-224), so in practice this gate degenerates
-    // to connected(). It is kept so a future adapter that reports stale/errored
-    // polls (age/transport result) downgrades the gate without UI changes.
+    // must not blank the whole top bar (spec §9, §11.2). The adapters publish
+    // real per-block quality/age (PLC-HMI-003 D6), so a stale or failed fast
+    // block downgrades this gate instead of degenerating to connected().
     const DeviceSnapshot &s = snapshot();
     return s.connected() && s.fastQuality() == DataQuality::Valid;
 }
@@ -122,11 +118,9 @@ bool ShellModel::isFaulted() const
 bool ShellModel::isEstop() const
 {
     // M0 is in the fast block, M100 in the command readback block. Require
-    // each source's own block quality so an untrusted block never fabricates
-    // an estop state (spec §8.2, §11.2). As with modeKnown(), the current
-    // adapters feed the command/fast blocks Valid, so this currently reduces
-    // to reading the raw bits; the gate is future-proofing for adapters that
-    // report age/transport quality.
+    // each source's own block quality so an untrusted (stale/errored) block
+    // never fabricates an estop state (spec §8.2, §11.2; PLC-HMI-003 D6/D7
+    // real block quality).
     const DeviceSnapshot &s = snapshot();
     const bool fastKnown =
         s.connected() && s.fastQuality() == DataQuality::Valid;

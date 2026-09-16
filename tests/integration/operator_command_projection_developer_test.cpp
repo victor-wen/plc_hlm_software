@@ -29,8 +29,8 @@ constexpr quint16 kD130 = 130;
 
 void homeReady(SimulatedPlcGateway &gw)
 {
-    gw.writeCoil(kM103, true);
-    gw.writeCoil(kM103, false);
+    gw.model().writeCoil(kM103, true);
+    gw.model().writeCoil(kM103, false);
     gw.tick();
     gw.tick(); // home return takes 2 s
 }

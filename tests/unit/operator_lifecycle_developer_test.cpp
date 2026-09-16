@@ -30,39 +30,64 @@ constexpr quint16 kM106 = 106;
 constexpr quint16 kM109 = 109;
 constexpr quint16 kM110 = 110;
 
+quint64 nextRequestId()
+{
+    static quint64 next = 1;
+    return next++;
+}
+
+SubmissionResult acceptedResult()
+{
+    SubmissionResult r;
+    r.accepted = true;
+    r.request_id = nextRequestId();
+    r.gateway_generation = 1;
+    return r;
+}
+
+SubmissionResult rejectedResult(const QString &reason)
+{
+    SubmissionResult r;
+    r.accepted = false;
+    r.request_id = 0;
+    r.gateway_generation = 1;
+    r.immediate_rejection_reason = reason;
+    return r;
+}
+
 void homeReady(SimulatedPlcGateway &gw)
 {
-    gw.writeCoil(kM103, true);
-    gw.writeCoil(kM103, false);
+    gw.model().writeCoil(kM103, true);
+    gw.model().writeCoil(kM103, false);
     gw.tick();
     gw.tick(); // home return takes 2 s
 }
 
 void putInAutoMode(SimulatedPlcGateway &gw)
 {
-    gw.writeCoil(kM104, true);
+    gw.model().writeCoil(kM104, true);
     gw.tick();
 }
 
 ControlCoordinator::PulseTransport gatewayTransport(SimulatedPlcGateway &gw)
 {
     ControlCoordinator::PulseTransport t;
-    t.startPulse = [&gw](quint16 a) {
-        gw.writeCoil(a, true);
-        gw.writeCoil(a, false);
-        return true;
+    t.startPulse = [&gw](quint16 a) -> SubmissionResult {
+        gw.model().writeCoil(a, true);
+        gw.model().writeCoil(a, false);
+        return acceptedResult();
     };
-    t.writeHold = [&gw](quint16 a, bool v) {
-        gw.writeCoil(a, v);
-        return true;
+    t.writeHold = [&gw](quint16 a, bool v) -> SubmissionResult {
+        gw.model().writeCoil(a, v);
+        return acceptedResult();
     };
-    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) {
-        gw.writeCoil(a, v);
-        return true;
+    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) -> SubmissionResult {
+        gw.model().writeCoil(a, v);
+        return acceptedResult();
     };
-    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) {
-        gw.writeRegister(a, v);
-        return true;
+    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) -> SubmissionResult {
+        gw.model().writeRegister(a, v);
+        return acceptedResult();
     };
     return t;
 }
@@ -73,12 +98,12 @@ ControlCoordinator *wire(SimulatedPlcGateway &gw, qint64 &now,
     auto *c = new ControlCoordinator(t, ControlCoordinator::Config(),
                                      [&now]() { return now; });
     QObject::connect(&gw, &SimulatedPlcGateway::snapshotReady, c,
-                     [c](const DeviceSnapshot &s) { c->onSnapshot(s); });
+                     [c](quint64, const DeviceSnapshot &s) { c->onSnapshot(s); });
     QObject::connect(&gw, &SimulatedPlcGateway::connectionStateChanged, c,
-                     [c](bool online) { c->onConnectionChanged(online); });
-    QObject::connect(&gw, &SimulatedPlcGateway::writeCompleted, c,
-                     [c](quint16 a, bool ok, const QString &) {
-                         c->onWriteCompleted(a, ok);
+                     [c](quint64, bool online) { c->onConnectionChanged(online); });
+    QObject::connect(&gw, &SimulatedPlcGateway::submissionCompleted, c,
+                     [c](const SubmissionCompletion &completion) {
+                         c->onSubmissionCompleted(completion);
                      });
     if (gw.hasSnapshot())
         c->onSnapshot(gw.lastSnapshot());
@@ -149,7 +174,9 @@ void OperatorLifecycleDeveloperTest::duplicateRejectionForEveryEntryPoint()
         gw.start();
         qint64 now = 0;
         ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-        t.writeCoil = [](quint16, bool, CommandPriority) { return true; };
+        t.writeCoil = [](quint16, bool, CommandPriority) -> SubmissionResult {
+            return acceptedResult();
+        };
         std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
         c->setRole(Role::Admin);
         homeReady(gw);
@@ -164,7 +191,9 @@ void OperatorLifecycleDeveloperTest::duplicateRejectionForEveryEntryPoint()
         gw.start();
         qint64 now = 0;
         ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-        t.startPulse = [](quint16) { return true; };
+        t.startPulse = [](quint16) -> SubmissionResult {
+            return acceptedResult(); // accepted but never applied
+        };
         std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
         c->setRole(Role::Operator);
         homeReady(gw);
@@ -180,13 +209,15 @@ void OperatorLifecycleDeveloperTest::duplicateRejectionForEveryEntryPoint()
         gw.start();
         qint64 now = 0;
         ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-        t.startPulse = [](quint16) { return true; };
+        t.startPulse = [](quint16) -> SubmissionResult {
+            return acceptedResult(); // accepted but never applied
+        };
         std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
         c->setRole(Role::Anonymous);
         homeReady(gw);
         putInAutoMode(gw);
-        gw.writeCoil(kM101, true);
-        gw.writeCoil(kM101, false);
+        gw.model().writeCoil(kM101, true);
+        gw.model().writeCoil(kM101, false);
         gw.tick();
         QVERIFY(gw.lastSnapshot().m3());
         QSignalSpy rejected(c.get(), &ControlCoordinator::commandRejected);
@@ -200,7 +231,9 @@ void OperatorLifecycleDeveloperTest::duplicateRejectionForEveryEntryPoint()
         gw.start();
         qint64 now = 0;
         ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-        t.writeCoil = [](quint16, bool, CommandPriority) { return true; };
+        t.writeCoil = [](quint16, bool, CommandPriority) -> SubmissionResult {
+            return acceptedResult();
+        };
         std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
         c->setRole(Role::Anonymous);
         QSignalSpy rejected(c.get(), &ControlCoordinator::commandRejected);
@@ -270,7 +303,9 @@ void OperatorLifecycleDeveloperTest::manualAndBypassConfirmOnlyFromSnapshot()
         gw.start();
         qint64 now = 0;
         ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-        t.writeHold = [](quint16, bool) { return true; };
+        t.writeHold = [](quint16, bool) -> SubmissionResult {
+            return acceptedResult();
+        };
         std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
         c->setRole(Role::Admin);
         homeReady(gw);
@@ -287,7 +322,7 @@ void OperatorLifecycleDeveloperTest::manualAndBypassConfirmOnlyFromSnapshot()
         gw.tick(); // snapshot still shows M106=0
         QVERIFY(results.isEmpty());
 
-        gw.writeCoil(kM106, true);
+        gw.model().writeCoil(kM106, true);
         gw.tick(); // confirmed
         QCOMPARE(results.size(), 1);
         QVERIFY(results[0]);
@@ -300,7 +335,9 @@ void OperatorLifecycleDeveloperTest::manualAndBypassConfirmOnlyFromSnapshot()
         gw.start();
         qint64 now = 0;
         ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-        t.writeCoil = [](quint16, bool, CommandPriority) { return true; };
+        t.writeCoil = [](quint16, bool, CommandPriority) -> SubmissionResult {
+            return acceptedResult();
+        };
         std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
         c->setRole(Role::Admin);
 
@@ -316,7 +353,7 @@ void OperatorLifecycleDeveloperTest::manualAndBypassConfirmOnlyFromSnapshot()
         gw.tick();
         QVERIFY(results.isEmpty());
 
-        gw.writeCoil(kM110, true);
+        gw.model().writeCoil(kM110, true);
         gw.tick();
         QCOMPARE(results.size(), 1);
         QVERIFY(results[0]);
@@ -331,7 +368,9 @@ void OperatorLifecycleDeveloperTest::manualConfirmTimeoutConvergesViaInjectedClo
     gw.start();
     qint64 now = 0;
     ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-    t.writeHold = [](quint16, bool) { return true; };
+    t.writeHold = [](quint16, bool) -> SubmissionResult {
+            return acceptedResult();
+        };
     std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
     c->setRole(Role::Admin);
     homeReady(gw);
@@ -370,7 +409,9 @@ void OperatorLifecycleDeveloperTest::transportRejectionIsVisibleWithoutSuccess()
         gw.start();
         qint64 now = 0;
         ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-        t.writeHold = [](quint16, bool) { return false; };
+        t.writeHold = [](quint16, bool) -> SubmissionResult {
+            return rejectedResult(QStringLiteral("transport rejected the hold write"));
+        };
         std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
         c->setRole(Role::Admin);
         homeReady(gw);
@@ -396,7 +437,9 @@ void OperatorLifecycleDeveloperTest::transportRejectionIsVisibleWithoutSuccess()
         gw.start();
         qint64 now = 0;
         ControlCoordinator::PulseTransport t = gatewayTransport(gw);
-        t.writeCoil = [](quint16, bool, CommandPriority) { return false; };
+        t.writeCoil = [](quint16, bool, CommandPriority) -> SubmissionResult {
+            return rejectedResult(QStringLiteral("transport rejected the write"));
+        };
         std::unique_ptr<ControlCoordinator> c(wire(gw, now, t));
         c->setRole(Role::Admin);
 

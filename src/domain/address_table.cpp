@@ -116,8 +116,6 @@ AddressTable::AddressTable()
         QStringLiteral("光栅屏蔽"), AccessType::ReadWrite, ValueType::U16));
     m_defs.push_back(def(QStringLiteral("M"), 111, QStringLiteral("M111"),
         QStringLiteral("门磁屏蔽"), AccessType::ReadWrite, ValueType::U16));
-    m_defs.push_back(def(QStringLiteral("M"), 112, QStringLiteral("M112"),
-        QStringLiteral("HMI看门狗"), AccessType::ReadWrite, ValueType::U16));
 
     // --- D area (holding registers) -----------------------------------------
     // 0-based protocol addresses (D100 -> 100). Source: 需求/PLC上位机地址及要求.txt.

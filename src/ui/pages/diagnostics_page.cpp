@@ -104,7 +104,7 @@ void DiagnosticsPage::buildBitTables(QVBoxLayout *root)
 
     auto *d100Title = new QLabel(QStringLiteral("D100 位 (M0-M14)"), this);
     auto *d103Title = new QLabel(QStringLiteral("D103 位 (M30-M45)"), this);
-    auto *homeTitle = new QLabel(QStringLiteral("M50-M53 / M100-M112"), this);
+    auto *homeTitle = new QLabel(QStringLiteral("M50-M53 / M100-M111"), this);
     d100Title->setMinimumHeight(48);
     d103Title->setMinimumHeight(48);
     homeTitle->setMinimumHeight(48);
@@ -361,8 +361,10 @@ void DiagnosticsPage::refresh()
     // snapshot the counters are meaningless -> "—" (spec §9).
     const bool fresh = m_pageModel.rawWordsValid();
     const DeviceSnapshot &s = m_model.snapshot();
+    // Real overall data age (maximum over the source blocks, never a
+    // hard-coded zero) instead of a fabricated latency (PLC-HMI-003 D6/D7).
     m_comm[QStringLiteral("latency")]->setValue(
-        fresh ? QString::number(s.dataAgeMs()) : QString(),
+        fresh ? QString::number(s.overall_age_ms) : QString(),
         QStringLiteral("ms"), fresh);
     m_comm[QStringLiteral("sequence")]->setValue(
         fresh ? QString::number(s.sequence()) : QString(), QString(), fresh);

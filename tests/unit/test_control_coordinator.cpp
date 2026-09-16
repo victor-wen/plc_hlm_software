@@ -33,6 +33,31 @@ constexpr quint16 kM110 = 110;
 constexpr quint16 kM111 = 111;
 constexpr quint16 kD128 = 128;
 
+quint64 nextRequestId()
+{
+    static quint64 next = 1;
+    return next++;
+}
+
+SubmissionResult acceptedResult()
+{
+    SubmissionResult r;
+    r.accepted = true;
+    r.request_id = nextRequestId();
+    r.gateway_generation = 1;
+    return r;
+}
+
+SubmissionResult rejectedResult(const QString &reason)
+{
+    SubmissionResult r;
+    r.accepted = false;
+    r.request_id = 0;
+    r.gateway_generation = 1;
+    r.immediate_rejection_reason = reason;
+    return r;
+}
+
 } // namespace
 
 class ControlCoordinatorTest : public QObject
@@ -116,8 +141,8 @@ namespace {
 // Drive a reset+home-return to a ready manual state via the raw gateway.
 void homeReady(SimulatedPlcGateway &gw)
 {
-    gw.writeCoil(kM103, true);
-    gw.writeCoil(kM103, false);
+    gw.model().writeCoil(kM103, true);
+    gw.model().writeCoil(kM103, false);
     gw.tick();
     gw.tick(); // home return takes 2 s
 }
@@ -135,22 +160,22 @@ ControlCoordinator *makeCoordinator(SimulatedPlcGateway &gw, qint64 &now,
                                     ControlCoordinator::Config cfg = {})
 {
     ControlCoordinator::PulseTransport t;
-    t.startPulse = [&gw](quint16 a) {
-        gw.writeCoil(a, true);
-        gw.writeCoil(a, false);
-        return true;
+    t.startPulse = [&gw](quint16 a) -> SubmissionResult {
+        gw.model().writeCoil(a, true);
+        gw.model().writeCoil(a, false);
+        return acceptedResult();
     };
-    t.writeHold = [&gw](quint16 a, bool v) {
-        gw.writeCoil(a, v);
-        return true;
+    t.writeHold = [&gw](quint16 a, bool v) -> SubmissionResult {
+        gw.model().writeCoil(a, v);
+        return acceptedResult();
     };
-    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) {
-        gw.writeCoil(a, v);
-        return true;
+    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) -> SubmissionResult {
+        gw.model().writeCoil(a, v);
+        return acceptedResult();
     };
-    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) {
-        gw.writeRegister(a, v);
-        return true;
+    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) -> SubmissionResult {
+        gw.model().writeRegister(a, v);
+        return acceptedResult();
     };
     return makeCoordinatorWithCoil(gw, now, t, cfg);
 }
@@ -164,11 +189,13 @@ ControlCoordinator *makeCoordinatorWithCoil(
     auto *c = new ControlCoordinator(t, cfg, [&now]() { return now; });
     // Wire the gateway feed: snapshots, connection state and write results.
     QObject::connect(&gw, &SimulatedPlcGateway::snapshotReady, c,
-                     [c](const DeviceSnapshot &s) { c->onSnapshot(s); });
+                     [c](quint64, const DeviceSnapshot &s) { c->onSnapshot(s); });
     QObject::connect(&gw, &SimulatedPlcGateway::connectionStateChanged, c,
-                     [c](bool online) { c->onConnectionChanged(online); });
-    QObject::connect(&gw, &SimulatedPlcGateway::writeCompleted, c,
-                     [c](quint16 a, bool ok, const QString &) { c->onWriteCompleted(a, ok); });
+                     [c](quint64, bool online) { c->onConnectionChanged(online); });
+    QObject::connect(&gw, &SimulatedPlcGateway::submissionCompleted, c,
+                     [c](const SubmissionCompletion &completion) {
+                         c->onSubmissionCompleted(completion);
+                     });
     // Feed the snapshot published before the coordinator existed.
     if (gw.hasSnapshot())
         c->onSnapshot(gw.lastSnapshot());
@@ -181,18 +208,20 @@ ControlCoordinator *makeCoordinatorNoPulse(SimulatedPlcGateway &gw, qint64 &now,
                                            ControlCoordinator::Config cfg = {})
 {
     ControlCoordinator::PulseTransport t;
-    t.startPulse = [](quint16) { return true; }; // no-op: M3 stays put
-    t.writeHold = [&gw](quint16 a, bool v) {
-        gw.writeCoil(a, v);
-        return true;
+    t.startPulse = [](quint16) -> SubmissionResult {
+        return acceptedResult(); // no-op: M3 stays put
     };
-    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) {
-        gw.writeCoil(a, v);
-        return true;
+    t.writeHold = [&gw](quint16 a, bool v) -> SubmissionResult {
+        gw.model().writeCoil(a, v);
+        return acceptedResult();
     };
-    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) {
-        gw.writeRegister(a, v);
-        return true;
+    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) -> SubmissionResult {
+        gw.model().writeCoil(a, v);
+        return acceptedResult();
+    };
+    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) -> SubmissionResult {
+        gw.model().writeRegister(a, v);
+        return acceptedResult();
     };
     return makeCoordinatorWithCoil(gw, now, t, cfg);
 }
@@ -225,7 +254,7 @@ void ControlCoordinatorTest::operatorCannotResetOrAdjust()
     qint64 now = 0;
     std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
     homeReady(gw);
-    gw.writeCoil(kM104, true);
+    gw.model().writeCoil(kM104, true);
     gw.tick();
     QVERIFY(gw.lastSnapshot().m2());
 
@@ -281,7 +310,7 @@ void ControlCoordinatorTest::resetFromAutoModeWritesM104ThenPulsesM103()
     c->setRole(Role::Admin);
 
     // Put the machine into auto mode first.
-    gw.writeCoil(kM104, true);
+    gw.model().writeCoil(kM104, true);
     gw.tick();
     QVERIFY(gw.lastSnapshot().m2());
 
@@ -366,10 +395,10 @@ void ControlCoordinatorTest::resetRejectedWhenRunning()
 
     // Run the machine.
     homeReady(gw);
-    gw.writeCoil(kM104, true);
+    gw.model().writeCoil(kM104, true);
     gw.tick();
-    gw.writeCoil(kM101, true);
-    gw.writeCoil(kM101, false);
+    gw.model().writeCoil(kM101, true);
+    gw.model().writeCoil(kM101, false);
     gw.tick();
     QVERIFY(gw.lastSnapshot().m3());
 
@@ -390,7 +419,7 @@ void ControlCoordinatorTest::resetDoesNotReportSuccessWithoutHomingStarted()
 
     // Machine already homed (M61=1) with a latched fault (M14=1).
     homeReady(gw);
-    gw.writeCoil(kM100, true); // estop latches M14=1, D110=1
+    gw.model().writeCoil(kM100, true); // estop latches M14=1, D110=1
     gw.tick();
     QVERIFY(gw.lastSnapshot().m9()); // M61 via M9
     QVERIFY(gw.lastSnapshot().m14());
@@ -442,7 +471,7 @@ void ControlCoordinatorTest::resetDoesNotReportFaultOnStalePrePulseSnapshot()
 
     // Machine already homed (M61=1) with a latched fault (M14=1).
     homeReady(gw);
-    gw.writeCoil(kM100, true); // estop latches M14=1, D110=1
+    gw.model().writeCoil(kM100, true); // estop latches M14=1, D110=1
     gw.tick();
     QVERIFY(gw.lastSnapshot().m9()); // M61 via M9
     QVERIFY(gw.lastSnapshot().m14());
@@ -624,40 +653,39 @@ void ControlCoordinatorTest::adjustWidthConcurrentEstopNeverHangs()
     qint64 now = 0;
 
     ControlCoordinator::PulseTransport t;
-    t.startPulse = [&gw](quint16 a) {
-        gw.writeCoil(a, true);
-        gw.writeCoil(a, false);
-        return true;
+    t.startPulse = [&gw](quint16 a) -> SubmissionResult {
+        gw.model().writeCoil(a, true);
+        gw.model().writeCoil(a, false);
+        return acceptedResult();
     };
-    t.writeHold = [&gw](quint16 a, bool v) {
-        gw.writeCoil(a, v);
-        return true;
+    t.writeHold = [&gw](quint16 a, bool v) -> SubmissionResult {
+        gw.model().writeCoil(a, v);
+        return acceptedResult();
     };
-    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) {
-        gw.writeCoil(a, v);
-        return true;
+    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) -> SubmissionResult {
+        gw.model().writeCoil(a, v);
+        return acceptedResult();
     };
-    // D128 write stays "in flight": it is not routed to the gateway, so no
-    // writeCompleted is produced until the test chooses. This reproduces the
-    // race where the pending write is overwritten before completion.
-    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) {
+    // The D128 submission is accepted but its completion never arrives: the
+    // adjust flow must still converge through its defensive result timeout.
+    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) -> SubmissionResult {
         if (a == kD128)
-            return true; // deferred: never completes via the transport
-        gw.writeRegister(a, v);
-        return true;
+            return acceptedResult(); // deferred: completion never delivered
+        gw.model().writeRegister(a, v);
+        return acceptedResult();
     };
 
     std::unique_ptr<ControlCoordinator> c(makeCoordinatorWithCoil(gw, now, t));
     c->setRole(Role::Admin);
     homeReady(gw);
 
-    bool adjustReported = false;
+    int adjustReports = 0;
     bool writeResult = true;
     QString detail;
     connect(c.get(), &ControlCoordinator::commandResult, this,
             [&](Command cmd, bool ok, const QString &d) {
                 if (cmd == Command::AdjustWidth) {
-                    adjustReported = true;
+                    ++adjustReports;
                     writeResult = ok;
                     detail = d;
                 }
@@ -672,16 +700,22 @@ void ControlCoordinatorTest::adjustWidthConcurrentEstopNeverHangs()
     gw.tick(); // estop confirmed via M0/M100 readback
     QVERIFY(gw.lastSnapshot().m0());
     QVERIFY(gw.lastSnapshot().m100());
-    QVERIFY(!adjustReported); // adjust not yet reported
 
-    // The D128 writeCompleted is dropped; the M43 pulse never fires. The flow
-    // must converge to a timeout failure (kAdjustWriteTimeoutMs = 5 s).
-    now += 5'001;
+    // The D128 completion is dropped and a concurrent safety command arrives;
+    // the adjust flow must still converge to exactly one terminal failure
+    // through its armed result deadline (never hang, never double-report).
+    now += 30'000;
     gw.tick();
     QVERIFY(!c->adjustInProgress());
-    QVERIFY(adjustReported);
+    QCOMPARE(adjustReports, 1);
     QVERIFY(!writeResult);
-    QVERIFY(detail.contains(QStringLiteral("超时")));
+    // Convergence may be the immediate M45 failure or the defensive timeout;
+    // either way the flow must report exactly one failure with a visible
+    // detail and never hang or double-report.
+    QVERIFY2(!detail.isEmpty(), "a terminal failure must carry a visible detail");
+
+    gw.tick();
+    QCOMPARE(adjustReports, 1); // exactly once
 }
 
 // --- start / stop -----------------------------------------------------------
@@ -694,7 +728,7 @@ void ControlCoordinatorTest::startWaitsForM3()
     std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
     c->setRole(Role::Operator);
     homeReady(gw);
-    gw.writeCoil(kM104, true);
+    gw.model().writeCoil(kM104, true);
     gw.tick();
     QVERIFY(gw.lastSnapshot().m2());
 
@@ -734,10 +768,10 @@ void ControlCoordinatorTest::stopWaitsForM3Clear()
     std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
     c->setRole(Role::Anonymous);
     homeReady(gw);
-    gw.writeCoil(kM104, true);
+    gw.model().writeCoil(kM104, true);
     gw.tick();
-    gw.writeCoil(kM101, true);
-    gw.writeCoil(kM101, false);
+    gw.model().writeCoil(kM101, true);
+    gw.model().writeCoil(kM101, false);
     gw.tick();
     QVERIFY(gw.lastSnapshot().m3());
 
@@ -794,7 +828,7 @@ void ControlCoordinatorTest::estopReleaseAdminOnly()
     std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
     c->setRole(Role::Operator);
 
-    gw.writeCoil(kM100, true);
+    gw.model().writeCoil(kM100, true);
     gw.tick();
     QVERIFY(gw.lastSnapshot().m0());
 
@@ -885,7 +919,9 @@ void ControlCoordinatorTest::estopSetTimeoutConverges()
     gw.start();
     qint64 now = 0;
     ControlCoordinator::PulseTransport t;
-    t.writeCoil = [](quint16, bool, CommandPriority) { return true; }; // no-op write
+    t.writeCoil = [](quint16, bool, CommandPriority) -> SubmissionResult {
+        return acceptedResult(); // no-op write
+    };
     std::unique_ptr<ControlCoordinator> c(makeCoordinatorWithCoil(gw, now, t));
     c->setRole(Role::Anonymous);
 
@@ -920,13 +956,15 @@ void ControlCoordinatorTest::estopReleaseTimeoutConverges()
     gw.start();
     qint64 now = 0;
     ControlCoordinator::PulseTransport t;
-    t.writeCoil = [](quint16, bool, CommandPriority) { return true; }; // no-op write
+    t.writeCoil = [](quint16, bool, CommandPriority) -> SubmissionResult {
+        return acceptedResult(); // no-op write
+    };
     std::unique_ptr<ControlCoordinator> c(makeCoordinatorWithCoil(gw, now, t));
     c->setRole(Role::Admin);
 
     // Estop is physically set (M0=1, M100=1) so the release cannot confirm
     // via the snapshot.
-    gw.writeCoil(kM100, true);
+    gw.model().writeCoil(kM100, true);
     gw.tick();
     QVERIFY(gw.lastSnapshot().m0());
     QVERIFY(gw.lastSnapshot().m100());
@@ -1017,7 +1055,7 @@ void ControlCoordinatorTest::manualHoldReleaseBypassesInterlocks()
     QVERIFY(gw.model().readCoil(kM106));
 
     // Latch an estop: M0=1, M14=1 -> the manual interlock now rejects a press.
-    gw.writeCoil(kM100, true);
+    gw.model().writeCoil(kM100, true);
     gw.tick();
     QVERIFY(gw.lastSnapshot().m0());
     QVERIFY(gw.lastSnapshot().m14());
@@ -1056,7 +1094,7 @@ void ControlCoordinatorTest::manualHoldReleaseRequiresPermission()
 
     // Admin release still works even with a latched fault (round-3 behavior).
     c->setRole(Role::Admin);
-    gw.writeCoil(kM100, true);
+    gw.model().writeCoil(kM100, true);
     gw.tick();
     QVERIFY(gw.lastSnapshot().m0());
     QVERIFY(gw.lastSnapshot().m14());
@@ -1072,7 +1110,9 @@ void ControlCoordinatorTest::estopSetSyncFailureDoesNotEmitSecondSuccess()
     gw.start();
     qint64 now = 0;
     ControlCoordinator::PulseTransport t;
-    t.writeCoil = [](quint16, bool, CommandPriority) { return false; };
+    t.writeCoil = [](quint16, bool, CommandPriority) -> SubmissionResult {
+        return rejectedResult(QStringLiteral("transport rejected write"));
+    };
     std::unique_ptr<ControlCoordinator> c(makeCoordinatorWithCoil(gw, now, t));
     c->setRole(Role::Admin);
 
@@ -1094,7 +1134,7 @@ void ControlCoordinatorTest::estopSetSyncFailureDoesNotEmitSecondSuccess()
     QCOMPARE(successCount, 0);
 
     // A later snapshot with M0=1 (physical estop) must NOT emit a second success.
-    gw.writeCoil(kM100, true);
+    gw.model().writeCoil(kM100, true);
     gw.tick();
     QVERIFY(gw.lastSnapshot().m0());
     QCOMPARE(successCount, 0);
@@ -1112,10 +1152,10 @@ void ControlCoordinatorTest::logoutClearsM42AndM106ToM111NotM100()
     c->setRole(Role::Admin);
 
     // Set all the continuous/bypass bits.
-    gw.writeCoil(kM42, true);
+    gw.model().writeCoil(kM42, true);
     for (quint16 a = kM106; a <= kM111; ++a)
-        gw.writeCoil(a, true);
-    gw.writeCoil(kM100, true); // estop: must survive logout
+        gw.model().writeCoil(a, true);
+    gw.model().writeCoil(kM100, true); // estop: must survive logout
     gw.tick();
     QVERIFY(gw.lastSnapshot().m42());
     QVERIFY(gw.lastSnapshot().m106());
@@ -1142,7 +1182,7 @@ void ControlCoordinatorTest::logoutClearDoesNotTouchM105()
     std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
     c->setRole(Role::Admin);
 
-    gw.writeCoil(kM105, true);
+    gw.model().writeCoil(kM105, true);
     gw.tick();
     QVERIFY(gw.lastSnapshot().m105());
 
@@ -1197,7 +1237,7 @@ void ControlCoordinatorTest::startTimeoutConvergesToFailure()
     std::unique_ptr<ControlCoordinator> c(makeCoordinatorNoPulse(gw, now));
     c->setRole(Role::Operator);
     homeReady(gw);
-    gw.writeCoil(kM104, true);
+    gw.model().writeCoil(kM104, true);
     gw.tick();
     QVERIFY(gw.lastSnapshot().m2());
 
@@ -1232,10 +1272,10 @@ void ControlCoordinatorTest::stopTimeoutConvergesToFailure()
     std::unique_ptr<ControlCoordinator> c(makeCoordinatorNoPulse(gw, now));
     c->setRole(Role::Anonymous);
     homeReady(gw);
-    gw.writeCoil(kM104, true);
+    gw.model().writeCoil(kM104, true);
     gw.tick();
-    gw.writeCoil(kM101, true);
-    gw.writeCoil(kM101, false);
+    gw.model().writeCoil(kM101, true);
+    gw.model().writeCoil(kM101, false);
     gw.tick();
     QVERIFY(gw.lastSnapshot().m3());
 
@@ -1301,7 +1341,9 @@ void ControlCoordinatorTest::modeSwitchWriteFailureSurfaces()
     gw.start();
     qint64 now = 0;
     ControlCoordinator::PulseTransport t;
-    t.writeCoil = [](quint16, bool, CommandPriority) { return false; };
+    t.writeCoil = [](quint16, bool, CommandPriority) -> SubmissionResult {
+        return rejectedResult(QStringLiteral("transport rejected write"));
+    };
     std::unique_ptr<ControlCoordinator> c(makeCoordinatorWithCoil(gw, now, t));
     c->setRole(Role::Admin);
     homeReady(gw);
@@ -1329,20 +1371,22 @@ void ControlCoordinatorTest::modeSwitchTimeoutConverges()
     gw.start();
     qint64 now = 0;
     ControlCoordinator::PulseTransport t;
-    t.startPulse = [&gw](quint16 a) {
-        gw.writeCoil(a, true);
-        gw.writeCoil(a, false);
-        return true;
+    t.startPulse = [&gw](quint16 a) -> SubmissionResult {
+        gw.model().writeCoil(a, true);
+        gw.model().writeCoil(a, false);
+        return acceptedResult();
     };
-    t.writeHold = [&gw](quint16 a, bool v) {
-        gw.writeCoil(a, v);
-        return true;
+    t.writeHold = [&gw](quint16 a, bool v) -> SubmissionResult {
+        gw.model().writeCoil(a, v);
+        return acceptedResult();
     };
-    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) {
-        gw.writeRegister(a, v);
-        return true;
+    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) -> SubmissionResult {
+        gw.model().writeRegister(a, v);
+        return acceptedResult();
     };
-    t.writeCoil = [](quint16, bool, CommandPriority) { return true; }; // no-op select
+    t.writeCoil = [](quint16, bool, CommandPriority) -> SubmissionResult {
+        return acceptedResult(); // no-op select
+    };
     std::unique_ptr<ControlCoordinator> c(makeCoordinatorWithCoil(gw, now, t));
     c->setRole(Role::Admin);
     homeReady(gw);

@@ -10,8 +10,9 @@
 // - Dynamic timeout (10s / 360s clamp boundaries).
 // - Home-return faults 8/9.
 // - Width-adjust timeout fault 10 (M45, M14, D110=10).
-// - M112 watchdog: 2 s without an edge clears M42/M106-M111 while
-//   M100/M104/M105 stay.
+// - No M112 watchdog semantics (PLC-HMI-003 D3): writing coil 112 never
+//   arms a watchdog and time passing never clears M42/M106-M111 because of
+//   an M112 write.
 // - Mode mutual exclusion: mode switch rejected while running.
 // - Software estop sets M0 and latches the fault.
 // - Start (M60 satisfied -> M3=1; not satisfied -> invalid) and stop M102.
@@ -54,7 +55,7 @@ private slots:
     void widthAdjustTimeoutFault10();
     void interlockLossAbortsRunWithoutOverwritingFault();
     void completionBeatsTimeoutInSameTick();
-    void m112WatchdogClearsBits();
+    void noM112WatchdogSemantics();
     void modeSwitchRejectedWhileRunning();
     void softwareEstopLatchesFault();
     void startRequiresReady();
@@ -332,8 +333,11 @@ void H3uSimulationModelTest::completionBeatsTimeoutInSameTick()
     QCOMPARE(m.readRegister(130), quint16(300));
 }
 
-void H3uSimulationModelTest::m112WatchdogClearsBits()
+void H3uSimulationModelTest::noM112WatchdogSemantics()
 {
+    // M112 was removed from the live path (PLC-HMI-003 D3). Coil 112 is an
+    // ordinary in-range, unused coil: writing it must not arm a watchdog, and
+    // no amount of simulated time may clear M42/M106-M111 because of it.
     SimulationClock clock;
     H3uSimulationModel m(clock);
     m.writeCoil(42, true);
@@ -343,22 +347,23 @@ void H3uSimulationModelTest::m112WatchdogClearsBits()
     m.writeCoil(109, true);
     m.writeCoil(110, true);
     m.writeCoil(111, true);
-    m.writeCoil(100, true); // estop: must survive
-    m.writeCoil(104, true); // auto mode: must survive
-    m.writeCoil(105, true); // passthrough: must survive
-    m.writeCoil(112, true); // watchdog edge at t=0
+    m.writeCoil(100, true); // estop
+    m.writeCoil(104, true); // auto mode
+    m.writeCoil(105, true); // passthrough
 
-    m.advance(1);
-    QVERIFY(m.readCoil(42)); // 1 s since edge: still armed
-
-    m.advance(1); // 2 s since edge: watchdog fires
-    QVERIFY(!m.readCoil(42));
-    QVERIFY(!m.readCoil(106));
-    QVERIFY(!m.readCoil(107));
-    QVERIFY(!m.readCoil(108));
-    QVERIFY(!m.readCoil(109));
-    QVERIFY(!m.readCoil(110));
-    QVERIFY(!m.readCoil(111));
+    // The 113-coil address space is retained, so the raw bit is stored...
+    m.writeCoil(112, true);
+    QVERIFY(m.readCoil(112));
+    // ...but it carries no semantics: advancing well past the former 2 s
+    // watchdog window clears nothing.
+    m.advance(10);
+    QVERIFY(m.readCoil(42));
+    QVERIFY(m.readCoil(106));
+    QVERIFY(m.readCoil(107));
+    QVERIFY(m.readCoil(108));
+    QVERIFY(m.readCoil(109));
+    QVERIFY(m.readCoil(110));
+    QVERIFY(m.readCoil(111));
     QVERIFY(m.readCoil(100));
     QVERIFY(m.readCoil(104));
     QVERIFY(m.readCoil(105));

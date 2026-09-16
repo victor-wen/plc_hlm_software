@@ -42,17 +42,17 @@ class ControlCoordinator : public QObject
     Q_OBJECT
 
 public:
-    // Pulse transport abstraction (spec §8.5). The real worker thread routes
-    // these into the PulseStateMachine; tests use a recording fake.
+    // Pulse transport abstraction (spec §8.5, PLC-HMI-003 D5). The real
+    // worker thread routes these into the gateway's submission port; tests use
+    // a recording fake. Every callback returns the structured SubmissionResult
+    // (accepted + request identity + generation, or a visible rejection).
     struct PulseTransport {
-        // Returns false when the pulse could not be started (offline / a
-        // pulse on the same address is already active).
-        std::function<bool(quint16 address)> startPulse;
+        std::function<SubmissionResult(quint16 address)> startPulse;
         // Continuous (hold) command: write 1 on press, 0 on release.
-        std::function<bool(quint16 address, bool value)> writeHold;
+        std::function<SubmissionResult(quint16 address, bool value)> writeHold;
         // Plain write (coil/register) with a priority hint.
-        std::function<bool(quint16 address, bool value, CommandPriority priority)> writeCoil;
-        std::function<bool(quint16 address, quint16 value, CommandPriority priority)> writeRegister;
+        std::function<SubmissionResult(quint16 address, bool value, CommandPriority priority)> writeCoil;
+        std::function<SubmissionResult(quint16 address, quint16 value, CommandPriority priority)> writeRegister;
     };
 
     // Config (spec §10.2: HMI defensive reset timeout, admin-configurable).
@@ -72,7 +72,7 @@ public:
     };
 
     // `nowMs` is injected for deterministic timeout tests (same pattern as
-    // PulseStateMachine / WatchdogTimer). Defaults to wall clock.
+    // PulseStateMachine). Defaults to wall clock.
     explicit ControlCoordinator(PulseTransport transport,
                                 Config config = Config(),
                                 std::function<qint64()> nowMs = nullptr,
@@ -110,9 +110,13 @@ public:
     // (spec §11.5, §13).
     void logoutClear();
 
-    // --- snapshot / write result feed (from the gateway) ---------------------
+    // --- snapshot / submission result feed (from the gateway) ----------------
     void onSnapshot(const DeviceSnapshot &s);
-    void onWriteCompleted(quint16 address, bool ok);
+    // Correlated terminal outcome of one accepted submission. Only a
+    // completion whose request_id AND gateway_generation match a tracked
+    // submission is consumed; stale, unknown and duplicate completions are
+    // ignored (PLC-HMI-003 D5).
+    void onSubmissionCompleted(const SubmissionCompletion &completion);
     void onConnectionChanged(bool online);
 
     // --- state --------------------------------------------------------------
@@ -166,11 +170,28 @@ private:
         qint64 deadlineMs = 0;
     };
 
+    // One accepted submission awaiting its correlated terminal completion.
+    struct PendingSubmission {
+        quint64 request_id = 0;
+        quint64 gateway_generation = 0;
+        Command cmd = Command::Count;
+        PlcOperation operation = PlcOperation::WriteCoil;
+        quint16 address = 0;
+    };
+
     CommandResult gate(Command cmd, const DeviceSnapshot &s, quint16 targetWidth = 0);
     // Emits commandRejected(cmd, reason) and returns the structured result.
     CommandResult rejectCommand(Command cmd, const QString &reason);
-    void beginWrite(Command cmd, quint16 address, bool value, CommandPriority priority);
-    void beginWriteReg(Command cmd, quint16 address, quint16 value, CommandPriority priority);
+    // Submits and, when accepted, tracks the request identity for completion
+    // correlation. False = the transport rejected the submission.
+    bool submitCoil(Command cmd, quint16 address, bool value, CommandPriority priority);
+    bool submitHold(Command cmd, quint16 address, bool value);
+    bool submitRegister(Command cmd, quint16 address, quint16 value,
+                        CommandPriority priority);
+    bool submitPulse(Command cmd, quint16 address);
+    void trackSubmission(Command cmd, const SubmissionResult &result,
+                         PlcOperation operation, quint16 address);
+    void clearPendingSubmissions(Command cmd);
     void finishCommand(Command cmd, bool ok, const QString &detail);
 
     // Emits commandPending(cmd) plus its phase detail.
@@ -213,9 +234,8 @@ private:
     bool m_adjustTimeoutArmed = false;
     bool m_startTimeoutArmed = false;
     bool m_stopTimeoutArmed = false;
-    // Pending write routing: which command is waiting on a writeCompleted.
-    std::optional<Command> m_pendingWriteCmd;
-    quint16 m_pendingWriteAddr = 0;
+    // Accepted submissions awaiting their correlated terminal completion.
+    QVector<PendingSubmission> m_pendingSubmissions;
     // Mode switch (waits for M1/M2, spec §11.2).
     bool m_modePending = false;
     std::optional<bool> m_modeTarget;

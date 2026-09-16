@@ -57,23 +57,38 @@ struct DeviceSnapshotData {
 
     // M50-M53 home-return bits (function code 01).
     quint16 homeBits = 0;
-    // M100-M112 command readback bits (function code 01).
+    // M100-M111 command readback bits (function code 01). M112 is not part of
+    // the live path (PLC-HMI-003 D3).
     quint16 commandBits = 0;
 
-    // Per-source-block quality (spec §9).
-    DataQuality fastQuality = DataQuality::Valid;
-    DataQuality homeQuality = DataQuality::Valid;
-    DataQuality commandQuality = DataQuality::Valid;
-    DataQuality slowQuality = DataQuality::Valid;
+    // Per-source-block quality and monotonic ages (spec §9, PLC-HMI-003 D6).
+    // Member names are fixed by the approved contract interfaces.
+    DataQuality fast_quality = DataQuality::Valid;
+    qint64 fast_age_ms = 0;
+    DataQuality home_quality = DataQuality::Valid;
+    qint64 home_age_ms = 0;
+    DataQuality command_quality = DataQuality::Valid;
+    qint64 command_age_ms = 0;
+    DataQuality slow_quality = DataQuality::Valid;
+    qint64 slow_age_ms = 0;
 
     // Bitmask of fields whose decoded value is out of range.
     quint32 invalidFields = 0;
-    DataQuality overallQuality = DataQuality::Valid;
+    DataQuality overall_quality = DataQuality::Valid;
+    qint64 overall_age_ms = 0;
+    // Independent D210 metadata (never aliases CurrentWidth validity):
+    // true only with a valid slow block and signed D210 in -350..350.
+    bool width_delta_valid = false;
 };
 
 // Aggregates per-block quality and out-of-range flags into the overall
 // snapshot quality (worst wins; OutOfRange beats ProtocolError).
 DataQuality aggregateQuality(const DeviceSnapshotData &d);
+
+// Recomputes overall_age_ms (maximum of the required source blocks; never
+// hard-coded zero) and width_delta_valid (valid slow block + signed D210 in
+// -350..350) from the block fields.
+void recomputeDerivedQuality(DeviceSnapshotData &d);
 
 // Centralized decode helpers (spec §8.2). All 32-bit values are low word
 // first (D126/D127, D136/D137, D138/D139).
@@ -110,13 +125,28 @@ class DeviceSnapshot
 public:
     explicit DeviceSnapshot(const DeviceSnapshotData &d);
 
+    // --- quality and age (PLC-HMI-003 D6) -----------------------------------
+    // Contract-fixed member names: real per-block quality and monotonic ages,
+    // the overall maximum age and the independent D210 validity flag.
+    DataQuality fast_quality = DataQuality::Valid;
+    qint64 fast_age_ms = 0;
+    DataQuality home_quality = DataQuality::Valid;
+    qint64 home_age_ms = 0;
+    DataQuality command_quality = DataQuality::Valid;
+    qint64 command_age_ms = 0;
+    DataQuality slow_quality = DataQuality::Valid;
+    qint64 slow_age_ms = 0;
+    DataQuality overall_quality = DataQuality::Valid;
+    qint64 overall_age_ms = 0;
+    bool width_delta_valid = false;
+
     // --- meta ---------------------------------------------------------------
     QDateTime captureStarted() const { return m_captureStarted; }
     QDateTime captureCompleted() const { return m_captureCompleted; }
     quint64 sequence() const { return m_sequence; }
     bool connected() const { return m_connected; }
     qint64 dataAgeMs() const { return m_dataAgeMs; }
-    DataQuality overallQuality() const { return m_overallQuality; }
+    DataQuality overallQuality() const { return m_overall_quality; }
 
     // --- raw status words ---------------------------------------------------
     quint16 statusWord1() const { return m_statusWord1; }
@@ -177,7 +207,7 @@ public:
     bool m52() const { return m_m52; }
     bool m53() const { return m_m53; }
 
-    // --- M100-M112 command readback -----------------------------------------
+    // --- M100-M111 command readback (M112 removed, PLC-HMI-003 D3) ----------
     bool m100() const { return m_m100; }
     bool m101() const { return m_m101; }
     bool m102() const { return m_m102; }
@@ -190,13 +220,12 @@ public:
     bool m109() const { return m_m109; }
     bool m110() const { return m_m110; }
     bool m111() const { return m_m111; }
-    bool m112() const { return m_m112; }
 
     // --- per-source-block quality --------------------------------------------
-    DataQuality fastQuality() const { return m_fastQuality; }
-    DataQuality homeQuality() const { return m_homeQuality; }
-    DataQuality commandQuality() const { return m_commandQuality; }
-    DataQuality slowQuality() const { return m_slowQuality; }
+    DataQuality fastQuality() const { return fast_quality; }
+    DataQuality homeQuality() const { return home_quality; }
+    DataQuality commandQuality() const { return command_quality; }
+    DataQuality slowQuality() const { return slow_quality; }
 
     // True when the given field decoded in range (spec §9).
     bool fieldValid(SnapshotField f) const
@@ -210,7 +239,7 @@ private:
     quint64 m_sequence = 0;
     bool m_connected = false;
     qint64 m_dataAgeMs = 0;
-    DataQuality m_overallQuality = DataQuality::Valid;
+    DataQuality m_overall_quality = DataQuality::Valid;
 
     quint16 m_statusWord1 = 0;
     quint16 m_statusWord2 = 0;
@@ -278,12 +307,7 @@ private:
     bool m_m109 = false;
     bool m_m110 = false;
     bool m_m111 = false;
-    bool m_m112 = false;
 
-    DataQuality m_fastQuality = DataQuality::Valid;
-    DataQuality m_homeQuality = DataQuality::Valid;
-    DataQuality m_commandQuality = DataQuality::Valid;
-    DataQuality m_slowQuality = DataQuality::Valid;
     quint32 m_invalidFields = 0;
 };
 

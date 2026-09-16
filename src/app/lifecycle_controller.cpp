@@ -157,8 +157,8 @@ bool LifecycleController::commandAllowed(Command cmd) const
 
 void LifecycleController::shutdown()
 {
-    // 应用正常退出: 清除 M42/M106-M111, 然后停止 M112 并断开串口 (spec §13).
-    // M100 在任何退出路径都不得自动清除.
+    // 应用正常退出: 清除 M42/M106-M111 并释放保持意图, 随后由网关 stop 停止轮询
+    // 并断开串口 (spec §13). M100 在任何退出路径都不得自动清除.
     if (m_coordinator)
         m_coordinator->logoutClear();
     if (m_window)
