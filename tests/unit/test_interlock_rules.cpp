@@ -131,10 +131,12 @@ void InterlockRulesTest::adjustWidthRangeChecks()
     QVERIFY(!InterlockRules::checkAdjustWidth(makeSnapshot(bit(bit(0,1),9), 0, 300, 200, 1280, 0), true, 300).allowed);
     QVERIFY(!InterlockRules::checkAdjustWidth(makeSnapshot(bit(bit(0,1),9), 0, 300, 200, 1280, 16), true, 300).allowed);
 
-    // D204*D220 out of 10-200000.
-    QVERIFY(!InterlockRules::checkAdjustWidth(makeSnapshot(bit(bit(0,1),9), 0, 300, 200, 1, 1), true, 300).allowed); // 1 < 10
-    QVERIFY(!InterlockRules::checkAdjustWidth(makeSnapshot(bit(bit(0,1),9), 0, 300, 200, 32767, 15), true, 300).allowed); // 491505 > 200000
-    QVERIFY(InterlockRules::checkAdjustWidth(makeSnapshot(bit(bit(0,1),9), 0, 300, 200, 1280, 15), true, 300).allowed); // 19200 ok
+    // PLC-HMI-005 D4: the obsolete D204*D220 10-200000 frequency product is
+    // not an interlock condition. Each field is validated against its own
+    // decoded range, so extreme products with in-range fields are allowed.
+    QVERIFY(InterlockRules::checkAdjustWidth(makeSnapshot(bit(bit(0,1),9), 0, 300, 200, 1, 1), true, 300).allowed);
+    QVERIFY(InterlockRules::checkAdjustWidth(makeSnapshot(bit(bit(0,1),9), 0, 300, 200, 32767, 15), true, 300).allowed);
+    QVERIFY(InterlockRules::checkAdjustWidth(makeSnapshot(bit(bit(0,1),9), 0, 300, 200, 1280, 15), true, 300).allowed);
 }
 
 void InterlockRulesTest::startPreconditions()

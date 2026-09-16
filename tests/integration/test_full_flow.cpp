@@ -348,11 +348,14 @@ void FullFlowTest::fullFlowResetAdjustAutoStartStop()
     QVERIFY(results.contains({Command::Reset, true}));
 
     // 配方调宽 300: D128 written, M43 pulse, converges on M44 + D130=300.
+    // D204 is pinned to 1280 so the pulse-based run keeps the documented 7 s
+    // duration: ceil(100 * 1280 / (15 * 1280)) = 7 s (PLC-HMI-005 D1/D2).
+    gw.model().writeRegister(kD204, 1280);
     QVERIFY(c->adjustWidth(300).accepted);
     QCOMPARE(gw.model().readRegister(kD128), quint16(300));
     gw.tick();
     QVERIFY(gw.lastSnapshot().m34()); // adjusting
-    for (int i = 0; i < 7; ++i) // ceil(100/15) = 7 s
+    for (int i = 0; i < 7; ++i) // ceil(100 * 1280 / 19200) = 7 s
         gw.tick();
     QVERIFY(gw.lastSnapshot().m44());
     QVERIFY(!gw.lastSnapshot().m45());
@@ -409,14 +412,14 @@ void FullFlowTest::dynamicTimeoutFault10()
     c->setRole(Role::Admin);
     homeReady(gw);
 
-    // Stall the motor: positioning never completes -> dynamic timeout.
+    // Stall the motor: positioning never completes -> fixed 30 s timeout.
     gw.model().setPositioningStall(true);
     QVERIFY(c->adjustWidth(300).accepted);
     gw.tick();
     QVERIFY(gw.lastSnapshot().m34());
 
-    // Timeout = ceil(100/15) + 5 = 12 s (spec §10.3.1).
-    for (int i = 0; i < 12; ++i)
+    // Fixed T6 K300 = 30 s (PLC-HMI-005 D2).
+    for (int i = 0; i < 30; ++i)
         gw.tick();
     QVERIFY(!gw.lastSnapshot().m34());
     QVERIFY(!gw.lastSnapshot().m44());
@@ -849,9 +852,11 @@ void FullFlowTest::applicationAdjustWidthConverges()
     QTRY_COMPARE_WITH_TIMEOUT(passwordSpy.count(), 1, 5000);
     QTRY_COMPARE_WITH_TIMEOUT(gw->model().readRegister(kD204), quint16(5000), 5000);
 
-    // Product validation uses the confirmed D220=15, so 20000*15 is rejected
-    // before a password verification or PLC write is attempted.
-    emit usersPage->d204WriteRequested(20000, QStringLiteral("s3cret!"));
+    // Range validation is per field: 20000 is now inside the decoded D204
+    // range, so the out-of-range value 40000 is used instead and must be
+    // rejected before a password verification or PLC write is attempted
+    // (PLC-HMI-005 D4).
+    emit usersPage->d204WriteRequested(40000, QStringLiteral("s3cret!"));
     QCOMPARE(passwordSpy.count(), 1);
     QCOMPARE(gw->model().readRegister(kD204), quint16(5000));
 
@@ -893,11 +898,14 @@ void FullFlowTest::applicationAdjustWidthConverges()
     // M43 pulse must be submitted through the revised port (the wiring under
     // test). Converges on M44 + D130 == 300.
     QSignalSpy resultSpy(coord, &ControlCoordinator::commandResult);
+    // D204 pinned so the composition-root run keeps the documented 7 s
+    // duration: ceil(100 * 1280 / (15 * 1280)) = 7 s (PLC-HMI-005 D1/D2).
+    gw->model().writeRegister(kD204, 1280);
     emit recipePage->applyAdjustRequested(300);
     QCOMPARE(gw->model().readRegister(kD128), quint16(300));
     gw->tick();
     QVERIFY(gw->lastSnapshot().m34()); // adjusting
-    for (int i = 0; i < 7; ++i) // ceil(100/15) = 7 s
+    for (int i = 0; i < 7; ++i) // ceil(100 * 1280 / 19200) = 7 s
         gw->tick();
     QVERIFY(gw->lastSnapshot().m44());
     QCOMPARE(gw->lastSnapshot().currentWidth(), quint16(300));

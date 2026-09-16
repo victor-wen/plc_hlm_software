@@ -39,6 +39,13 @@ public:
     OverviewField beltSpeed() const;        // D122 皮带速度 (Hz)
     OverviewField productionCount() const;  // D138 累计产量 (件)
 
+    // --- production count reliability (PLC-HMI-005 D4/F-08) -------------------
+    // D138/D139 累计产量 is produced by the PLC while the automatic width
+    // adjustment DMUL overwrites the adjacent registers, so the count is not
+    // trustworthy after automatic width adjustment. The page must always
+    // render this disclosure next to the value; it is never tooltip-only.
+    QString productionCountReliabilityText() const;
+
     // --- status flags (snapshot-confirmed only) -------------------------------
     bool online() const;
     bool modeKnown() const;

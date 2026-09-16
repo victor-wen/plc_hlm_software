@@ -112,8 +112,26 @@ void OverviewPage::buildLayout()
                                     QStringLiteral("调宽差值 (D210)")));
     rightColumn->addWidget(addField(QStringLiteral("beltSpeed"),
                                     QStringLiteral("皮带速度 (D122)")));
-    rightColumn->addWidget(addField(QStringLiteral("productionCount"),
-                                    QStringLiteral("累计产量 (D138)")));
+    // 累计产量 + always-visible reliability disclosure (PLC-HMI-005 D4/F-08):
+    // the count is not trustworthy after automatic width adjustment while the
+    // PLC DMUL overlap remains, so the disclosure is a real touch-readable
+    // label next to the value, never a tooltip.
+    QWidget *productionField = addField(QStringLiteral("productionCount"),
+                                        QStringLiteral("累计产量 (D138)"));
+    auto *productionLayout = qobject_cast<QVBoxLayout *>(productionField->layout());
+    m_productionCountLabel = new QLabel(productionField);
+    m_productionCountLabel->setObjectName(QStringLiteral("productionCountText"));
+    m_productionCountLabel->setMinimumHeight(48);
+    m_productionCountLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    productionLayout->addWidget(m_productionCountLabel);
+    m_productionDisclosure = new QLabel(m_pageModel.productionCountReliabilityText(),
+                                        productionField);
+    m_productionDisclosure->setObjectName(
+        QStringLiteral("productionCountDisclosure"));
+    m_productionDisclosure->setWordWrap(true);
+    m_productionDisclosure->setMinimumHeight(48); // touch-target-height text
+    productionLayout->addWidget(m_productionDisclosure);
+    rightColumn->addWidget(productionField);
     grid->addLayout(leftColumn, 0, 0);
     grid->addLayout(rightColumn, 0, 1);
     grid->setColumnStretch(0, 1);
@@ -155,6 +173,11 @@ ValueDisplay *OverviewPage::fieldDisplay(const QString &key) const
 QLabel *OverviewPage::latestAlarmLabel() const
 {
     return m_alarmLabel;
+}
+
+QLabel *OverviewPage::productionCountDisclosureLabel() const
+{
+    return m_productionDisclosure;
 }
 
 QString OverviewPage::latestAlarmText() const
@@ -221,6 +244,13 @@ void OverviewPage::refresh()
     const OverviewField production = m_pageModel.productionCount();
     m_displays[QStringLiteral("productionCount")]->setValue(
         production.text, QStringLiteral("件"), production.valid);
+    // Visible QLabel carries the value too so the count is not only custom
+    // paint, and the disclosure always accompanies it (PLC-HMI-005 D4).
+    m_productionCountLabel->setText(
+        production.valid
+            ? QStringLiteral("累计产量 %1 件").arg(production.text)
+            : QStringLiteral("累计产量 —"));
+    m_productionDisclosure->setText(m_pageModel.productionCountReliabilityText());
 
     // Latest alarm line.
     m_alarmLabel->setText(m_pageModel.latestAlarmText());

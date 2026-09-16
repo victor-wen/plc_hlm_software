@@ -47,29 +47,33 @@ constexpr quint16 kD204 = 204; // pulse per mm
 constexpr quint16 kD210 = 210; // target - current (signed 16-bit)
 constexpr quint16 kD212 = 212; // latched target of the current command
 constexpr quint16 kD213 = 213; // |target - current|
-constexpr quint16 kD214 = 214; // DIV numerator
-constexpr quint16 kD216 = 216; // DIV quotient
-constexpr quint16 kD218 = 218; // dynamic timeout seconds (10-360)
 constexpr quint16 kD220 = 220; // width speed (mm/s)
-constexpr quint16 kD222 = 222; // T6 preset in 100 ms units
 
 constexpr quint16 kHomeReturnSeconds = 2;
+
+// PLC-authoritative parity constants (PLC-HMI-005 D1/D2): the decoded PLC
+// derives D126/D127 from a fixed K1280 factor (never D204) and uses a fixed
+// T6 K300 width timeout independent of the pulse configuration.
+constexpr quint32 kFixedFrequencyFactor = 1280;
+constexpr quint16 kD220Max = 15;
+constexpr quint64 kFixedTimeoutTicks = 300; // T6 K300: 300 * 100 ms = 30 s
 
 } // namespace
 
 H3uSimulationModel::H3uSimulationModel(SimulationClock &clock)
     : m_clock(clock)
 {
-    // Defaults (spec §10.3.1): manual mode, current width 200, target 200,
-    // pulse per mm 1280, width speed 15 mm/s. D128 == D130 so an M43 command
-    // is invalid until the HMI writes a real target.
+    // PLC-authoritative defaults (PLC-HMI-005 D1): manual mode, current width
+    // 200, target 200, belt speed 5000, pulse per mm 128, width speed
+    // initialized to 20 and clamped to the effective 15. D128 == D130 so an
+    // M43 command is invalid until the HMI writes a real target.
     m_coils[kM1] = true; // manual mode
     m_regs[kD130] = 200;
     m_regs[kD128] = 200;
-    m_regs[kD122] = 1000;
-    m_regs[kD204] = 1280;
-    m_regs[kD220] = 15;
-    updateD126();
+    m_regs[kD122] = 5000;
+    m_regs[kD204] = 128;
+    m_regs[kD220] = 20; // clamped to 15 by clampD220()
+    clampD220();
     updateD210();
 }
 
@@ -125,8 +129,8 @@ void H3uSimulationModel::writeRegister(quint16 addr, quint16 value)
     m_regs[addr] = value;
     if (addr == kD128 || addr == kD130)
         updateD210();
-    if (addr == kD204 || addr == kD220)
-        updateD126();
+    if (addr == kD220)
+        clampD220(); // D126/D127 = D220 * fixed K1280
 }
 
 quint16 H3uSimulationModel::readRegister(quint16 addr) const
@@ -203,6 +207,20 @@ void H3uSimulationModel::setEstopReleaseStuck(bool stuck)
         m_coils[kM0] = true;
 }
 
+void H3uSimulationModel::abortWidthAdjust()
+{
+    if (!m_positioning && !m_coils[kM34])
+        return;
+    // Safe abort: keep the existing M45 failure indication without touching
+    // the latched fault code (an estop fault must not be overwritten).
+    m_coils[kM34] = false;
+    m_coils[kM44] = false;
+    m_coils[kM45] = true;
+    m_t6Elapsed = 0;
+    m_positioning = false;
+    m_remaining = 0;
+}
+
 void H3uSimulationModel::advance(quint64 seconds)
 {
     m_clock.advance(seconds);
@@ -219,22 +237,14 @@ void H3uSimulationModel::onM43RisingEdge()
     m_t6Elapsed = 0;
 
     const bool busy = m_coils[kM34];
-    updateM49();
+    // Decoded PLC start preconditions (PLC-HMI-005 D2): no M49 occupancy and
+    // no D128/D204/D220/D126 range gating beyond the fields' own decodes.
     const bool preconditions = m_coils[kM1] && m_coils[kM61] && !m_coils[kM3]
-        && !m_coils[kM0] && !m_coils[kM14] && !m_coils[kM50] && m_m49
-        && m_regs[kD128] >= 50 && m_regs[kD128] <= 400
-        && m_regs[kD204] >= 1 && m_regs[kD204] <= 32767
-        && m_regs[kD220] >= 1 && m_regs[kD220] <= 15
-        && readRegister32(kD126) >= 10 && readRegister32(kD126) <= 200000
+        && !m_coils[kM0] && !m_coils[kM14] && !m_coils[kM50]
         && m_regs[kD128] != m_regs[kD130];
 
     if (busy) {
-        // Width adjust while already adjusting: safe abort, no second run.
-        m_coils[kM45] = true;
-        m_coils[kM34] = false;
-        m_positioning = false;
-        m_remaining = 0;
-        m_t6Elapsed = 0;
+        abortWidthAdjust();
         return;
     }
 
@@ -250,27 +260,25 @@ void H3uSimulationModel::onM43RisingEdge()
     updateD210(); // D210 = D212 - D130 (signed 16-bit)
     m_regs[kD213] = quint16(qAbs(qint16(m_regs[kD210])));
 
-    // ceil(abs(diff) / speed) + 5 seconds (spec §10.3.1).
-    const quint16 speed = m_regs[kD220] > 0 ? m_regs[kD220] : 1;
-    const quint16 distance = m_regs[kD213];
-    m_regs[kD214] = quint16(distance + speed - 1); // numerator for ceil
-    m_regs[kD216] = quint16(m_regs[kD214] / speed);
-    quint32 timeout = quint32(m_regs[kD216]) + 5;
-    if (timeout < 10)
-        timeout = 10;
-    if (timeout > 360)
-        timeout = 360;
-    m_regs[kD218] = quint16(timeout);
-    m_regs[kD222] = quint16(timeout * 10); // T6 preset, 100 ms units
-
     // Pulse count = signed 16x16 MUL -> 32-bit, low word first.
     const qint32 pulses = qint32(qint16(m_regs[kD210])) * qint32(qint16(m_regs[kD204]));
     m_regs[kD136] = quint16(quint32(pulses) & 0xFFFF);
     m_regs[kD137] = quint16(quint32(pulses) >> 16);
 
+    // Ideal motion duration = pulse load / drive frequency:
+    // ceil(|D210| * D204 / (D220 * fixed K1280)) seconds. The 30 s T6 K300
+    // timeout is fixed and independent of this duration (PLC-HMI-005 D2).
+    const quint64 frequency = quint64(m_regs[kD220]) * kFixedFrequencyFactor;
+    if (frequency > 0) {
+        const quint64 pulseLoad = quint64(qAbs(qint32(qint16(m_regs[kD210]))))
+            * quint64(m_regs[kD204]);
+        m_remaining = (pulseLoad + frequency - 1) / frequency;
+    } else {
+        m_remaining = kFixedTimeoutTicks / 10; // D220 = 0: timeout-bound
+    }
+
     m_coils[kM34] = true;
     m_positioning = true;
-    m_remaining = m_regs[kD216]; // positioning duration = ceil(diff / speed)
     m_t6Elapsed = 0;
 }
 
@@ -334,32 +342,15 @@ void H3uSimulationModel::onM100Write(bool value)
         m_coils[kM14] = true;
         m_regs[kD110] = 1;
         m_coils[kM3] = false;
-        // Interlock M49 dropped: abort any in-flight positioning run without
-        // overwriting the fault code just latched above (spec §10.3.1).
-        if (m_positioning) {
-            m_coils[kM34] = false;
-            m_coils[kM44] = false;
-            m_coils[kM45] = true;
-            m_t6Elapsed = 0;
-            m_positioning = false;
-            m_remaining = 0;
-        }
+        // Abort any in-flight positioning run without overwriting the fault
+        // code just latched above (spec §10.3.1).
+        abortWidthAdjust();
     } else {
         // Release clears M0 only; the fault stays latched until M103.
         // A stuck physical estop keeps M0=1 despite the M100=0 release write.
         if (!m_estopReleaseStuck)
             m_coils[kM0] = false;
     }
-}
-
-// --- continuous interlock M49 (spec §10.3.1) --------------------------------
-
-void H3uSimulationModel::updateM49()
-{
-    // X10/X12 are physical inputs not modeled in the simulator (accepted
-    // design decision): M49 = M1 ∧ M61 ∧ ¬M3 ∧ ¬M0 ∧ ¬M14 ∧ ¬M50.
-    m_m49 = m_coils[kM1] && m_coils[kM61] && !m_coils[kM3] && !m_coils[kM0]
-        && !m_coils[kM14] && !m_coils[kM50];
 }
 
 // --- derived state -----------------------------------------------------------
@@ -378,10 +369,20 @@ void H3uSimulationModel::updateD210()
 
 void H3uSimulationModel::updateD126()
 {
-    // D126/D127 = D220 * D204 (32-bit frequency, low word first).
-    const quint32 freq = quint32(m_regs[kD220]) * quint32(m_regs[kD204]);
+    // D126/D127 = D220 * fixed K1280 (32-bit frequency, low word first).
+    // D204 is never part of this formula (PLC-HMI-005 D1).
+    const quint32 freq = quint32(m_regs[kD220]) * kFixedFrequencyFactor;
     m_regs[kD126] = quint16(freq & 0xFFFF);
     m_regs[kD127] = quint16(freq >> 16);
+}
+
+void H3uSimulationModel::clampD220()
+{
+    // The decoded PLC powers up at 20 and exposes the effective clamp of 15
+    // (PLC-HMI-005 D1); the same ceiling applies to raw register writes.
+    if (m_regs[kD220] > kD220Max)
+        m_regs[kD220] = kD220Max;
+    updateD126();
 }
 
 // --- time tick ---------------------------------------------------------------
@@ -409,21 +410,10 @@ void H3uSimulationModel::tick(quint64 seconds)
         }
     }
 
-    // Width adjustment progress and dynamic timeout (T6, 100 ms units).
+    // Width adjustment progress and the fixed T6 K300 (30 s) timeout.
     if (m_positioning) {
-        // Continuous safety interlock: recomputed every scan (spec §10.3.1).
-        updateM49();
         m_t6Elapsed += seconds * 10;
-        if (!m_m49) {
-            // Interlock lost while positioning: abort the run. The existing
-            // PLC fault code (e.g. estop = 1) must not be overwritten.
-            m_coils[kM34] = false;
-            m_coils[kM44] = false;
-            m_coils[kM45] = true;
-            m_t6Elapsed = 0;
-            m_positioning = false;
-            m_remaining = 0;
-        } else if (!m_stall && seconds >= m_remaining) {
+        if (!m_stall && seconds >= m_remaining) {
             // Normal completion (spec §10.3.1): D130 = latched target.
             // Checked before the timeout so completion wins in the same scan.
             m_coils[kM34] = false;
@@ -434,8 +424,8 @@ void H3uSimulationModel::tick(quint64 seconds)
             m_positioning = false;
             m_remaining = 0;
             m_t6Elapsed = 0;
-        } else if (m_t6Elapsed >= quint64(m_regs[kD222])) {
-            // Dynamic timeout (spec §10.3.1): M45, M14, D110 = 10.
+        } else if (m_t6Elapsed >= kFixedTimeoutTicks) {
+            // Fixed 30 s timeout (spec §10.3.1 T6 K300): M45, M14, D110 = 10.
             m_coils[kM34] = false;
             m_coils[kM44] = false;
             m_coils[kM45] = true;

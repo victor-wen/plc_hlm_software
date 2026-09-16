@@ -28,6 +28,13 @@ constexpr quint16 kM110 = 110; // light curtain bypass
 constexpr quint16 kM111 = 111; // door bypass
 constexpr quint16 kD128 = 128; // target width
 
+// Fixed PLC width-adjust timeout (T6 K300, spec §10.3): the decoded PLC fails
+// the adjustment 30 s after the M43 pulse, so the HMI defensive deadline is
+// hmi_timeout = plc_timeout + 3 s = 33 s, never an estimated-motion formula
+// that could expire before the PLC's own result (reviewer follow-up,
+// PLC-HMI-005 amendment 4).
+constexpr qint64 kPlcWidthAdjustTimeoutMs = 30'000;
+constexpr qint64 kAdjustTimeoutMs = kPlcWidthAdjustTimeoutMs + 3'000;
 // Start/stop defensive wait (spec §13: converge to the actual state).
 constexpr qint64 kStartStopTimeoutMs = 10'000;
 // Mode switch wait (spec §11.2: 模式切换等待 M1/M2).
@@ -214,10 +221,10 @@ ControlCoordinator::CommandResult ControlCoordinator::adjustWidth(quint16 target
         return {true, QString()};
     }
 
-    // Save the command context (spec §10.3 step 4).
+    // Save the command context (spec §10.3 step 4): the saved target is the
+    // authoritative result comparison (D130 == target); the removed estimated
+    // deadline consumed the start width and speed, so they are no longer saved.
     m_adjustTarget = targetWidth;
-    m_adjustStartWidth = s.fieldValid(SnapshotField::CurrentWidth) ? s.currentWidth() : 0;
-    m_adjustSpeed = s.fieldValid(SnapshotField::WidthSpeed) ? s.widthSpeed() : 0;
 
     m_adjustPhase = AdjustPhase::WaitTargetWrite;
     emit commandAccepted(Command::AdjustWidth);
@@ -236,13 +243,10 @@ ControlCoordinator::CommandResult ControlCoordinator::adjustWidth(quint16 target
         finishCommand(Command::AdjustWidth, false, QStringLiteral("M43 脉冲发送失败"));
         return {true, QString()};
     }
-    // hmi_timeout = plc_timeout + 3 (spec §10.3).
-    const qint32 diff = qAbs(qint32(m_adjustTarget.value_or(0))
-                             - qint32(m_adjustStartWidth.value_or(0)));
-    const qint32 speed = qMax<qint32>(1, m_adjustSpeed.value_or(1));
-    qint32 plc = (diff + speed - 1) / speed + 5;
-    plc = qBound<qint32>(10, plc, 360);
-    m_adjustDeadlineMs = m_nowMs() + (plc + 3) * 1000;
+    // hmi_timeout = plc_timeout + 3 (spec §10.3) with the authoritative fixed
+    // plc_timeout (T6 K300, 30 s): the defensive deadline must never expire
+    // before the PLC's own width-adjust result.
+    m_adjustDeadlineMs = m_nowMs() + kAdjustTimeoutMs;
     m_adjustTimeoutArmed = true;
     emitPending(Command::AdjustWidth);
     return {true, QString()};
@@ -685,8 +689,6 @@ void ControlCoordinator::onConnectionChanged(bool online)
         m_adjustPhase = AdjustPhase::Idle;
         m_adjustTimeoutArmed = false;
         m_adjustTarget.reset();
-        m_adjustStartWidth.reset();
-        m_adjustSpeed.reset();
         emit commandResult(Command::AdjustWidth, false, QStringLiteral("通讯中断"));
     }
     if (m_startPhase != StartPhase::Idle) {
@@ -876,8 +878,6 @@ void ControlCoordinator::finishCommand(Command cmd, bool ok, const QString &deta
         m_adjustPhase = AdjustPhase::Idle;
         m_adjustTimeoutArmed = false;
         m_adjustTarget.reset();
-        m_adjustStartWidth.reset();
-        m_adjustSpeed.reset();
         break;
     case Command::Start:
         m_startPhase = StartPhase::Idle;

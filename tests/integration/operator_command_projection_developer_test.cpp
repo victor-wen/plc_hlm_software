@@ -196,7 +196,8 @@ void OperatorCommandProjectionDeveloperTest::adjustTerminalVerdictIsNotOverridde
     emit page->applyAdjustRequested(300);
     QVERIFY(gw->model().readRegister(128) == quint16(300));
     gw->tick();
-    for (int i = 0; i < 14; ++i)
+    // Fixed T6 K300 width timeout: 30 s (PLC-HMI-005 D2), so tick past it.
+    for (int i = 0; i < 30; ++i)
         gw->tick();
 
     const OperatorCommandStatus terminal = app->shell()->operatorCommandStatus();

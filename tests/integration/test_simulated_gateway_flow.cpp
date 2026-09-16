@@ -60,7 +60,7 @@ private slots:
     void startPublishesSnapshotAndGoesOnline();
     void fullFlowResetAdjustAutoStartStop();
     void adjustPreconditionFailure();
-    void dynamicTimeoutFault10();
+    void fixedTimeoutFault10();
     void estopLatchesFault();
     void linkDownFreezesD140AndRejectsWrites();
     void linkDownRecoveryResumes();
@@ -139,7 +139,7 @@ void SimulatedGatewayFlowTest::startPublishesSnapshotAndGoesOnline()
     QCOMPARE(s.heartbeat(), quint16(0));
     QCOMPARE(s.currentWidth(), quint16(200));
     QCOMPARE(s.targetWidth(), quint16(200));
-    QCOMPARE(s.beltSpeed(), quint16(1000));
+    QCOMPARE(s.beltSpeed(), quint16(5000));
     QCOMPARE(s.overallQuality(), DataQuality::Valid);
     QVERIFY(s.fast_quality == DataQuality::Valid);
     QVERIFY(s.overall_age_ms >= 0);
@@ -161,7 +161,9 @@ void SimulatedGatewayFlowTest::fullFlowResetAdjustAutoStartStop()
     m_gw->tick();
     QVERIFY(!m_gw->lastSnapshot().m50()); // homed
 
-    // 调宽: target 300, M43 pulse.
+    // 调宽: target 300, M43 pulse. D204 is pinned to 1280 so the run keeps the
+    // documented 7 s duration: ceil(100 * 1280 / (15 * 1280)) = 7 s.
+    requireRegister(*m_gw, 204, 1280);
     requireRegister(*m_gw, 128, 300);
     requirePulse(*m_gw, 43);
     m_gw->tick();
@@ -169,7 +171,7 @@ void SimulatedGatewayFlowTest::fullFlowResetAdjustAutoStartStop()
     QVERIFY(!m_gw->lastSnapshot().m44());
     QVERIFY(!m_gw->lastSnapshot().m45());
 
-    // ceil(100 / 15) = 7 s to complete.
+    // ceil(100 * 1280 / 19200) = 7 s to complete.
     for (int i = 0; i < 7; ++i)
         m_gw->tick();
     QVERIFY(!m_gw->lastSnapshot().m34());
@@ -206,7 +208,7 @@ void SimulatedGatewayFlowTest::adjustPreconditionFailure()
     QVERIFY(!m_gw->lastSnapshot().m34());
 }
 
-void SimulatedGatewayFlowTest::dynamicTimeoutFault10()
+void SimulatedGatewayFlowTest::fixedTimeoutFault10()
 {
     m_gw->start();
     // Home return.
@@ -215,16 +217,20 @@ void SimulatedGatewayFlowTest::dynamicTimeoutFault10()
     m_gw->tick();
     QVERIFY(!m_gw->lastSnapshot().m50());
 
-    // Stall the motor: positioning never completes -> dynamic timeout.
+    // Stall the motor: positioning never completes -> fixed 30 s timeout.
     m_gw->model().setPositioningStall(true);
     requireRegister(*m_gw, 128, 300);
     requirePulse(*m_gw, 43);
     m_gw->tick();
     QVERIFY(m_gw->lastSnapshot().m34());
 
-    // Timeout = ceil(100 / 15) + 5 = 12 s (spec §10.3.1).
-    for (int i = 0; i < 12; ++i)
+    // Fixed T6 K300 = 30 s (PLC-HMI-005 D2): still adjusting after 29 s
+    // (the start tick above already counted 1 s).
+    for (int i = 0; i < 28; ++i)
         m_gw->tick();
+    QVERIFY(m_gw->lastSnapshot().m34());
+    QVERIFY(!m_gw->lastSnapshot().m45());
+    m_gw->tick();
     QVERIFY(!m_gw->lastSnapshot().m34());
     QVERIFY(!m_gw->lastSnapshot().m44());
     QVERIFY(m_gw->lastSnapshot().m45());
@@ -478,7 +484,9 @@ void SimulatedGatewayFlowTest::snapshotIsAtomicAndComplete()
     requirePulse(*m_gw, 103);
     m_gw->tick();
     m_gw->tick();
-    // Width adjust in progress.
+    // Width adjust in progress (D204 pinned to 1280: 7 s run, so M34 stays
+    // set after the first tick).
+    requireRegister(*m_gw, 204, 1280);
     requireRegister(*m_gw, 128, 300);
     requirePulse(*m_gw, 43);
     m_gw->tick();
@@ -500,7 +508,7 @@ void SimulatedGatewayFlowTest::snapshotIsAtomicAndComplete()
     QCOMPARE(s.targetWidth(), quint16(300));
     QCOMPARE(s.currentWidth(), quint16(200));
     QCOMPARE(s.widthFrequency(), quint32(15 * 1280));
-    QCOMPARE(s.pulsePerMm(), quint16(1280));
+    QCOMPARE(s.pulsePerMm(), quint16(1280)); // pinned below for the 7 s run
     QCOMPARE(s.widthSpeed(), quint16(15));
     QCOMPARE(s.widthDelta(), qint16(100));
     // Per-block quality/age and the independent D210 validity (D6).
@@ -521,7 +529,7 @@ void SimulatedGatewayFlowTest::snapshotIsAtomicAndComplete()
     QVERIFY(!s.m43());
     // §9: the simulator publishes an in-range default belt speed so the
     // complete snapshot is usable by the interactive --sim mode.
-    QCOMPARE(s.beltSpeed(), quint16(1000));
+    QCOMPARE(s.beltSpeed(), quint16(5000));
     QVERIFY(s.fieldValid(SnapshotField::BeltSpeed));
     QVERIFY(s.fieldValid(SnapshotField::TargetWidth));
     QVERIFY(s.fieldValid(SnapshotField::CurrentWidth));

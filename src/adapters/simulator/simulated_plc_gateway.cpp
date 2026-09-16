@@ -174,7 +174,14 @@ void SimulatedPlcGateway::tick()
         ++m_freezeTicks;
         if (m_freezeTicks >= kHeartbeatFreezeTicks) {
             m_offlineDueToFreeze = true;
+            // Offline convergence order (PLC-HMI-005 D5): the link loss is
+            // observable first, then accepted-but-unfinished submissions
+            // converge as communications lost (never replayed), and any
+            // in-flight width adjust is safely aborted so the model stays
+            // consistent for a post-recovery command.
             setOnline(false);
+            failPending(QStringLiteral("communications lost: command not replayed"));
+            m_model.abortWidthAdjust();
             return; // no snapshot while offline
         }
         publishSnapshot();

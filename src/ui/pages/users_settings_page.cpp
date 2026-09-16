@@ -909,16 +909,10 @@ void UsersSettingsPage::onWriteD122()
 void UsersSettingsPage::onWriteD220()
 {
     m_pageModel.setEditedD220(m_d220Spin->value());
-    const DeviceSnapshot &snapshot = m_model.snapshot();
-    if (!m_model.snapshotFresh()
-        || !snapshot.fieldValid(SnapshotField::PulsePerMm)) {
-        m_paramStatus->setText(
-            QStringLiteral("PLC 当前 D204 无效或已过期，无法校验参数组合"));
-        return;
-    }
-    // Validate against the confirmed PLC counterpart, not an editor default.
-    m_pageModel.setEditedD204(snapshot.pulsePerMm());
-    if (!m_pageModel.d220Valid() || !m_pageModel.productValid()) {
+    // Each parameter is validated independently against its own decoded PLC
+    // range; no D204 counterpart or frequency product is required
+    // (PLC-HMI-005 D4).
+    if (!m_pageModel.d220Valid()) {
         m_paramStatus->setText(m_pageModel.paramReasons().join(QStringLiteral("；")));
         return;
     }
@@ -930,16 +924,10 @@ void UsersSettingsPage::onWriteD220()
 void UsersSettingsPage::onWriteD204()
 {
     m_pageModel.setEditedD204(m_d204Spin->value());
-    const DeviceSnapshot &snapshot = m_model.snapshot();
-    if (!m_model.snapshotFresh()
-        || !snapshot.fieldValid(SnapshotField::WidthSpeed)) {
-        m_paramStatus->setText(
-            QStringLiteral("PLC 当前 D220 无效或已过期，无法校验参数组合"));
-        return;
-    }
-    // Validate against the confirmed PLC counterpart, not an editor default.
-    m_pageModel.setEditedD220(snapshot.widthSpeed());
-    if (!m_pageModel.d204Valid() || !m_pageModel.productValid()) {
+    // Each parameter is validated independently against its own decoded PLC
+    // range; no D220 counterpart or frequency product is required
+    // (PLC-HMI-005 D4).
+    if (!m_pageModel.d204Valid()) {
         m_paramStatus->setText(m_pageModel.paramReasons().join(QStringLiteral("；")));
         return;
     }

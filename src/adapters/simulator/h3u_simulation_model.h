@@ -8,10 +8,10 @@ namespace hlm {
 
 // Shared state model of the H3U PLC (spec §14.1). Simulates the control
 // behavior of spec §10.2-§10.6 and the corrected reference ladder of
-// §10.3.1: home return, width adjustment (M43/M34/M44/M45), dynamic
-// timeout, mode switching, start/stop, software estop and the D140
-// heartbeat. Time is injected via SimulationClock and advanced explicitly,
-// so all scenarios run deterministically.
+// §10.3.1: home return, width adjustment (M43/M34/M44/M45), the fixed T6
+// K300 (30 s) width timeout, mode switching, start/stop, software estop and
+// the D140 heartbeat. Time is injected via SimulationClock and advanced
+// explicitly, so all scenarios run deterministically.
 //
 // The model is a plain class (no QObject): it only holds state and reacts
 // to writes/advance calls. Both the in-process SimulatedPlcGateway (Task 6)
@@ -37,8 +37,13 @@ public:
     // a physical estop holding M0 despite the M100=0 release write).
     void setEstopReleaseStuck(bool stuck);
 
+    // Safe abort of an in-flight width-adjust run (M34/M44 cleared, M45 set,
+    // no late completion/timeout). Used by the software-estop path and by the
+    // gateway when the link converges offline (PLC-HMI-005 D5).
+    void abortWidthAdjust();
+
     // Advance simulated time by `seconds`, driving the D140 heartbeat,
-    // positioning progress, dynamic timeout and home return.
+    // positioning progress, the fixed 30 s width timeout and home return.
     void advance(quint64 seconds);
 
 private:
@@ -48,10 +53,12 @@ private:
     void onM101RisingEdge();
     void onM102RisingEdge();
     void onM100Write(bool value);
-    void updateM49();
     void updateM60();
     void updateD210();
     void updateD126();
+    // Clamp D220 to the decoded PLC-visible maximum (15) and refresh
+    // D126/D127 from it.
+    void clampD220();
     // PLC status words synthesized from the M-coils (single source of truth
     // shared by the in-process gateway and the standalone RTU server). HMI
     // access to D100/D103 is read-only (address table, spec §8.2).
@@ -73,11 +80,8 @@ private:
     // to them are ignored (see statusWord1/statusWord3).
     quint16 m_regs[224] = {};
 
-    // Continuous safety interlock during width adjustment (spec §10.3.1 M49).
-    bool m_m49 = false;
-
     // Positioning progress: remaining seconds of the current run and the
-    // T6 100 ms timer accumulator (preset D222).
+    // fixed T6 K300 (30 s) timer accumulator in 100 ms units.
     quint64 m_remaining = 0;
     quint64 m_t6Elapsed = 0;
     bool m_positioning = false;

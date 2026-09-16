@@ -140,9 +140,9 @@ private slots:
     // --- model: D122 range (100-20000) ----------------------------------------
     void d122RangeValidation();
 
-    // --- model: D204/D220 and product validation (spec §10.3) -----------------
-    void d204D220ProductValidation();
-    void parameterProductUsesSnapshotCounterpart();
+    // --- model: D204/D220 independent validation (PLC-HMI-005 D4) ------------
+    void d204D220IndependentValidation();
+    void parameterWriteValidatesEachFieldIndependently();
 
     // --- model: serial config validation (spec §8.1) --------------------------
     void serialConfigValidation();
@@ -348,9 +348,9 @@ void UsersSettingsPageTest::d122RangeValidation()
         QStringLiteral("D122 皮带速度需在 100-20000 Hz 之间")));
 }
 
-// --- model: D204/D220 and product validation -------------------------------------------
+// --- model: D204/D220 independent validation --------------------------------------------
 
-void UsersSettingsPageTest::d204D220ProductValidation()
+void UsersSettingsPageTest::d204D220IndependentValidation()
 {
     ShellModel model;
     UsersSettingsModel m(model);
@@ -375,33 +375,33 @@ void UsersSettingsPageTest::d204D220ProductValidation()
     m.setEditedD220(16);
     QVERIFY(!m.d220Valid());
 
-    // 乘积 10 <= D204*D220 <= 200000 (DDRVI 频率范围, spec §10.3/§11.3).
+    // PLC-HMI-005 D4: each field is validated independently against its own
+    // decoded PLC range; the obsolete D204*D220 10-200000 product gate is
+    // removed (the decoded PLC validates no such combination).
     m.setEditedD204(1);
-    m.setEditedD220(1); // 1*1=1 < 10
-    QVERIFY(!m.productValid());
-    QVERIFY(m.paramReasons().contains(
-        QStringLiteral("D204×D220 需在 10-200000 之间")));
-
-    m.setEditedD204(1280);
-    m.setEditedD220(2); // 2560
-    QVERIFY(m.productValid());
+    m.setEditedD220(1); // 1*1=1: previously rejected by the product gate
+    QVERIFY(m.d204Valid());
+    QVERIFY(m.d220Valid());
+    QVERIFY(m.paramReasons().isEmpty());
 
     m.setEditedD204(32767);
-    m.setEditedD220(15); // 491505 > 200000
-    QVERIFY(!m.productValid());
+    m.setEditedD220(15); // 491505: previously rejected by the product gate
+    QVERIFY(m.paramReasons().isEmpty());
 
-    // 边界: 10 和 200000 都接受.
-    m.setEditedD204(5);
-    m.setEditedD220(2); // 10
-    QVERIFY(m.productValid());
-    m.setEditedD204(100000);
-    m.setEditedD220(2); // 200000
-    QVERIFY(m.productValid());
+    // Each field still reports its own range reason.
+    m.setEditedD204(32768);
+    QVERIFY(m.paramReasons().contains(
+        QStringLiteral("D204 脉冲当量需在 1-32767 脉冲/mm 之间")));
+    m.setEditedD204(128); // valid: no cross-field reason may appear
+    m.setEditedD220(15);
+    QVERIFY(m.paramReasons().isEmpty());
 }
 
 // --- model: serial config validation -----------------------------------------------------
 
-void UsersSettingsPageTest::parameterProductUsesSnapshotCounterpart()
+// --- page: each parameter validates only its own field -----------------------------------
+
+void UsersSettingsPageTest::parameterWriteValidatesEachFieldIndependently()
 {
     ShellModel model;
     UsersSettingsPage page(model);
@@ -411,21 +411,30 @@ void UsersSettingsPageTest::parameterProductUsesSnapshotCounterpart()
     d.widthSpeed = 15;
     model.updateSnapshot(DeviceSnapshot(d));
 
-    // The editor default is D220=2, but the confirmed PLC value is 15.
-    // D204=20000 would produce 300000 and must be rejected before re-auth.
+    // PLC-HMI-005 D4: D204=20000 is inside the decoded 1-32767 range. The
+    // removed product gate used to reject 20000*15=300000 before re-auth; now
+    // the write reaches the administrator confirmation dialog and no product
+    // reason is produced.
     page.d204Spin()->setValue(20000);
     clickAt(page.writeD204Button());
-    QVERIFY(page.findChild<AdminPasswordDialog *>() == nullptr);
-    QVERIFY(page.paramStatusText().contains(QStringLiteral("D204×D220")));
+    QVERIFY2(page.findChild<AdminPasswordDialog *>() != nullptr,
+             "an in-range D204 write must reach the re-auth dialog");
+    QVERIFY(!page.paramStatusText().contains(QStringLiteral("D204×D220")));
+    QVERIFY(!page.paramStatusText().contains(QStringLiteral("乘积")));
 
-    d = validSnapshotData();
-    d.pulsePerMm = 32767;
-    model.updateSnapshot(DeviceSnapshot(d));
+    // D220=15 is inside 1-15 and is dispatched without consulting the D204
+    // snapshot counterpart.
     QSignalSpy writeSpy(&page, &UsersSettingsPage::writeParameterRequested);
     page.d220Spin()->setValue(15);
     clickAt(page.writeD220Button());
-    QCOMPARE(writeSpy.count(), 0);
-    QVERIFY(page.paramStatusText().contains(QStringLiteral("D204×D220")));
+    QCOMPARE(writeSpy.count(), 1);
+
+    // Each editor enforces its own decoded range at the widget level; the
+    // model-level ranges are covered by d204D220IndependentValidation.
+    QCOMPARE(page.d204Spin()->minimum(), 1);
+    QCOMPARE(page.d204Spin()->maximum(), 32767);
+    QCOMPARE(page.d220Spin()->minimum(), 1);
+    QCOMPARE(page.d220Spin()->maximum(), 15);
 }
 
 void UsersSettingsPageTest::serialConfigValidation()

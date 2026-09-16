@@ -418,6 +418,16 @@ target_link_libraries(test_visible_reasons_developer PRIVATE
 )
 add_test(NAME visible_reasons_developer COMMAND test_visible_reasons_developer)
 
+# --- PLC-HMI-005: PLC-authoritative simulator parity -------------------------
+# QTEST_GUILESS_MAIN target (no QApplication): no offscreen entry needed.
+
+add_executable(test_plc_hmi_005_simulator_parity plc_hmi_005_simulator_parity_test.cpp)
+target_link_libraries(test_plc_hmi_005_simulator_parity PRIVATE
+    hlm_simulator
+    Qt6::Test
+)
+add_test(NAME plc_hmi_005_simulator_parity COMMAND test_plc_hmi_005_simulator_parity)
+
 set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page control_panel operator_command_lifecycle command_status_projection command_feedback_pages operator_lifecycle_developer recipe_editor_state recipe_result_feedback recipe_editor_developer serial_settings_page visible_disabled_reasons visible_reasons_developer PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )

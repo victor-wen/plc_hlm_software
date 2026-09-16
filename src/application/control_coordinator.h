@@ -139,10 +139,11 @@ public:
     bool adjustInProgress() const { return m_adjustPhase != AdjustPhase::Idle; }
     bool startInProgress() const { return m_startPhase != StartPhase::Idle; }
     bool stopInProgress() const { return m_stopPhase != StopPhase::Idle; }
-    // Saved command context (spec §10.3 step 4).
+    // Saved command context (spec §10.3 step 4): the D130 == target result
+    // comparison. The start width/speed are no longer saved because the
+    // defensive deadline is now the fixed PLC timeout (+3 s), not an
+    // estimated-motion formula.
     std::optional<quint16> adjustTarget() const { return m_adjustTarget; }
-    std::optional<quint16> adjustStartWidth() const { return m_adjustStartWidth; }
-    std::optional<quint16> adjustSpeed() const { return m_adjustSpeed; }
 
     // --- config -------------------------------------------------------------
     void setResetTimeoutSec(int sec); // 30-600 (spec §10.2)
@@ -237,10 +238,8 @@ private:
     StartPhase m_startPhase = StartPhase::Idle;
     StopPhase m_stopPhase = StopPhase::Idle;
     std::optional<quint16> m_adjustTarget;
-    std::optional<quint16> m_adjustStartWidth;
-    std::optional<quint16> m_adjustSpeed;
     qint64 m_resetDeadlineMs = 0; // clock time of the reset timeout
-    qint64 m_adjustDeadlineMs = 0;
+    qint64 m_adjustDeadlineMs = 0; // fixed PLC width timeout + 3 s (spec §10.3)
     qint64 m_startDeadlineMs = 0;
     qint64 m_stopDeadlineMs = 0;
     bool m_resetTimeoutArmed = false;

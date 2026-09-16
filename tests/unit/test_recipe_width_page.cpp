@@ -35,7 +35,7 @@ namespace {
 
 // Fresh, ready-to-adjust snapshot: manual (M1), homed (M9), not running,
 // no estop/fault/homing, M34/M44/M45 clear, D128=200, D130=150, D204=1280,
-// D220=15 (product 19200 in 10-200000).
+// D220=15 (both fields in their decoded ranges).
 DeviceSnapshotData validSnapshotData()
 {
     DeviceSnapshotData d;
@@ -217,13 +217,16 @@ void RecipeWidthPageTest::applyRejectedOnInterlockReasons()
     QVERIFY(m.applyUnmetReasons().contains(
         QStringLiteral("设备正在运行, 请先停止")));
 
-    // D204×D220 product out of range (1×1=1 < 10): reason shown.
-    DeviceSnapshotData badFreq = validSnapshotData();
-    badFreq.pulsePerMm = 1; // D204
-    badFreq.widthSpeed = 1; // D220
-    model.updateSnapshot(DeviceSnapshot(badFreq));
-    QVERIFY(!m.canApply());
-    QVERIFY(m.applyUnmetReasons().contains(
+    // PLC-HMI-005 D4: the obsolete D204*D220 10-200000 product interlock is
+    // removed; each field is validated by its own decoded range only. D204=1
+    // and D220=1 are both individually valid, so the apply is allowed.
+    DeviceSnapshotData lowPulse = validSnapshotData();
+    lowPulse.pulsePerMm = 1; // D204 (in 1-32767)
+    lowPulse.widthSpeed = 1; // D220 (in 1-15)
+    model.updateSnapshot(DeviceSnapshot(lowPulse));
+    QVERIFY2(m.canApply(),
+             "an extreme D204/D220 product must not gate the adjust command");
+    QVERIFY(!m.applyUnmetReasons().contains(
         QStringLiteral("D204×D220 需在 10-200000 之间")));
 
     // Adjusting (M34=1): 禁止再次应用 (spec §10.3 step 6).

@@ -7,7 +7,8 @@
 // - Target latch: D128 changed during positioning does not affect the run,
 //   D130 ends at the latched value.
 // - SUB/MUL must not overwrite the D138/D139 production count.
-// - Dynamic timeout (10s / 360s clamp boundaries).
+// - Fixed T6 K300 width timeout (30 s), independent of the pulse load
+//   (PLC-HMI-005 D2: no dynamic timeout, no M49 dependency).
 // - Home-return faults 8/9.
 // - Width-adjust timeout fault 10 (M45, M14, D110=10).
 // - No M112 watchdog semantics (PLC-HMI-003 D3): writing coil 112 never
@@ -48,8 +49,8 @@ private slots:
     void m43NeverBothM44AndM45();
     void targetLatchDuringPositioning();
     void subMulDoesNotOverwriteProduction();
-    void dynamicTimeoutLowerBound();
-    void dynamicTimeoutUpperBound();
+    void fixedTimeoutIsThirtySeconds();
+    void fixedTimeoutIndependentOfPulseLoad();
     void homeReturnFault8();
     void homeReturnFault9();
     void widthAdjustTimeoutFault10();
@@ -62,7 +63,7 @@ private slots:
     void stopClearsRunning();
     void d140IncrementsAndWraps();
     void m103ClearsWidthResults();
-    void d126IsSpeedTimesPulsePerMm();
+    void d126IsSpeedTimesFixedK1280();
     void d210SignedDelta();
     void readOnlyStatusWordsIgnoreRegisterWrites();
 };
@@ -201,41 +202,67 @@ void H3uSimulationModelTest::subMulDoesNotOverwriteProduction()
     m.writeCoil(43, true);
     m.writeCoil(43, false);
 
-    // D136/D137 = diff * D204 = 100 * 1280 = 128000 (signed 32-bit).
-    QCOMPARE(m.readRegister32(136), quint32(128000));
+    // D136/D137 = diff * D204 = 100 * 128 = 12800 (signed 32-bit). D204 is the
+    // PLC-authoritative default 128 (PLC-HMI-005 D1).
+    QCOMPARE(m.readRegister32(136), quint32(12800));
     m.advance(7);
-    QCOMPARE(m.readRegister32(136), quint32(128000));
+    QCOMPARE(m.readRegister32(136), quint32(12800));
     // D138/D139 production count untouched by SUB/MUL.
     QCOMPARE(m.readRegister32(138), quint32(12345));
 }
 
-void H3uSimulationModelTest::dynamicTimeoutLowerBound()
+void H3uSimulationModelTest::fixedTimeoutIsThirtySeconds()
 {
     SimulationClock clock;
     H3uSimulationModel m(clock);
     homeReady(m);
     m.writeRegister(220, 15);
     m.writeRegister(128, 201); // diff = 1
+    m.setPositioningStall(true); // motor never reaches position
     m.writeCoil(43, true);
     m.writeCoil(43, false);
-    // ceil(1/15) = 1 -> 1 + 5 = 6 -> clamp to 10.
-    QCOMPARE(m.readRegister(218), quint16(10));
-    QCOMPARE(m.readRegister(222), quint16(100)); // 10 * 10 (100 ms units)
+    QVERIFY(m.readCoil(34));
+
+    // PLC-HMI-005 D2: fixed T6 K300 = 30 s. The removed dynamic-timeout
+    // registers stay unwritten.
+    QCOMPARE(m.readRegister(214), quint16(0)); // former DIV numerator
+    QCOMPARE(m.readRegister(216), quint16(0)); // former DIV quotient
+    QCOMPARE(m.readRegister(218), quint16(0)); // former dynamic seconds
+    QCOMPARE(m.readRegister(222), quint16(0)); // former T6 preset
+
+    m.advance(29); // 29 s: within the fixed window
+    QVERIFY(m.readCoil(34));
+    QVERIFY(!m.readCoil(45));
+    m.advance(1); // 30 s: fixed timeout fires
+    QVERIFY(!m.readCoil(34));
+    QVERIFY(m.readCoil(45));
+    QVERIFY(m.readCoil(14));
+    QCOMPARE(m.readRegister(110), quint16(10));
 }
 
-void H3uSimulationModelTest::dynamicTimeoutUpperBound()
+void H3uSimulationModelTest::fixedTimeoutIndependentOfPulseLoad()
 {
+    // The 30 s window is fixed: an extreme D204/D220 pulse load times out at
+    // the same 30 s as the baseline (PLC-HMI-005 D2, no dynamic scaling).
     SimulationClock clock;
     H3uSimulationModel m(clock);
     homeReady(m);
-    m.writeRegister(130, 0); // extreme start width for the clamp test
-    m.writeRegister(220, 1);
-    m.writeRegister(128, 400); // diff = 400
+    m.writeRegister(204, 32767);
+    m.writeRegister(220, 15);
+    m.writeRegister(128, 400); // diff = 200 from D130 = 200
+    m.setPositioningStall(true);
     m.writeCoil(43, true);
     m.writeCoil(43, false);
-    // ceil(400/1) = 400 -> 405 -> clamp to 360.
-    QCOMPARE(m.readRegister(218), quint16(360));
-    QCOMPARE(m.readRegister(222), quint16(3600));
+    QVERIFY(m.readCoil(34));
+
+    m.advance(29);
+    QVERIFY(m.readCoil(34));
+    QVERIFY(!m.readCoil(45));
+    m.advance(1);
+    QVERIFY(!m.readCoil(34));
+    QVERIFY(m.readCoil(45));
+    QVERIFY(m.readCoil(14));
+    QCOMPARE(m.readRegister(110), quint16(10));
 }
 
 void H3uSimulationModelTest::homeReturnFault8()
@@ -276,8 +303,11 @@ void H3uSimulationModelTest::widthAdjustTimeoutFault10()
     m.setPositioningStall(true); // motor never reaches position
     m.writeCoil(43, true);
     m.writeCoil(43, false);
-    QCOMPARE(m.readRegister(218), quint16(12)); // ceil(100/15)+5 = 12
-    m.advance(12);
+    // Fixed T6 K300 timeout: fault 10 after 30 s (PLC-HMI-005 D2).
+    m.advance(29);
+    QVERIFY(m.readCoil(34));
+    QVERIFY(!m.readCoil(45));
+    m.advance(1);
     QVERIFY(!m.readCoil(34));
     QVERIFY(!m.readCoil(44));
     QVERIFY(m.readCoil(45));
@@ -318,14 +348,14 @@ void H3uSimulationModelTest::completionBeatsTimeoutInSameTick()
     H3uSimulationModel m(clock);
     homeReady(m);
     m.writeRegister(220, 15);
-    m.writeRegister(128, 300); // 7 s run, 12 s timeout
+    m.writeRegister(128, 300); // pulse-based run, fixed 30 s timeout
     m.writeCoil(43, true);
     m.writeCoil(43, false);
     QVERIFY(m.readCoil(34));
 
-    // One advance spanning both completion (7 s) and timeout (12 s): the
-    // normal completion must win (spec §10.3.1).
-    m.advance(20);
+    // One advance spanning both the motion completion and the fixed 30 s
+    // timeout: the normal completion must win (spec §10.3.1).
+    m.advance(31);
     QVERIFY(m.readCoil(44));
     QVERIFY(!m.readCoil(45));
     QVERIFY(!m.readCoil(14));
@@ -486,12 +516,16 @@ void H3uSimulationModelTest::m103ClearsWidthResults()
     QVERIFY(m.readCoil(50)); // home return restarted
 }
 
-void H3uSimulationModelTest::d126IsSpeedTimesPulsePerMm()
+void H3uSimulationModelTest::d126IsSpeedTimesFixedK1280()
 {
     SimulationClock clock;
     H3uSimulationModel m(clock);
     m.writeRegister(220, 15);
     m.writeRegister(204, 1280);
+    QCOMPARE(m.readRegister32(126), quint32(15 * 1280));
+    // D126/D127 always use the fixed K1280 factor; a D204 write must not
+    // change the frequency (PLC-HMI-005 D1).
+    m.writeRegister(204, 300);
     QCOMPARE(m.readRegister32(126), quint32(15 * 1280));
 }
 

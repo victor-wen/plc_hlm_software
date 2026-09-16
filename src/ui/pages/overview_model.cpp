@@ -59,6 +59,11 @@ OverviewField OverviewModel::productionCount() const
                  quint8(SnapshotField::Heartbeat)); // D138 (no range check)
 }
 
+QString OverviewModel::productionCountReliabilityText() const
+{
+    return QStringLiteral("自动调宽后该计数可能不可靠（PLC DMUL 覆盖 D138/D139）");
+}
+
 bool OverviewModel::online() const
 {
     return m_model.online();

@@ -347,7 +347,12 @@ void OperatorCommandApplicationTest::adjustTimeoutProjectsToShellAsTerminalFailu
     QVERIFY(gw->model().readRegister(128) == quint16(300)); // D128 written
     gw->tick();
 
-    for (int i = 0; i < 14; ++i)
+    // PLC-HMI-005 parity supersession: the simulator now reports the stalled
+    // width-adjust failure through the fixed 30 s (T6 K300) timeout instead of
+    // the previous short dynamic window, so the injected tick clock must be
+    // driven past the timeout before the shell can project a terminal state.
+    // No assertion below is changed.
+    for (int i = 0; i < 40; ++i)
         gw->tick();
 
     const OperatorCommandStatus terminal = app->shell()->operatorCommandStatus();

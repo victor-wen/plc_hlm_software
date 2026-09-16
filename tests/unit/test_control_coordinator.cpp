@@ -32,6 +32,7 @@ constexpr quint16 kM109 = 109;
 constexpr quint16 kM110 = 110;
 constexpr quint16 kM111 = 111;
 constexpr quint16 kD128 = 128;
+constexpr quint16 kD204 = 204;
 
 quint64 nextRequestId()
 {
@@ -117,6 +118,7 @@ private slots:
 
     // --- timeout convergence -------------------------------------------------
     void adjustTimeoutConvergesToActualState();
+    void adjustDefensiveDeadlineIsPlcTimeoutPlusThreeSeconds();
     void startTimeoutConvergesToFailure();
     void stopTimeoutConvergesToFailure();
     void modeSwitchConvergesOnM1M2();
@@ -521,14 +523,18 @@ void ControlCoordinatorTest::adjustWidthWritesD128ThenPulsesM43()
     c->setRole(Role::Admin);
     homeReady(gw);
 
+    // D204 pinned to 1280 so the pulse-based run takes 7 s
+    // (ceil(100 * 1280 / (15 * 1280))) and stays in progress after one tick.
+    gw.model().writeRegister(kD204, 1280);
     QVERIFY(c->adjustWidth(300).accepted);
     QCOMPARE(gw.model().readRegister(kD128), quint16(300)); // D128 written
     gw.tick();
     QVERIFY(gw.lastSnapshot().m34()); // adjusting
     QVERIFY(c->adjustInProgress());
     QCOMPARE(c->adjustTarget().value_or(0), quint16(300));
-    QCOMPARE(c->adjustStartWidth().value_or(0), quint16(200));
-    QCOMPARE(c->adjustSpeed().value_or(0), quint16(15));
+    // The saved start width/speed were consumed only by the removed
+    // estimated-motion deadline (PLC-HMI-005 amendment 4); the result
+    // comparison uses the target only.
 }
 
 void ControlCoordinatorTest::adjustWidthSuccessConvergesOnM44()
@@ -550,11 +556,14 @@ void ControlCoordinatorTest::adjustWidthSuccessConvergesOnM44()
                 }
             });
 
+    // D204 pinned to 1280: 7 s run (ceil(100*1280/(15*1280))), so the first
+    // tick must not report success.
+    gw.model().writeRegister(kD204, 1280);
     QVERIFY(c->adjustWidth(300).accepted);
     gw.tick(); // M34=1
     QVERIFY(!result); // no optimistic success
 
-    // ceil(100/15) = 7 s to complete.
+    // ceil(100 * 1280 / (15 * 1280)) = 7 s to complete.
     for (int i = 0; i < 7; ++i)
         gw.tick();
     QVERIFY(gw.lastSnapshot().m44());
@@ -589,8 +598,8 @@ void ControlCoordinatorTest::adjustWidthFailureConvergesOnM45()
     gw.tick();
     QVERIFY(c->adjustInProgress());
 
-    // Timeout = ceil(100/15) + 5 = 12 s.
-    for (int i = 0; i < 12; ++i)
+    // Fixed T6 K300 timeout: 30 s (PLC-HMI-005 D2).
+    for (int i = 0; i < 30; ++i)
         gw.tick();
     QVERIFY(gw.lastSnapshot().m45());
     QVERIFY(!gw.lastSnapshot().m44());
@@ -634,6 +643,7 @@ void ControlCoordinatorTest::adjustWidthRejectedWhenAdjusting()
     c->setRole(Role::Admin);
     homeReady(gw);
 
+    gw.model().writeRegister(kD204, 1280); // pin the 7 s run
     QVERIFY(c->adjustWidth(300).accepted);
     gw.tick();
     QVERIFY(gw.lastSnapshot().m34());
@@ -1212,19 +1222,67 @@ void ControlCoordinatorTest::adjustTimeoutConvergesToActualState()
                 }
             });
 
-    // Stall: the PLC will time out on its own (12 s). The HMI defensive
-    // timeout (plc_timeout + 3 = 15 s) must not fire first, and the result
-    // must converge to the actual M45 state.
+    // Stall: the PLC times out on its own after the fixed 30 s (T6 K300).
+    // The HMI defensive timeout must not fire first, and the result must
+    // converge to the actual M45 state.
     gw.model().setPositioningStall(true);
     QVERIFY(c->adjustWidth(300).accepted);
     gw.tick();
     QVERIFY(c->adjustInProgress());
 
-    for (int i = 0; i < 12; ++i)
+    for (int i = 0; i < 30; ++i)
         gw.tick();
     QVERIFY(gw.lastSnapshot().m45());
     QVERIFY(!result); // converged to failure
     QVERIFY(!c->adjustInProgress());
+}
+
+// The defensive adjust deadline is the authoritative PLC timeout + 3 s
+// (hmi_timeout = plc_timeout + 3, spec §10.3) with the fixed T6 K300 30 s
+// width timeout (PLC-HMI-005 amendment 4): 33 s. A valid in-flight adjustment
+// must never be misreported as timed out before the PLC's own 30 s result, and
+// the deadline must still converge a flow whose pulse was lost (no PLC result
+// will ever arrive).
+void ControlCoordinatorTest::adjustDefensiveDeadlineIsPlcTimeoutPlusThreeSeconds()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinatorNoPulse(gw, now));
+    c->setRole(Role::Admin);
+    homeReady(gw);
+
+    bool result = true;
+    QString detail;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &d) {
+                if (cmd == Command::AdjustWidth) {
+                    result = ok;
+                    detail = d;
+                }
+            });
+
+    // The M43 pulse never reaches the PLC (no-op transport), so no PLC result
+    // can arrive: only the HMI defensive deadline converges the flow.
+    QVERIFY(c->adjustWidth(300).accepted);
+    gw.tick();
+    QVERIFY(c->adjustInProgress());
+
+    // 32 s: short of plc_timeout + 3 -> the deadline must not have fired.
+    now += 32'000;
+    gw.tick();
+    QVERIFY(c->adjustInProgress());
+    QVERIFY2(detail.isEmpty(), "no terminal detail before the 33 s deadline");
+
+    // 33 s: the deadline fires exactly once with the terminal timeout failure.
+    now += 1'000;
+    gw.tick();
+    QVERIFY(!c->adjustInProgress());
+    QVERIFY(!result);
+    QVERIFY(detail.contains(QStringLiteral("超时")));
+
+    gw.tick();
+    QVERIFY(!result); // exactly one terminal result, never re-reported
 }
 
 // Start: M3 never becomes 1 -> HMI defensive timeout converges to failure,

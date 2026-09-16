@@ -45,9 +45,8 @@ InterlockResult InterlockRules::checkAdjustWidth(const DeviceSnapshot &s, bool o
     add(r.unmet, s.fieldValid(SnapshotField::WidthSpeed) && s.widthSpeed() >= 1
             && s.widthSpeed() <= 15,
         QStringLiteral("调宽速度 D220 需在 1-15 之间"));
-    const quint32 freq = quint32(s.pulsePerMm()) * quint32(s.widthSpeed());
-    add(r.unmet, freq >= 10 && freq <= 200000,
-        QStringLiteral("D204×D220 需在 10-200000 之间"));
+    // No D204*D220 frequency-product interlock: the decoded PLC validates each
+    // field independently (PLC-HMI-005 D4).
     r.allowed = r.unmet.isEmpty();
     return r;
 }

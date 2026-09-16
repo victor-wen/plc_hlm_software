@@ -89,8 +89,6 @@ public:
     bool d204Valid() const;
     // D220 调宽速度 1-15.
     bool d220Valid() const;
-    // 10 <= D204*D220 <= 200000 (DDRVI 频率范围, spec §10.3/§11.3).
-    bool productValid() const;
     // All parameter validation reasons (empty when everything is valid).
     QStringList paramReasons() const;
 

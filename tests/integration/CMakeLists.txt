@@ -185,3 +185,18 @@ add_test(NAME restricted_routing_developer COMMAND test_restricted_routing_devel
 set_tests_properties(restricted_routing_developer PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )
+
+# --- PLC-HMI-005: authoritative values + reliability disclosure --------------
+
+add_executable(test_plc_hmi_005_authoritative_values plc_hmi_005_authoritative_values_test.cpp)
+target_link_libraries(test_plc_hmi_005_authoritative_values PRIVATE
+    hlm_app_core
+    hlm_simulator
+    hlm_sqlite
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME plc_hmi_005_authoritative_values COMMAND test_plc_hmi_005_authoritative_values)
+set_tests_properties(plc_hmi_005_authoritative_values PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
+)

@@ -34,6 +34,7 @@ constexpr quint16 kM106 = 106;
 constexpr quint16 kM109 = 109;
 constexpr quint16 kM110 = 110;
 constexpr quint16 kD128 = 128;
+constexpr quint16 kD204 = 204; // pulse per mm (adjust-run timing fixture)
 
 quint64 nextRequestId()
 {
@@ -272,6 +273,15 @@ void OperatorCommandLifecycleTest::duplicateAdjustRejectedVisibly()
     std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
     c->setRole(Role::Admin);
     homeReady(gw);
+
+    // PLC-HMI-005 parity supersession: with the corrected authoritative D204
+    // default (128) this 100 mm adjust completes almost immediately, leaving no
+    // in-flight adjust to duplicate. Pin the previously assumed pulse density
+    // (1280 pulses/mm, a valid decoded D204) through the public model seam so
+    // the run spans several seconds and the duplicate rejection is still
+    // exercised while the adjust is genuinely in progress. No assertion below
+    // is changed.
+    gw.model().writeRegister(kD204, 1280);
 
     QSignalSpy rejected(c.get(), &ControlCoordinator::commandRejected);
 
@@ -634,6 +644,14 @@ void OperatorCommandLifecycleTest::linkLossConvergesAdjustToTerminal()
     std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
     c->setRole(Role::Admin);
     homeReady(gw);
+
+    // PLC-HMI-005 parity supersession: with the corrected authoritative D204
+    // default (128) this 100 mm adjust completes almost immediately, so the
+    // link loss landed after a success instead of converging a pending adjust.
+    // Pin the previously assumed pulse density (1280 pulses/mm, a valid decoded
+    // D204) through the public model seam so the adjust is still in flight when
+    // the link loss is injected. No assertion below is changed.
+    gw.model().writeRegister(kD204, 1280);
 
     QVector<ResultRecord> results;
     connect(c.get(), &ControlCoordinator::commandResult, this,

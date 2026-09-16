@@ -94,6 +94,10 @@ public:
     DiagnosticsField currentWidth() const;   // D130
     DiagnosticsField pulseCount() const;     // D136/137
     DiagnosticsField productionCount() const;// D138/139
+    // D138/D139 reliability: the PLC DMUL overlap during automatic width
+    // adjustment makes the count untrustworthy, so the diagnostics surface
+    // must always show this disclosure next to the value (PLC-HMI-005 D4).
+    QString productionCountReliabilityText() const;
     DiagnosticsField pulsePerMm() const;     // D204
     DiagnosticsField widthDelta() const;    // D210
     DiagnosticsField widthSpeed() const;     // D220

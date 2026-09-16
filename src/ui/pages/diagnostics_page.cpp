@@ -167,6 +167,17 @@ void DiagnosticsPage::buildRegisterGrid(QVBoxLayout *root)
                                  QStringLiteral("调宽脉冲 (D136/137)")));
     right->addWidget(addRegister(QStringLiteral("productionCount"),
                                  QStringLiteral("累计产量 (D138/139)")));
+    // Always-visible reliability disclosure for the production count
+    // (PLC-HMI-005 D4/F-08): a real touch-readable label, not a tooltip. The
+    // page header is not part of the allowed change surface, so the label is
+    // created and owned locally by the layout.
+    auto *productionDisclosure =
+        new QLabel(m_pageModel.productionCountReliabilityText(), this);
+    productionDisclosure->setObjectName(
+        QStringLiteral("productionCountDisclosure"));
+    productionDisclosure->setWordWrap(true);
+    productionDisclosure->setMinimumHeight(48); // touch-target-height text
+    right->addWidget(productionDisclosure);
     right->addWidget(addRegister(QStringLiteral("pulsePerMm"),
                                  QStringLiteral("脉冲当量 (D204)")));
     right->addWidget(addRegister(QStringLiteral("widthDelta"),

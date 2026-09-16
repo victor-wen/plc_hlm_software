@@ -714,30 +714,19 @@ bool Application::validateParameterWrite(quint16 address, quint16 value,
     if (address != kD204 && address != kD220)
         return reject(QStringLiteral("不支持的参数地址"));
 
-    if (!m_shell->snapshotFresh())
-        return reject(QStringLiteral("PLC 数据无效或已过期，无法校验参数组合"));
-
-    const DeviceSnapshot &snapshot = m_shell->snapshot();
-    quint16 d204 = snapshot.pulsePerMm();
-    quint16 d220 = snapshot.widthSpeed();
+    // Each parameter is validated independently against its own decoded PLC
+    // range (PLC-HMI-005 D4): the obsolete D204*D220 frequency product and the
+    // confirmed-counterpart coupling are gone; PLC data freshness no longer
+    // gates a write because no cross-field combination is validated.
     if (address == kD204) {
-        if (value < 1 || value > 32767)
-            return reject(QStringLiteral("D204 脉冲当量需在 1-32767 之间"));
-        if (!snapshot.fieldValid(SnapshotField::WidthSpeed))
-            return reject(QStringLiteral("PLC 当前 D220 无效，无法校验参数组合"));
-        d204 = value;
-    } else {
-        if (value < 1 || value > 15)
-            return reject(QStringLiteral("D220 调宽速度需在 1-15 mm/s 之间"));
-        if (!snapshot.fieldValid(SnapshotField::PulsePerMm))
-            return reject(QStringLiteral("PLC 当前 D204 无效，无法校验参数组合"));
-        d220 = value;
+        return value >= 1 && value <= 32767
+            ? true
+            : reject(QStringLiteral("D204 脉冲当量需在 1-32767 之间"));
     }
 
-    const qint64 product = qint64(d204) * d220;
-    return product >= 10 && product <= 200000
+    return value >= 1 && value <= 15
         ? true
-        : reject(QStringLiteral("D204×D220 需在 10-200000 之间"));
+        : reject(QStringLiteral("D220 调宽速度需在 1-15 mm/s 之间"));
 }
 
 void Application::handleParameterWrite(quint16 address, quint16 value)

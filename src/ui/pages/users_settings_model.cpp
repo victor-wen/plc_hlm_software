@@ -148,14 +148,11 @@ bool UsersSettingsModel::d220Valid() const
     return m_editedD220 >= 1 && m_editedD220 <= 15;
 }
 
-bool UsersSettingsModel::productValid() const
-{
-    const qint64 product = qint64(m_editedD204) * m_editedD220;
-    return product >= 10 && product <= 200000;
-}
-
 QStringList UsersSettingsModel::paramReasons() const
 {
+    // Each parameter is validated against its own decoded PLC range; the
+    // obsolete D204*D220 frequency product is not a PLC condition
+    // (PLC-HMI-005 D4).
     QStringList reasons;
     if (!d122Valid())
         reasons.append(QStringLiteral("D122 皮带速度需在 100-20000 Hz 之间"));
@@ -163,8 +160,6 @@ QStringList UsersSettingsModel::paramReasons() const
         reasons.append(QStringLiteral("D204 脉冲当量需在 1-32767 脉冲/mm 之间"));
     if (!d220Valid())
         reasons.append(QStringLiteral("D220 调宽速度需在 1-15 mm/s 之间"));
-    if (!productValid())
-        reasons.append(QStringLiteral("D204×D220 需在 10-200000 之间"));
     return reasons;
 }
 

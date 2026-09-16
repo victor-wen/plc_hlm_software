@@ -329,6 +329,11 @@ DiagnosticsField DiagnosticsModel::productionCount() const
     return {QString::number(m_model.snapshot().productionCount()), true}; // D138/139
 }
 
+QString DiagnosticsModel::productionCountReliabilityText() const
+{
+    return QStringLiteral("自动调宽后该计数可能不可靠（PLC DMUL 覆盖 D138/D139）");
+}
+
 DiagnosticsField DiagnosticsModel::pulsePerMm() const
 {
     return field(QString::number(m_model.snapshot().pulsePerMm()),
