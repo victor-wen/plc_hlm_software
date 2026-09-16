@@ -179,21 +179,23 @@ jobs:
           ctest --test-dir build -C ${{ matrix.config }} --parallel 4 --timeout 60 -E full_flow --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          # TEMPORARY DIAGNOSTIC (PLC-HMI-001 CI triage): capture full_flow output
-          # to a file that survives a crash, on both platform plugins.
-          foreach ($platform in @("windows", "offscreen")) {
-            $env:QT_QPA_PLATFORM = $platform
-            $diag = "full_flow_diag_$platform.txt"
-            Remove-Item $diag -ErrorAction SilentlyContinue
-            & build/tests/integration/test_full_flow.exe -o $diag,txt
-            $code = $LASTEXITCODE
-            Write-Host "DIAG[$platform] exit=$code"
-            if (Test-Path $diag) { Get-Content $diag -TotalCount 250 } else { Write-Host "DIAG[$platform] no output file" }
-          }
-          Remove-Item Env:QT_QPA_PLATFORM
-
           # Retry only full_flow: a single retry affects already-failing runs.
           ctest --test-dir build -C ${{ matrix.config }} --parallel 4 --timeout 60 -R full_flow --repeat until-pass:2 --output-on-failure
+
+          if ($LASTEXITCODE -ne 0) {
+            # TEMPORARY DIAGNOSTIC (PLC-HMI-001 CI triage): capture full_flow output
+            # to a file logger so a crash still leaves the last test visible.
+            foreach ($platform in @("windows", "offscreen")) {
+              $env:QT_QPA_PLATFORM = $platform
+              $diag = "full_flow_diag_$platform.txt"
+              Remove-Item $diag -ErrorAction SilentlyContinue
+              & build/tests/integration/test_full_flow.exe -o "$diag,txt"
+              Write-Host "DIAG[$platform] exit=$LASTEXITCODE"
+              if (Test-Path $diag) { Get-Content $diag -TotalCount 250 } else { Write-Host "DIAG[$platform] no output file" }
+            }
+            Remove-Item Env:QT_QPA_PLATFORM
+            exit 1
+          }
 
       - name: Upload build and test artifacts
         if: always()
