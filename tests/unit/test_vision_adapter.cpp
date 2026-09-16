@@ -24,6 +24,28 @@
 
 using namespace hlm;
 
+namespace {
+
+// SubmissionResult helpers mirrored from the migrated seam tests
+// (tests/integration/test_full_flow.cpp, operator_lifecycle_developer_test.cpp).
+// The first SimulatedPlcGateway start() assigns generation 1.
+quint64 nextRequestId()
+{
+    static quint64 next = 1;
+    return next++;
+}
+
+SubmissionResult acceptedResult()
+{
+    SubmissionResult r;
+    r.accepted = true;
+    r.request_id = nextRequestId();
+    r.gateway_generation = 1;
+    return r;
+}
+
+} // namespace
+
 class VisionAdapterTest : public QObject
 {
     Q_OBJECT
@@ -91,30 +113,32 @@ void VisionAdapterTest::visionFailureDoesNotBlockPlcControl()
     gw.start();
     qint64 now = 0;
     ControlCoordinator::PulseTransport t;
-    t.startPulse = [&gw](quint16 a) {
+    t.startPulse = [&gw](quint16 a) -> SubmissionResult {
         gw.writeCoil(a, true);
         gw.writeCoil(a, false);
-        return true;
+        return acceptedResult();
     };
-    t.writeHold = [&gw](quint16 a, bool v) {
+    t.writeHold = [&gw](quint16 a, bool v) -> SubmissionResult {
         gw.writeCoil(a, v);
-        return true;
+        return acceptedResult();
     };
-    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) {
+    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) -> SubmissionResult {
         gw.writeCoil(a, v);
-        return true;
+        return acceptedResult();
     };
-    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) {
+    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) -> SubmissionResult {
         gw.writeRegister(a, v);
-        return true;
+        return acceptedResult();
     };
     ControlCoordinator c(t, {}, [&now]() { return now; });
     QObject::connect(&gw, &SimulatedPlcGateway::snapshotReady, &c,
-                     [&c](const DeviceSnapshot &s) { c.onSnapshot(s); });
+                     [&c](quint64, const DeviceSnapshot &s) { c.onSnapshot(s); });
     QObject::connect(&gw, &SimulatedPlcGateway::connectionStateChanged, &c,
-                     [&c](bool online) { c.onConnectionChanged(online); });
-    QObject::connect(&gw, &SimulatedPlcGateway::writeCompleted, &c,
-                     [&c](quint16 a, bool ok, const QString &) { c.onWriteCompleted(a, ok); });
+                     [&c](quint64, bool online) { c.onConnectionChanged(online); });
+    QObject::connect(&gw, &SimulatedPlcGateway::submissionCompleted, &c,
+                     [&c](const SubmissionCompletion &completion) {
+                         c.onSubmissionCompleted(completion);
+                     });
     // Feed the snapshot/online state published before the coordinator existed.
     if (gw.hasSnapshot())
         c.onSnapshot(gw.lastSnapshot());
