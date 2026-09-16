@@ -42,6 +42,25 @@ RecipeWidthModel::RecipeWidthModel(const ShellModel &model, QObject *parent)
 void RecipeWidthModel::setRecipes(const QVector<RecipeRecord> &recipes)
 {
     m_recipes = recipes;
+    if (!m_selected.has_value())
+        return; // No selection: unsaved editor content is left untouched.
+
+    bool stillPresent = false;
+    for (const RecipeRecord &r : recipes) {
+        if (r.id == m_selected->id) {
+            stillPresent = true;
+            break;
+        }
+    }
+    if (stillPresent)
+        return; // Keep selection + unsaved edits; fresh record data is not
+                // pushed into the editors (D1: the user's draft wins).
+
+    // The selected record is gone (confirmed deletion): drop the stale
+    // selection and reset the editors to their neutral state (D1/OB-2).
+    m_selected.reset();
+    m_editedName.clear();
+    m_editedWidth = 50;
 }
 
 void RecipeWidthModel::selectRecipe(const RecipeRecord &r)
@@ -96,6 +115,7 @@ void RecipeWidthModel::beginApply(quint16 targetWidth)
     m_resultFed = false;
     m_adjustResultOk = false;
     m_adjustDetail.clear();
+    m_adjustStatusEpoch = ++m_statusEpoch;
     // The terminal verdict arrives ONLY from the coordinator result
     // (setAdjustResult). Snapshots never derive a terminal state (D9).
 }
@@ -110,6 +130,52 @@ void RecipeWidthModel::setAdjustResult(bool ok, const QString &detail)
     m_adjustPending = false;
     m_adjustSucceeded = ok;
     m_adjustFailed = !ok;
+    m_adjustStatusEpoch = ++m_statusEpoch;
+}
+
+void RecipeWidthModel::setRecipeSavePending()
+{
+    m_savePending = true;
+    m_recipeStatusText = QStringLiteral("正在保存配方, 请稍候");
+    m_recipeStatusEpoch = ++m_statusEpoch;
+}
+
+void RecipeWidthModel::setRecipeSaveResult(bool ok, const QString &detail)
+{
+    m_savePending = false;
+    const QString suffix = detail.trimmed().isEmpty()
+                               ? QString()
+                               : QStringLiteral(": %1").arg(detail);
+    m_recipeStatusText = ok ? QStringLiteral("配方已保存%1").arg(suffix)
+                            : QStringLiteral("保存失败%1").arg(suffix);
+    m_recipeStatusEpoch = ++m_statusEpoch;
+}
+
+void RecipeWidthModel::setRecipeDeletePending()
+{
+    m_deletePending = true;
+    m_recipeStatusText = QStringLiteral("正在删除配方, 请稍候");
+    m_recipeStatusEpoch = ++m_statusEpoch;
+}
+
+void RecipeWidthModel::setRecipeDeleteResult(bool ok, const QString &detail)
+{
+    m_deletePending = false;
+    const QString suffix = detail.trimmed().isEmpty()
+                               ? QString()
+                               : QStringLiteral(": %1").arg(detail);
+    m_recipeStatusText = ok ? QStringLiteral("配方已删除%1").arg(suffix)
+                            : QStringLiteral("删除失败%1").arg(suffix);
+    m_recipeStatusEpoch = ++m_statusEpoch;
+}
+
+QString RecipeWidthModel::statusText() const
+{
+    if (m_recipeStatusEpoch > m_adjustStatusEpoch
+        && !m_recipeStatusText.isEmpty()) {
+        return m_recipeStatusText;
+    }
+    return adjustStatusText();
 }
 
 QString RecipeWidthModel::adjustStatusText() const

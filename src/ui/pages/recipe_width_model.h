@@ -30,6 +30,9 @@ public:
     explicit RecipeWidthModel(const ShellModel &model, QObject *parent = nullptr);
 
     // --- recipe data (fed by the app shell, Task 20) -------------------------
+    // Preserves the current selection and the unsaved editor content while the
+    // selected record still exists in the reloaded list; clears both only when
+    // the selected record disappeared (confirmed deletion, D1/ARCH-004).
     void setRecipes(const QVector<RecipeRecord> &recipes);
     QVector<RecipeRecord> recipes() const { return m_recipes; }
     // 选择配方只把名称和目标宽度加载到界面, 不写 PLC (spec §10.3).
@@ -66,6 +69,21 @@ public:
     std::optional<quint16> appliedTarget() const { return m_appliedTarget; }
     QString adjustStatusText() const;
 
+    // --- page-local save/delete lifecycle (D2, D3) ---------------------------
+    // Fed by RecipeWidthPage (dispatch/validation) and Application (database
+    // result). These states are page-local only: they are never projected into
+    // the shell's machine-command OperatorCommandStatus (contract ARCH-001).
+    void setRecipeSavePending();
+    void setRecipeSaveResult(bool ok, const QString &detail);
+    void setRecipeDeletePending();
+    void setRecipeDeleteResult(bool ok, const QString &detail);
+    bool recipeSavePending() const { return m_savePending; }
+    bool recipeDeletePending() const { return m_deletePending; }
+    // Most recent page-local status text: the later of the adjust lifecycle and
+    // the recipe save/delete lifecycle. An asynchronous recipe list reload
+    // never discards a terminal result (D2/D3, contract invariant 443).
+    QString statusText() const;
+
 private:
     const ShellModel &m_model;
     QVector<RecipeRecord> m_recipes;
@@ -80,6 +98,15 @@ private:
     bool m_resultFed = false;
     bool m_adjustResultOk = false;
     QString m_adjustDetail;
+
+    bool m_savePending = false;
+    bool m_deletePending = false;
+    QString m_recipeStatusText;
+    // Monotonic event order shared by both page-local status sources, so the
+    // latest visible event wins without a reload being able to clear it.
+    quint64 m_statusEpoch = 0;
+    quint64 m_adjustStatusEpoch = 0;
+    quint64 m_recipeStatusEpoch = 0;
 };
 
 } // namespace hlm

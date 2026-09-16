@@ -41,6 +41,9 @@ public:
     ValueDisplay *fieldDisplay(const QString &key) const;
     QLabel *statusLabel() const;
     QString statusText() const;
+    // Inline, touch-visible explanation shown while the recipe name/width
+    // editors are disabled (D5: never tooltip-only). Empty for an admin.
+    QLabel *editorReasonLabel() const { return m_editorReason; }
     PermissionButton *applyButton() const { return m_apply; }
     PermissionButton *saveButton() const { return m_save; }
     PermissionButton *deleteButton() const { return m_delete; }
@@ -52,6 +55,15 @@ public:
     void setRecipes(const QVector<RecipeRecord> &recipes);
     // Coordinator result feed (wired by the app shell, Task 20).
     void setAdjustResult(bool ok, const QString &detail);
+
+    // --- page-local database result feed (D2, D3; wired by Task 20) ------------
+    // Pending is visible and disables the matching control (D7); results show
+    // success text ("已保存"/"已删除") or the failure detail, and survive a
+    // later recipe list reload.
+    void setRecipeSavePending();
+    void setRecipeSaveResult(bool ok, const QString &detail);
+    void setRecipeDeletePending();
+    void setRecipeDeleteResult(bool ok, const QString &detail);
 
 public slots:
     // Re-renders every widget from the model's current state.
@@ -82,6 +94,7 @@ private:
     RecipeWidthModel m_pageModel;
 
     QLabel *m_statusLabel = nullptr;
+    QLabel *m_editorReason = nullptr;
     QHash<QString, ValueDisplay *> m_displays;
     QListWidget *m_recipeList = nullptr;
     QLineEdit *m_nameEdit = nullptr;

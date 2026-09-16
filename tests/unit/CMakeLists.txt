@@ -310,6 +310,31 @@ target_link_libraries(test_operator_lifecycle_developer PRIVATE
 
 add_test(NAME operator_lifecycle_developer COMMAND test_operator_lifecycle_developer)
 
-set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page control_panel operator_command_lifecycle command_status_projection command_feedback_pages operator_lifecycle_developer PROPERTIES
+# --- PLC-HMI-002: independent recipe editor/result-feedback tests -----------
+
+add_executable(test_recipe_editor_state recipe_editor_state_test.cpp)
+target_link_libraries(test_recipe_editor_state PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME recipe_editor_state COMMAND test_recipe_editor_state)
+
+add_executable(test_recipe_result_feedback recipe_result_feedback_test.cpp)
+target_link_libraries(test_recipe_result_feedback PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME recipe_result_feedback COMMAND test_recipe_result_feedback)
+
+# --- PLC-HMI-002: developer-owned recipe editor/result-feedback tests (D8) ---
+
+add_executable(test_recipe_editor_developer recipe_editor_developer_test.cpp)
+target_link_libraries(test_recipe_editor_developer PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME recipe_editor_developer COMMAND test_recipe_editor_developer)
+
+set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page control_panel operator_command_lifecycle command_status_projection command_feedback_pages operator_lifecycle_developer recipe_editor_state recipe_result_feedback recipe_editor_developer PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )

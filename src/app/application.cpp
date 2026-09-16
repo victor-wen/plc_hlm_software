@@ -266,10 +266,16 @@ void Application::wireSignals()
                 r.createdBy = m_lifecycle ? m_lifecycle->currentUsername()
                                           : QStringLiteral("anonymous");
                 r.updatedBy = r.createdBy;
+                // Page-local pending before the database round-trip (D2/D7).
+                m_recipePage->setRecipeSavePending();
                 m_db->saveRecipe(r);
             });
-    connect(m_recipePage, &RecipeWidthPage::deleteRecipeRequested, m_db,
-            &DatabaseService::deleteRecipe);
+    connect(m_recipePage, &RecipeWidthPage::deleteRecipeRequested, this,
+            [this](qint64 recipeId) {
+                // Page-local pending before the database round-trip (D3/D7).
+                m_recipePage->setRecipeDeletePending();
+                m_db->deleteRecipe(recipeId);
+            });
 
     // --- ManualControlPage -> coordinator -------------------------------------
     connect(m_manualPage, &ManualControlPage::manualHoldRequested, m_coordinator,
@@ -350,9 +356,22 @@ void Application::wireSignals()
     connect(m_db, &DatabaseService::recipesLoaded, m_recipePage,
             &RecipeWidthPage::setRecipes);
     connect(m_db, &DatabaseService::recipeSaved, this,
-            [this](bool, const QString &) { m_db->listRecipes(); });
+            [this](bool ok, const QString &error) {
+                // Route the database outcome into the page-local status; the
+                // page preserves it across the follow-up reload (D2).
+                m_recipePage->setRecipeSaveResult(ok, error);
+                if (ok)
+                    m_db->listRecipes();
+            });
     connect(m_db, &DatabaseService::recipeDeleted, this,
-            [this](bool, const QString &) { m_db->listRecipes(); });
+            [this](bool ok, const QString &error) {
+                // Route the database outcome into the page-local status; the
+                // confirmed deletion reload then clears the selection/editors
+                // in RecipeWidthPage::setRecipes (D1, D3).
+                m_recipePage->setRecipeDeleteResult(ok, error);
+                if (ok)
+                    m_db->listRecipes();
+            });
     connect(m_db, &DatabaseService::settingLoaded, this,
             &Application::handleSettingLoaded);
     connect(m_db, &DatabaseService::settingSaved, this,

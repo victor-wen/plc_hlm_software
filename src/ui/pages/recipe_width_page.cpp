@@ -14,7 +14,10 @@
 #include <QFrame>
 #include <QHash>
 #include <QHideEvent>
+#include <QSignalBlocker>
 #include <QSizePolicy>
+
+#include <optional>
 
 namespace hlm {
 
@@ -103,6 +106,14 @@ void RecipeWidthPage::buildLayout()
     editRow->addWidget(m_widthSpin);
     recipeLayout->addLayout(editRow);
 
+    // Inline permission explanation next to the editors: a disabled QLineEdit/
+    // QSpinBox cannot show a tooltip reliably on touch, so the reason must be
+    // visible text (D5; spec §11.4).
+    m_editorReason = new QLabel(recipeBox);
+    m_editorReason->setObjectName(QStringLiteral("recipeEditorReason"));
+    m_editorReason->setWordWrap(true);
+    recipeLayout->addWidget(m_editorReason);
+
     auto *buttonRow = new QHBoxLayout();
     buttonRow->setSpacing(8);
     m_save = new PermissionButton(QStringLiteral("保存配方"), recipeBox);
@@ -187,21 +198,76 @@ QString RecipeWidthPage::statusText() const
 
 void RecipeWidthPage::setRecipes(const QVector<RecipeRecord> &recipes)
 {
+    // An asynchronous reload must not discard the user's unsaved input or the
+    // current selection while the selected record still exists. Only a
+    // confirmed deletion (selected id absent from the reloaded list) resets
+    // the selection and the editors (D1/ARCH-004, contract invariant 443).
+    const bool hadSelection = m_pageModel.selectedRecipe().has_value();
+    const std::optional<RecipeRecord> previous = m_pageModel.selectedRecipe();
     m_pageModel.setRecipes(recipes);
-    m_recipeList->clear();
-    for (const RecipeRecord &r : recipes)
-        m_recipeList->addItem(QStringLiteral("%1  (%2 mm)").arg(r.name).arg(r.targetWidthMm));
-    // Reloading the recipe list clears the stale editor/selection state so a
-    // previously loaded recipe does not linger after the list changes.
-    m_recipeList->setCurrentRow(-1);
-    m_nameEdit->clear();
-    m_widthSpin->setValue(50);
+
+    // Rebuild the list with the widget's own selection signals blocked: a
+    // programmatic row change must not reload the record into the editors and
+    // overwrite the user's draft (OB-9: no content/focus theft).
+    {
+        const QSignalBlocker blocker(m_recipeList);
+        m_recipeList->clear();
+        for (const RecipeRecord &r : recipes) {
+            auto *item = new QListWidgetItem(
+                QStringLiteral("%1  (%2 mm)").arg(r.name).arg(r.targetWidthMm),
+                m_recipeList);
+            item->setData(Qt::UserRole, r.id);
+        }
+        m_recipeList->setCurrentRow(-1);
+        const std::optional<RecipeRecord> selected = m_pageModel.selectedRecipe();
+        if (selected.has_value()) {
+            for (int i = 0; i < m_recipeList->count(); ++i) {
+                if (m_recipeList->item(i)->data(Qt::UserRole).toLongLong()
+                    == selected->id) {
+                    m_recipeList->setCurrentRow(i);
+                    break;
+                }
+            }
+        }
+    }
+
+    if (hadSelection && previous.has_value()
+        && !m_pageModel.selectedRecipe().has_value()) {
+        // Confirmed deletion: clear selection and reset the editors to the
+        // neutral state (the page model already dropped the stale selection).
+        m_nameEdit->clear();
+        m_widthSpin->setValue(50);
+    }
     refresh();
 }
 
 void RecipeWidthPage::setAdjustResult(bool ok, const QString &detail)
 {
     m_pageModel.setAdjustResult(ok, detail);
+    refresh();
+}
+
+void RecipeWidthPage::setRecipeSavePending()
+{
+    m_pageModel.setRecipeSavePending();
+    refresh();
+}
+
+void RecipeWidthPage::setRecipeSaveResult(bool ok, const QString &detail)
+{
+    m_pageModel.setRecipeSaveResult(ok, detail);
+    refresh();
+}
+
+void RecipeWidthPage::setRecipeDeletePending()
+{
+    m_pageModel.setRecipeDeletePending();
+    refresh();
+}
+
+void RecipeWidthPage::setRecipeDeleteResult(bool ok, const QString &detail)
+{
+    m_pageModel.setRecipeDeleteResult(ok, detail);
     refresh();
 }
 
@@ -255,20 +321,53 @@ void RecipeWidthPage::onRecipeSelected(int row)
 
 void RecipeWidthPage::onSaveClicked()
 {
-    // Guard against programmatic/empty saves: a recipe needs a non-empty
-    // name and a width within the D128 range (spec §10.3).
-    const QString name = m_nameEdit->text().trimmed();
-    if (name.isEmpty() || !m_pageModel.canEditRecipes())
+    // D7: while the previous save is awaiting its database result, a duplicate
+    // attempt must not issue a second request and must stay visibly pending.
+    if (m_pageModel.recipeSavePending()) {
+        refresh();
         return;
+    }
+    // Guard against programmatic/empty saves: a recipe needs a non-empty
+    // name and a width within the D128 range (spec §10.3). Rejections are
+    // visible page-local status, never silent (D4).
+    const QString name = m_nameEdit->text().trimmed();
+    if (name.isEmpty()) {
+        m_pageModel.setRecipeSaveResult(false, QStringLiteral("请输入配方名称"));
+        refresh();
+        return;
+    }
+    if (!m_pageModel.canEditRecipes()) {
+        m_pageModel.setRecipeSaveResult(false, QStringLiteral("需要管理员权限"));
+        refresh();
+        return;
+    }
+    m_pageModel.setRecipeSavePending();
     emit saveRecipeRequested(name, m_widthSpin->value());
+    refresh();
 }
 
 void RecipeWidthPage::onDeleteClicked()
 {
-    const int row = m_recipeList->currentRow();
-    if (row < 0 || row >= m_pageModel.recipes().size())
+    // D7: mirror the save guard for the delete flow.
+    if (m_pageModel.recipeDeletePending()) {
+        refresh();
         return;
+    }
+    if (!m_pageModel.canEditRecipes()) {
+        m_pageModel.setRecipeDeleteResult(false, QStringLiteral("需要管理员权限"));
+        refresh();
+        return;
+    }
+    const int row = m_recipeList->currentRow();
+    if (row < 0 || row >= m_pageModel.recipes().size()) {
+        m_pageModel.setRecipeDeleteResult(false,
+                                          QStringLiteral("请先选择要删除的配方"));
+        refresh();
+        return;
+    }
+    m_pageModel.setRecipeDeletePending();
     emit deleteRecipeRequested(m_pageModel.recipes().at(row).id);
+    refresh();
 }
 
 void RecipeWidthPage::refresh()
@@ -306,13 +405,24 @@ void RecipeWidthPage::refresh()
     const bool canEdit = m_pageModel.canEditRecipes();
     const QString permReason = canEdit ? QString()
                                        : QStringLiteral("需要管理员权限");
-    m_save->setEnabledWithReason(canEdit, permReason);
-    m_delete->setEnabledWithReason(canEdit, permReason);
+    const bool savePending = m_pageModel.recipeSavePending();
+    const bool deletePending = m_pageModel.recipeDeletePending();
+    m_save->setEnabledWithReason(
+        canEdit && !savePending,
+        savePending ? QStringLiteral("正在保存配方, 请稍候") : permReason);
+    m_delete->setEnabledWithReason(
+        canEdit && !deletePending,
+        deletePending ? QStringLiteral("正在删除配方, 请稍候") : permReason);
     m_nameEdit->setEnabled(canEdit);
     m_widthSpin->setEnabled(canEdit);
+    // D5: the inline reason is always present (never hidden); it carries text
+    // exactly while editing is unavailable for the current role.
+    m_editorReason->setText(canEdit ? QString()
+                                    : QStringLiteral("配方编辑需要管理员权限"));
 
-    // Status line.
-    m_statusLabel->setText(m_pageModel.adjustStatusText());
+    // Status line: the latest page-local event (adjust lifecycle or recipe
+    // save/delete result); a list reload never erases it (D2/D3).
+    m_statusLabel->setText(m_pageModel.statusText());
 }
 
 } // namespace hlm

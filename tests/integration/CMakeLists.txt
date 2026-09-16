@@ -72,3 +72,19 @@ add_test(NAME operator_command_projection_developer COMMAND test_operator_comman
 set_tests_properties(operator_command_projection_developer PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )
+
+# --- PLC-HMI-002: developer-owned recipe database routing tests (D8) ----------
+
+add_executable(test_recipe_database_routing_developer recipe_database_routing_developer_test.cpp)
+target_link_libraries(test_recipe_database_routing_developer PRIVATE
+    hlm_app_core
+    hlm_simulator
+    hlm_sqlite
+    hlm_ui
+    Qt6::Test
+)
+
+add_test(NAME recipe_database_routing_developer COMMAND test_recipe_database_routing_developer)
+set_tests_properties(recipe_database_routing_developer PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
+)
