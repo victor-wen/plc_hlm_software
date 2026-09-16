@@ -487,12 +487,29 @@ ControlCoordinator::CommandResult ControlCoordinator::bypass(quint16 address, bo
 void ControlCoordinator::logoutClear()
 {
     // 注销/会话超时: try to clear M42/M106-M111 (spec §11.5, §13). M100 is
-    // never touched; M105 模式选择保持不变 (spec §10.8).
+    // never touched; M105 模式选择保持不变 (spec §10.8). Every submission
+    // result is inspected: the clear may only be reported as succeeded when
+    // all seven writes were accepted (NF-03, no optimistic success). A missing
+    // or rejecting transport converges to a visible communications-lost
+    // failure instead of a fabricated success.
+    bool allAccepted = static_cast<bool>(m_transport.writeCoil);
     if (m_transport.writeCoil) {
-        m_transport.writeCoil(kM42, false, CommandPriority::Normal);
+        allAccepted = m_transport.writeCoil(kM42, false, CommandPriority::Normal).accepted;
         for (quint16 a = kM106; a <= kM111; ++a)
-            m_transport.writeCoil(a, false, CommandPriority::Normal);
+            allAccepted = m_transport.writeCoil(a, false, CommandPriority::Normal).accepted
+                          && allAccepted;
     }
+    // 清零是原因, 保持命令的取消是结果: 被本次清零撤销的保持/锁存/屏蔽请求
+    // 不可能再确认, 必须先以失败收敛, 否则会悬空到确认超时. Then report the
+    // clear itself as a terminal result so restricted-mode entry has a visible,
+    // converging command state (PLC-HMI-006 D3).
+    failAllManualConfirms(QStringLiteral("注销清零: 保持命令已取消"));
+    if (allAccepted)
+        emit commandResult(Command::LogoutClear, true,
+                           QStringLiteral("注销清零: 连续输出已清除"));
+    else
+        emit commandResult(Command::LogoutClear, false,
+                           QStringLiteral("注销清零: 通讯中断, 连续输出清零未确认"));
     emit continuousCleared();
 }
 

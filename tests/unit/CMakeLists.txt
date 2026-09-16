@@ -428,6 +428,28 @@ target_link_libraries(test_plc_hmi_005_simulator_parity PRIVATE
 )
 add_test(NAME plc_hmi_005_simulator_parity COMMAND test_plc_hmi_005_simulator_parity)
 
-set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page control_panel operator_command_lifecycle command_status_projection command_feedback_pages operator_lifecycle_developer recipe_editor_state recipe_result_feedback recipe_editor_developer serial_settings_page visible_disabled_reasons visible_reasons_developer PROPERTIES
+# --- PLC-HMI-006: independent responsive-envelope tests ----------------------
+# QTEST_MAIN widget target: plc_hmi_006_responsive_envelope is in the offscreen
+# set_tests_properties(...) list at the end of this file.
+
+add_executable(test_plc_hmi_006_responsive_envelope plc_hmi_006_responsive_envelope_test.cpp)
+target_link_libraries(test_plc_hmi_006_responsive_envelope PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME plc_hmi_006_responsive_envelope COMMAND test_plc_hmi_006_responsive_envelope)
+
+# --- PLC-HMI-006: developer-owned responsive reflow regression tests (D6) ----
+# QTEST_MAIN widget target: plc_hmi_006_layout is in the offscreen
+# set_tests_properties(...) list at the end of this file.
+
+add_executable(test_plc_hmi_006_layout plc_hmi_006_layout_developer_test.cpp)
+target_link_libraries(test_plc_hmi_006_layout PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME plc_hmi_006_layout COMMAND test_plc_hmi_006_layout)
+
+set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page control_panel operator_command_lifecycle command_status_projection command_feedback_pages operator_lifecycle_developer recipe_editor_state recipe_result_feedback recipe_editor_developer serial_settings_page visible_disabled_reasons visible_reasons_developer plc_hmi_006_responsive_envelope plc_hmi_006_layout PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )

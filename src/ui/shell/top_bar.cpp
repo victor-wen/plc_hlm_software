@@ -2,13 +2,22 @@
 
 #include "ui/shell/shell_model.h"
 
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QTimer>
 #include <QDateTime>
 #include <QPalette>
 #include <QColor>
+#include <QResizeEvent>
 
 namespace hlm {
+
+namespace {
+// Horizontal padding of the wide status row (kept in sync with the grid).
+constexpr int kTopBarHorizontalMargin = 8;
+constexpr int kTopBarHorizontalSpacing = 10;
+constexpr int kCompactLightsPerRow = 3;
+} // namespace
 
 TopBar::TopBar(ShellModel &model, QWidget *parent)
     : QWidget(parent)
@@ -21,33 +30,40 @@ TopBar::TopBar(ShellModel &model, QWidget *parent)
     setMinimumHeight(64);
     setMaximumHeight(64);
 
-    auto *layout = new QHBoxLayout(this);
-    layout->setContentsMargins(12, 4, 12, 4);
-    layout->setSpacing(16);
+    m_grid = new QGridLayout(this);
+    m_grid->setContentsMargins(kTopBarHorizontalMargin, 4, kTopBarHorizontalMargin, 4);
+    m_grid->setHorizontalSpacing(kTopBarHorizontalSpacing);
+    m_grid->setVerticalSpacing(2);
 
     m_appName = new QLabel(QStringLiteral("PLC 调宽上位机"), this);
     m_appName->setObjectName(QStringLiteral("appName"));
-    layout->addWidget(m_appName);
 
-    auto *divider = new QLabel(QStringLiteral("/"), this);
-    divider->setObjectName(QStringLiteral("topBarDivider"));
-    layout->addWidget(divider);
+    m_divider = new QLabel(QStringLiteral("/"), this);
+    m_divider->setObjectName(QStringLiteral("topBarDivider"));
 
     m_pageTitle = new QLabel(QStringLiteral("总览"), this);
     m_pageTitle->setObjectName(QStringLiteral("pageTitle"));
-    layout->addWidget(m_pageTitle);
 
     buildLights();
 
-    layout->addStretch();
-
     m_userLabel = new QLabel(this);
     m_userLabel->setObjectName(QStringLiteral("userLabel"));
-    layout->addWidget(m_userLabel);
 
     m_clockLabel = new QLabel(this);
     m_clockLabel->setObjectName(QStringLiteral("clockLabel"));
-    layout->addWidget(m_clockLabel);
+
+    // The row must never force the window minimum: the compact/wide
+    // presentation is chosen from the available width instead (PLC-HMI-006
+    // D1/D2). Relaxing the per-widget minimums keeps the permanent window
+    // minimum small so the envelope stays reachable.
+    for (QWidget *widget : QVector<QWidget *>{m_appName, m_divider, m_pageTitle,
+                                              m_userLabel, m_clockLabel}) {
+        widget->setMinimumWidth(1);
+    }
+    for (StatusLight *light : m_lights)
+        light->setMinimumWidth(1);
+
+    applyPresentation();
 
     m_clockTimer = new QTimer(this);
     m_clockTimer->setInterval(1000);
@@ -76,8 +92,103 @@ void TopBar::buildLights()
         light->setPalette(palette);
         light->setState(StatusState::Unknown, name + QStringLiteral(" —"));
         m_lights.append(light);
-        layout()->addWidget(light);
     }
+}
+
+int TopBar::wideRowMinimumWidth() const
+{
+    int width = 0;
+    int count = 0;
+    const QVector<QWidget *> widgets = wideRowWidgets();
+    for (QWidget *widget : widgets) {
+        // StatusLight is a plain painted widget without a layout, so its
+        // sizeHint() is invalid (-1,-1). The larger of the two hints is the
+        // width the row actually needs to render its text unclipped; using
+        // sizeHint() alone under-reported the row by ~670 px and let the bar
+        // keep the wide row at widths where the labels were clipped.
+        width += qMax(widget->sizeHint().width(), widget->minimumSizeHint().width());
+        ++count;
+    }
+    if (count > 1)
+        width += kTopBarHorizontalSpacing * (count - 1);
+    width += 2 * kTopBarHorizontalMargin;
+    return width;
+}
+
+QVector<QWidget *> TopBar::wideRowWidgets() const
+{
+    QVector<QWidget *> widgets;
+    widgets.append(m_appName);
+    widgets.append(m_divider);
+    widgets.append(m_pageTitle);
+    for (StatusLight *light : m_lights)
+        widgets.append(light);
+    widgets.append(m_userLabel);
+    widgets.append(m_clockLabel);
+    return widgets;
+}
+
+void TopBar::applyPresentation()
+{
+    // Wide until the status row genuinely stops fitting; then the same
+    // information reflows into two light rows (never clipped/elided).
+    const bool compact = width() < wideRowMinimumWidth();
+    if (m_compact == compact && m_presentationPlaced)
+        return;
+    m_compact = compact;
+    m_presentationPlaced = true;
+
+    for (QWidget *widget : wideRowWidgets())
+        m_grid->removeWidget(widget);
+    for (int column = 0; column < 12; ++column)
+        m_grid->setColumnStretch(column, 0);
+
+    if (compact) {
+        // Two rows: page title + clock on top, the six status lights three per
+        // row below. The application name and user label are redundant with the
+        // pages and the user/settings page and are dropped to keep the compact
+        // bar at two/three text rows.
+        setMaximumHeight(QWIDGETSIZE_MAX);
+        m_appName->hide();
+        m_divider->hide();
+        m_userLabel->hide();
+
+        m_grid->addWidget(m_pageTitle, 0, 0);
+        m_grid->setColumnStretch(1, 1);
+        m_grid->addWidget(m_clockLabel, 0, 2);
+        for (int i = 0; i < m_lights.size(); ++i)
+            m_grid->addWidget(m_lights[i], 1 + i / kCompactLightsPerRow,
+                              i % kCompactLightsPerRow);
+        m_pageTitle->show();
+        m_clockLabel->show();
+        for (StatusLight *light : m_lights)
+            light->show();
+        // The compact grid is taller than the fixed wide row: the bar must be
+        // allocated at least what the two light rows need, otherwise the rows
+        // overlap vertically (PLC-HMI-006 D1/D2).
+        setMinimumHeight(qMax(64, m_grid->sizeHint().height()));
+    } else {
+        m_grid->addWidget(m_appName, 0, 0);
+        m_grid->addWidget(m_divider, 0, 1);
+        m_grid->addWidget(m_pageTitle, 0, 2);
+        for (int i = 0; i < m_lights.size(); ++i)
+            m_grid->addWidget(m_lights[i], 0, 3 + i);
+        const int stretchColumn = 3 + m_lights.size();
+        m_grid->setColumnStretch(stretchColumn, 1);
+        m_grid->addWidget(m_userLabel, 0, stretchColumn + 1);
+        m_grid->addWidget(m_clockLabel, 0, stretchColumn + 2);
+        for (QWidget *widget : wideRowWidgets())
+            widget->show();
+        setMinimumHeight(64);
+        setMaximumHeight(64);
+    }
+    updateGeometry();
+}
+
+void TopBar::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    applyPresentation();
 }
 
 QString TopBar::text() const
@@ -100,6 +211,10 @@ void TopBar::setPageTitle(const QString &title)
 {
     if (m_pageTitle)
         m_pageTitle->setText(title);
+    // The wider title may no longer fit the current row: re-evaluate the
+    // presentation instead of keeping a stale wide/compact choice until the
+    // next resize (PLC-HMI-006 D1/D2).
+    applyPresentation();
 }
 
 void TopBar::refresh()

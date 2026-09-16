@@ -145,6 +145,13 @@ void LifecycleController::enterRestrictedMode(const QString &reason)
     m_restrictedReason = reason;
     // 受限模式: 只保留在线停止和置软件急停 (spec §13). 强制注销所有用户.
     doLogout();
+    // 进入受限模式即按注销清零流程释放连续输出 (M42/M106-M111) 并释放保持意图:
+    // 受限后不再允许生产命令, 已保持的输出不能悬空 (spec §11.5, §13; CORE-LOW-1).
+    // logoutClear 是内部清零路径, 不受受限门控限制.
+    if (m_coordinator)
+        m_coordinator->logoutClear();
+    if (m_window)
+        m_window->clearHoldIntents();
 }
 
 bool LifecycleController::commandAllowed(Command cmd) const

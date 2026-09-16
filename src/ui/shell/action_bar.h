@@ -7,6 +7,7 @@
 
 class QVBoxLayout;
 class QLabel;
+class QScrollArea;
 
 namespace hlm {
 
@@ -41,6 +42,11 @@ public:
     // "machine_commands: persistent non-modal shell status").
     QLabel *commandStatusLabel() const { return m_commandStatus; }
 
+    // Responsive layout seams (PLC-HMI-006 D1/D2): the scrollable action group
+    // and the pinned safety strip (Stop + software estop) that never scroll.
+    QScrollArea *actionsScrollArea() const { return m_scroll; }
+    QWidget *safetyStrip() const { return m_safetyStrip; }
+
 public slots:
     // Recomputes permission/interlock reasons from the model.
     void refresh();
@@ -59,6 +65,8 @@ private:
     void refreshCommandStatus();
 
     ShellModel &m_model;
+    QScrollArea *m_scroll = nullptr;      // scrollable non-safety actions
+    QWidget *m_safetyStrip = nullptr;     // pinned Stop + estop
     PermissionButton *m_manual = nullptr;
     PermissionButton *m_auto = nullptr;
     PermissionButton *m_start = nullptr;

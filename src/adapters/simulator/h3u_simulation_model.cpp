@@ -239,6 +239,9 @@ void H3uSimulationModel::onM43RisingEdge()
     const bool busy = m_coils[kM34];
     // Decoded PLC start preconditions (PLC-HMI-005 D2): no M49 occupancy and
     // no D128/D204/D220/D126 range gating beyond the fields' own decodes.
+    // 50-400 mm is the intentional operator/recipe envelope (需求 D128 50~400,
+    // PLC-HMI-006 D5), enforced by the HMI interlock only: the parity model
+    // intentionally models the decoded rungs and keeps no width envelope.
     const bool preconditions = m_coils[kM1] && m_coils[kM61] && !m_coils[kM3]
         && !m_coils[kM0] && !m_coils[kM14] && !m_coils[kM50]
         && m_regs[kD128] != m_regs[kD130];

@@ -149,6 +149,7 @@ private slots:
     void restrictedModeKeepsLogoutClearWrites();
     void restrictedModeBlocksParameterWritesVisibly();
     void healthyDatabaseKeepsRoutingUnrestricted();
+    void restrictedEntryClearsHeldOutputVisiblyWithoutDanglingPending();
 };
 
 void RestrictedRoutingDeveloperTest::
@@ -513,6 +514,81 @@ void RestrictedRoutingDeveloperTest::healthyDatabaseKeepsRoutingUnrestricted()
         QVERIFY2(s.lifecycle_state != OperatorCommandState::Rejected,
                  "a healthy database must not restrict production routing");
     QVERIFY2(sawPulse, "the accepted reset must reach the PLC (M103 pulse)");
+
+    started.shutdown();
+}
+
+void RestrictedRoutingDeveloperTest::
+    restrictedEntryClearsHeldOutputVisiblyWithoutDanglingPending()
+{
+    // PLC-HMI-006 D3/D6: a healthy session enters restricted mode with an
+    // established held output. The entry-clear must drop the output bounded and
+    // keep it clear, report a visible terminal command state (no dangling
+    // pending confirmation), and the restricted gate must keep rejecting a
+    // repeated hold press with a non-empty reason and zero PLC submissions.
+    StartedApp started;
+    started.start();
+    QVERIFY(started.app != nullptr);
+    QVERIFY2(started.gw != nullptr, "the composed application must expose the gateway");
+    started.advanceUntilOnline();
+    QVERIFY2(started.gw->isOnline(), "precondition: the simulator gateway must come online");
+
+    started.app->coordinator()->setRole(Role::Admin);
+
+    Recorder recorder;
+    connect(started.app->shell(), &ShellModel::operatorCommandStatusChanged, this,
+            [&recorder](const OperatorCommandStatus &s) {
+                recorder.statuses.append(s);
+            });
+    connect(started.gw, &SimulatedPlcGateway::submissionCompleted, this,
+            [&recorder](const SubmissionCompletion &c) {
+                recorder.submissions.append(c.address);
+            });
+
+    homeReady(*started.gw);
+    started.app->coordinator()->manualHold(kM106, true);
+    bool held = false;
+    for (int i = 0; i < 20 && !held; ++i) {
+        started.gw->tick();
+        held = started.gw->model().readCoil(kM106);
+    }
+    QVERIFY2(held, "precondition: the manual hold must energize M106 while unrestricted");
+
+    const int statusMark = int(recorder.statuses.size());
+    started.app->lifecycle()->enterRestrictedMode(QStringLiteral("test"));
+
+    bool cleared = false;
+    for (int i = 0; i < 20 && !cleared; ++i) {
+        started.gw->tick();
+        cleared = !started.gw->model().readCoil(kM106);
+    }
+    QApplication::processEvents();
+    QVERIFY2(cleared, "restricted-mode entry must clear the held output (M106)");
+    for (int i = 0; i < 10; ++i)
+        started.gw->tick();
+    QApplication::processEvents();
+    QVERIFY2(!started.gw->model().readCoil(kM106),
+             "the released output must stay clear after convergence");
+
+    const QVector<OperatorCommandStatus> produced = recorder.statuses.mid(statusMark);
+    QVERIFY2(!produced.isEmpty(),
+             "restricted-mode entry must produce a visible terminal command state");
+    for (const OperatorCommandStatus &s : produced)
+        QVERIFY2(s.lifecycle_state != OperatorCommandState::Pending,
+                 "no command may dangle pending after restricted-mode entry");
+
+    const QString reason = started.app->lifecycle()->commandRejectionReason();
+    QVERIFY2(!reason.isEmpty(), "restricted mode must expose a non-empty reason");
+    const int heldStatusMark = int(recorder.statuses.size());
+    const int heldSubmissionMark = int(recorder.submissions.size());
+    started.app->coordinator()->manualHold(kM106, true);
+    for (int i = 0; i < 6; ++i)
+        started.gw->tick();
+    QApplication::processEvents();
+    expectRejected(QStringLiteral("restricted repeated hold"), recorder, heldStatusMark,
+                   heldSubmissionMark, Command::ManualCommand, reason);
+    QVERIFY2(!started.gw->model().readCoil(kM106),
+             "the rejected restricted hold must not re-energize M106");
 
     started.shutdown();
 }

@@ -200,3 +200,18 @@ add_test(NAME plc_hmi_005_authoritative_values COMMAND test_plc_hmi_005_authorit
 set_tests_properties(plc_hmi_005_authoritative_values PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )
+
+# --- PLC-HMI-006: restricted-mode hold release + target-width envelope --------
+
+add_executable(test_plc_hmi_006_release_and_envelope plc_hmi_006_release_and_envelope_test.cpp)
+target_link_libraries(test_plc_hmi_006_release_and_envelope PRIVATE
+    hlm_app_core
+    hlm_simulator
+    hlm_sqlite
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME plc_hmi_006_release_and_envelope COMMAND test_plc_hmi_006_release_and_envelope)
+set_tests_properties(plc_hmi_006_release_and_envelope PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
+)

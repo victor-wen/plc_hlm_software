@@ -7,6 +7,7 @@
 #include <QVBoxLayout>
 #include <QStringList>
 #include <QLabel>
+#include <QScrollArea>
 #include <QStyle>
 #include <QVariant>
 
@@ -67,21 +68,37 @@ ActionBar::ActionBar(ShellModel &model, QWidget *parent)
     setMinimumWidth(192);
     setMaximumWidth(192);
 
-    // Compact spacing: the inline disabled reasons (D3) add height to disabled
-    // controls, so the column keeps a little more room for the safety strip at
-    // the 1366x768 envelope without shrinking Stop/estop.
-    auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(4, 4, 4, 4);
-    layout->setSpacing(4);
+    // Responsive rail (PLC-HMI-006 D1/D2): the safety strip (Stop + software
+    // estop) is pinned outside the scroll area so it is always visible without
+    // scrolling, and every other action keeps its inline disabled reason while
+    // living inside a widget-resizable scroll area. The rail can therefore
+    // shrink with the envelope instead of forcing a ~563 px column minimum.
+    auto *root = new QVBoxLayout(this);
+    root->setContentsMargins(4, 4, 4, 4);
+    root->setSpacing(4);
 
-    auto *title = new QLabel(QStringLiteral("设备操作"), this);
+    m_scroll = new QScrollArea(this);
+    m_scroll->setObjectName(QStringLiteral("actionBarScroll"));
+    m_scroll->setFrameShape(QFrame::NoFrame);
+    m_scroll->setWidgetResizable(true);
+    m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_scroll->setMinimumHeight(56);
+    auto *content = new QWidget(m_scroll);
+    content->setObjectName(QStringLiteral("actionBarContent"));
+    auto *layout = new QVBoxLayout(content);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(4);
+    m_scroll->setWidget(content);
+    root->addWidget(m_scroll, /*stretch=*/1);
+
+    auto *title = new QLabel(QStringLiteral("设备操作"), content);
     title->setObjectName(QStringLiteral("actionBarTitle"));
     title->setAlignment(Qt::AlignCenter);
     layout->addWidget(title);
 
     // Persistent machine-command status (D8): visible from every page, never
     // modal, and always the latest projected state + human-readable detail.
-    m_commandStatus = new QLabel(this);
+    m_commandStatus = new QLabel(content);
     m_commandStatus->setObjectName(QStringLiteral("commandStatus"));
     m_commandStatus->setAlignment(Qt::AlignCenter);
     m_commandStatus->setWordWrap(true);
@@ -92,8 +109,8 @@ ActionBar::ActionBar(ShellModel &model, QWidget *parent)
         " border: 1px solid #b8c4d0; border-radius: 4px; padding: 4px; }"));
     layout->addWidget(m_commandStatus);
 
-    auto make = [this, layout](const QString &text) {
-        auto *b = new PermissionButton(text, this);
+    auto make = [this, content, layout](const QString &text) {
+        auto *b = new PermissionButton(text, content);
         // 56 logical px remains a large touch target while keeping every
         // safety control visible on a 768 px-high / 125%-scaled display.
         b->setMinimumHeight(56);
@@ -101,8 +118,8 @@ ActionBar::ActionBar(ShellModel &model, QWidget *parent)
         return b;
     };
 
-    auto addGroupLabel = [this, layout](const QString &text) {
-        auto *label = new QLabel(text, this);
+    auto addGroupLabel = [content, layout](const QString &text) {
+        auto *label = new QLabel(text, content);
         label->setObjectName(QStringLiteral("actionGroupLabel"));
         layout->addWidget(label);
     };
@@ -116,19 +133,31 @@ ActionBar::ActionBar(ShellModel &model, QWidget *parent)
     addGroupLabel(QStringLiteral("流程控制"));
     m_start = make(QStringLiteral("启动"));
     m_start->setObjectName(QStringLiteral("startButton"));
-    m_stop = make(QStringLiteral("停止"));
-    m_stop->setObjectName(QStringLiteral("stopButton"));
     m_reset = make(QStringLiteral("复位"));
     m_reset->setObjectName(QStringLiteral("resetButton"));
 
     addGroupLabel(QStringLiteral("当前账户"));
     m_login = make(QStringLiteral("登录"));
     m_login->setObjectName(QStringLiteral("loginButton"));
-
-    // Software estop: separated from normal actions with a spacer, fixed red
-    // danger style (spec §10.6). Any user may set it while online.
     layout->addStretch();
-    m_estop = new PermissionButton(QStringLiteral("软件急停"), this);
+
+    // Pinned safety strip: Stop and the software estop stay outside the scroll
+    // area, separated from the normal actions (spec §10.6), so they remain
+    // fully inside the window at every supported size without scrolling.
+    m_safetyStrip = new QWidget(this);
+    m_safetyStrip->setObjectName(QStringLiteral("actionBarSafetyStrip"));
+    auto *stripLayout = new QVBoxLayout(m_safetyStrip);
+    stripLayout->setContentsMargins(0, 0, 0, 0);
+    stripLayout->setSpacing(4);
+
+    m_stop = new PermissionButton(QStringLiteral("停止"), m_safetyStrip);
+    m_stop->setObjectName(QStringLiteral("stopButton"));
+    m_stop->setMinimumHeight(56);
+    stripLayout->addWidget(m_stop);
+
+    // Software estop: fixed red danger style (spec §10.6). Any user may set it
+    // while online.
+    m_estop = new PermissionButton(QStringLiteral("软件急停"), m_safetyStrip);
     m_estop->setObjectName(QStringLiteral("estopButton"));
     m_estop->setProperty("danger", true);
     m_estop->setMinimumHeight(80);
@@ -139,7 +168,9 @@ ActionBar::ActionBar(ShellModel &model, QWidget *parent)
                        " color: white; font-weight: bold; border: 3px solid #7a1010;"
                        " border-radius: 6px; text-align: top; }"
                        "QPushButton#estopButton:disabled { background-color: #8a5555; }"));
-    layout->addWidget(m_estop);
+    stripLayout->addWidget(m_estop);
+
+    root->addWidget(m_safetyStrip);
 
     connect(m_manual, &QPushButton::clicked, this,
             [this] { emit modeSwitchRequested(false); });

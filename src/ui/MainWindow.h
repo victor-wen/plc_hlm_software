@@ -8,6 +8,7 @@
 
 class QStackedWidget;
 class QPushButton;
+class QScrollArea;
 
 namespace hlm {
 
@@ -47,6 +48,8 @@ public:
     QString currentPageTitle() const;
     QString alarmBannerText() const;
     int navItemMinimumHeight() const;
+    // Page widget at a stack index (the scroll area's content, not the area).
+    QWidget *pageWidget(int index) const;
 
     QPushButton *estopButton() const;   // from ActionBar
     QPushButton *startButton() const;
@@ -80,6 +83,9 @@ private:
     void buildLayout();
     void createPages();
     void loadTheme();
+    // Wraps a page in a widget-resizable scroll area so tall pages scroll
+    // instead of forcing the window minimum (PLC-HMI-006 D1/D2).
+    QScrollArea *wrapPageInScrollArea(QWidget *page);
 
     ShellModel *m_model = nullptr;
     TopBar *m_topBar = nullptr;

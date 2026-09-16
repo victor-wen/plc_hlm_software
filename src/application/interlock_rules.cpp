@@ -37,6 +37,9 @@ InterlockResult InterlockRules::checkAdjustWidth(const DeviceSnapshot &s, bool o
     add(r.unmet, !s.m0(), QStringLiteral("急停有效"));
     add(r.unmet, !s.m14(), QStringLiteral("存在锁存故障"));
     add(r.unmet, !s.m50(), QStringLiteral("正在回原点"));
+    // 50-400 mm 是操作员/配方的有意包络 (需求 D128 50~400), 由 HMI 在此执行;
+    // 它不是解码 PLC 梯图的限制. 仿真器只建模解码后的 M43 前置条件, 因此
+    // 超出包络的目标不会在 parity 侧复现 (PLC-HMI-006 D5; CORE-005-LOW-1).
     add(r.unmet, targetWidth >= 50 && targetWidth <= 400,
         QStringLiteral("目标宽度需在 50-400 mm 之间"));
     add(r.unmet, s.fieldValid(SnapshotField::PulsePerMm) && s.pulsePerMm() >= 1

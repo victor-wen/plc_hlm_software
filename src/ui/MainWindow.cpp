@@ -22,6 +22,7 @@
 #include <QFile>
 #include <QDebug>
 #include <QEvent>
+#include <QScrollArea>
 
 // Force the theme.qss resource object into the link (static lib). Must be at
 // global scope so Q_INIT_RESOURCE resolves to the un-namespaced symbol.
@@ -105,19 +106,44 @@ void MainWindow::buildLayout()
 
 void MainWindow::createPages()
 {
-    // Order must match NavPanel's 7 items (spec §11.1, §11.3).
-    m_pages->addWidget(new OverviewPage(*m_model, this));
-    m_pages->addWidget(new RecipeWidthPage(*m_model, this));
+    // Order must match NavPanel's 7 items (spec §11.1, §11.3). Each page lives
+    // inside a widget-resizable QScrollArea so a page taller/wider than the
+    // presented envelope scrolls instead of forcing a minimum window size
+    // (F-02/NF-01 responsive envelope, PLC-HMI-006 D1/D2). Pages must not
+    // become children of the scroll viewport: page tests instantiate them
+    // standalone and every page keeps its own layout.
+    m_pages->addWidget(wrapPageInScrollArea(new OverviewPage(*m_model, this)));
+    m_pages->addWidget(wrapPageInScrollArea(new RecipeWidthPage(*m_model, this)));
     auto *manualPage = new ManualControlPage(*m_model, this);
-    m_pages->addWidget(manualPage);
+    m_pages->addWidget(wrapPageInScrollArea(manualPage));
     // Register the page's HoldButtons so page switch / modal dialog / logout /
     // window deactivation cancel active holds (spec §10.7).
     for (HoldButton *hb : manualPage->findChildren<HoldButton *>())
         registerHoldWidget(hb);
-    m_pages->addWidget(new AlarmPage(this));
-    m_pages->addWidget(new AuditLogPage(this));
-    m_pages->addWidget(new DiagnosticsPage(*m_model, this));
-    m_pages->addWidget(new UsersSettingsPage(*m_model, this));
+    m_pages->addWidget(wrapPageInScrollArea(new AlarmPage(this)));
+    m_pages->addWidget(wrapPageInScrollArea(new AuditLogPage(this)));
+    m_pages->addWidget(wrapPageInScrollArea(new DiagnosticsPage(*m_model, this)));
+    m_pages->addWidget(wrapPageInScrollArea(new UsersSettingsPage(*m_model, this)));
+}
+
+QScrollArea *MainWindow::wrapPageInScrollArea(QWidget *page)
+{
+    auto *area = new QScrollArea(this);
+    area->setObjectName(QStringLiteral("pageScroll"));
+    area->setFrameShape(QFrame::NoFrame);
+    area->setWidgetResizable(true);
+    area->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    area->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    area->setWidget(page);
+    return area;
+}
+
+QWidget *MainWindow::pageWidget(int index) const
+{
+    if (index < 0 || index >= m_pages->count())
+        return nullptr;
+    auto *area = qobject_cast<QScrollArea *>(m_pages->widget(index));
+    return area != nullptr ? area->widget() : m_pages->widget(index);
 }
 
 int MainWindow::navItemCount() const
