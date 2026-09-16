@@ -43,6 +43,8 @@ DatabaseService::DatabaseService(QString databasePath, QObject *parent)
     qRegisterMetaType<QVector<AlarmEventRecord>>();
     qRegisterMetaType<QVector<AuditRecord>>();
     qRegisterMetaType<std::optional<SettingRecord>>();
+    qRegisterMetaType<SettingsBatch>();
+    qRegisterMetaType<SettingsBatchResult>();
 }
 
 DatabaseService::~DatabaseService()
@@ -323,6 +325,27 @@ void DatabaseService::getSetting(const QString &key)
         return;
     }
     emit settingLoaded(m_settings->getSetting(key));
+}
+
+void DatabaseService::saveSerialSettingsBatch(const SettingsBatch &batch)
+{
+    if (queueToWorkerIfNeeded([this, batch]() { saveSerialSettingsBatch(batch); }))
+        return;
+
+    SettingsBatchResult result;
+    result.batch_id = batch.batch_id;
+    if (!m_settings) {
+        // Deterministic restricted-mode result: the request never disappears
+        // and the caller can correlate it by batch id.
+        result.committed = false;
+        result.error = QStringLiteral("database restricted");
+        emit serialSettingsBatchSaved(result);
+        return;
+    }
+    QString error;
+    result.committed = m_settings->saveSerialSettingsBatch(batch, &error);
+    result.error = error;
+    emit serialSettingsBatchSaved(result);
 }
 
 void DatabaseService::feedPlcAlarmSnapshot(quint16 d110, bool m14, bool m4, quint64 sequence)

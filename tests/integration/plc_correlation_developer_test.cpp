@@ -1,5 +1,5 @@
 // PLC-HMI-003 developer regression tests (D9): correlated submission
-// completions, stale/obsolete identity rejection, gateway replacement
+// completions, stale/obsolete identity rejection, serial-save/gateway
 // isolation, defensive parameter-write timeout, real block quality/age and
 // independent D210 validity, and M112 absence. These complement (never
 // replace) the independent black-box tests in
@@ -194,8 +194,8 @@ private slots:
     // --- coordinator: stale / obsolete identity rejection ---------------------
     void unknownAndObsoleteCompletionsAreIgnored();
 
-    // --- application: gateway replacement isolation ---------------------------
-    void gatewayReplacementAdvancesGenerationAndConvergesPending();
+    // --- application: serial save keeps the simulator; convergence unchanged --
+    void serialSaveKeepsTheSimulatorAndConvergenceStillApplies();
 
     // --- adapter: defensive parameter-write confirmation timeout --------------
     void parameterWriteConfirmationTimeoutConverges();
@@ -319,7 +319,7 @@ void PlcCorrelationDeveloperTest::unknownAndObsoleteCompletionsAreIgnored()
 
 // --- application: replacement isolation ---------------------------------------
 
-void PlcCorrelationDeveloperTest::gatewayReplacementAdvancesGenerationAndConvergesPending()
+void PlcCorrelationDeveloperTest::serialSaveKeepsTheSimulatorAndConvergenceStillApplies()
 {
     SimApp fixture;
     Application *app = fixture.app.get();
@@ -331,15 +331,14 @@ void PlcCorrelationDeveloperTest::gatewayReplacementAdvancesGenerationAndConverg
     const quint64 generationBefore = gw1->gatewayGeneration();
     QVERIFY(generationBefore != 0);
 
-    // A pending command must converge when the gateway is replaced.
+    // A pending command exists while the serial settings are saved.
     app->coordinator()->setRole(Role::Admin);
     homeReady(*gw1);
     putInAutoMode(*gw1);
     QVERIFY(app->coordinator()->reset().accepted);
     QVERIFY(app->coordinator()->resetInProgress());
 
-    // Trigger the real replacement path (serial-config save -> rebuild).
-    // Stage a session username so the settings batch passes the audit column.
+    // Stage a session username so the settings batch carries updated_by.
     UserRecord admin;
     admin.id = 1;
     admin.username = QStringLiteral("admin");
@@ -348,23 +347,31 @@ void PlcCorrelationDeveloperTest::gatewayReplacementAdvancesGenerationAndConverg
 
     auto *usersPage = app->window()->findChild<UsersSettingsPage *>();
     QVERIFY(usersPage != nullptr);
-    SerialConfig cfg = AppConfig().serial;
-    cfg.comPort = QStringLiteral("SIM");
-    QSignalSpy savedSpy(app->database(), &DatabaseService::settingSaved);
-    emit usersPage->saveSerialConfigRequested(cfg);
-    QTRY_VERIFY_WITH_TIMEOUT(savedSpy.count() >= 7, 10000);
-    for (const auto &save : savedSpy)
-        QVERIFY2(save.at(0).toBool(), "every serial setting must commit");
-    QTRY_VERIFY_WITH_TIMEOUT(app->gateway() != gw1, 10000);
-    IPlcGateway *replacement = app->gateway();
-    QVERIFY(replacement != nullptr);
-    QVERIFY2(replacement->gatewayGeneration() > generationBefore,
-             "gateway replacement must advance the generation");
-    QVERIFY2(!app->coordinator()->resetInProgress(),
-             "a pending command must converge on replacement");
+    SerialConnectionSettings cfg = AppConfig().serial;
+    cfg.port_name = QStringLiteral("SIM");
+    QSignalSpy batchSpy(app->database(),
+                        &DatabaseService::serialSettingsBatchSaved);
+    emit usersPage->saveSerialSettingsRequested(cfg);
+    QTRY_VERIFY_WITH_TIMEOUT(batchSpy.count() >= 1, 10000);
 
-    // A late completion from the old generation must not affect a command of
-    // the new generation: the composition root rejects older generations.
+    // PLC-HMI-004 D6 supersedes the old "serial save -> rebuild" trigger:
+    // serial transport settings only affect the real Modbus gateway, while the
+    // in-process simulator has no serial transport. A committed save must not
+    // stop, replace or regress the simulator, must report exactly one
+    // correlated batch result, and must not disturb an in-flight command.
+    QCOMPARE(batchSpy.count(), 1);
+    const SettingsBatchResult result =
+        batchSpy[0][0].value<SettingsBatchResult>();
+    QVERIFY2(result.committed, qPrintable(result.error));
+    QVERIFY(result.batch_id != 0);
+    QVERIFY(app->gateway() == static_cast<IPlcGateway *>(gw1));
+    QCOMPARE(app->gateway()->gatewayGeneration(), generationBefore);
+    QVERIFY(gw1->isOnline());
+    QVERIFY2(app->coordinator()->resetInProgress(),
+             "a serial save must not silently converge or drop a pending command");
+
+    // A late completion from an older generation must not affect the pending
+    // command: the composition root rejects obsolete generations.
     QVector<bool> outcomes;
     connect(app->coordinator(), &ControlCoordinator::commandResult, this,
             [&outcomes](Command cmd, bool ok, const QString &) {
@@ -379,6 +386,15 @@ void PlcCorrelationDeveloperTest::gatewayReplacementAdvancesGenerationAndConverg
     stale.result = false;
     app->coordinator()->onSubmissionCompleted(stale);
     QVERIFY(outcomes.isEmpty());
+
+    // The replacement/offline convergence machinery itself is unchanged: the
+    // same coordinator call the real rebuild path performs converges the
+    // pending command exactly once, with a visible failure.
+    app->coordinator()->onConnectionChanged(false);
+    QCOMPARE(outcomes.size(), 1);
+    QVERIFY(!outcomes[0]);
+    QVERIFY2(!app->coordinator()->resetInProgress(),
+             "the pending command must converge when the gateway goes offline");
 
     app->shutdown();
 }

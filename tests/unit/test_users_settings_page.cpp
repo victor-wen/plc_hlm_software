@@ -437,7 +437,7 @@ void UsersSettingsPageTest::serialConfigValidation()
     QVERIFY(m.serialConfigValid());
 
     // 站号 1-247.
-    SerialConfig cfg = m.serialConfig();
+    SerialConnectionSettings cfg = m.serialConfig();
     cfg.station = 0;
     m.setSerialConfig(cfg);
     QVERIFY(!m.serialConfigValid());
@@ -453,19 +453,19 @@ void UsersSettingsPageTest::serialConfigValidation()
     // 波特率 9600/19200.
     cfg = m.serialConfig();
     cfg.station = 1; // restore a valid station
-    cfg.baudRate = 115200;
+    cfg.baud_rate = 115200;
     m.setSerialConfig(cfg);
     QVERIFY(!m.serialConfigValid());
-    cfg.baudRate = 19200;
+    cfg.baud_rate = 19200;
     m.setSerialConfig(cfg);
     QVERIFY(m.serialConfigValid());
 
     // 停止位 1/2, 校验 无/奇/偶.
     cfg = m.serialConfig();
-    cfg.stopBits = 3;
+    cfg.stop_bits = 3;
     m.setSerialConfig(cfg);
     QVERIFY(!m.serialConfigValid());
-    cfg.stopBits = 2;
+    cfg.stop_bits = 2;
     m.setSerialConfig(cfg);
     QVERIFY(m.serialConfigValid());
     cfg.parity = QStringLiteral("奇");
@@ -648,14 +648,14 @@ void UsersSettingsPageTest::serialConfigFeedEchoesStoredValues()
     model.setUser(QStringLiteral("admin"), Role::Admin);
 
     // 回显实际存储的串口配置 (Task 20 接线 DatabaseService::getSetting).
-    SerialConfig cfg;
-    cfg.comPort = QStringLiteral("COM3");
+    SerialConnectionSettings cfg;
+    cfg.port_name = QStringLiteral("COM3");
     cfg.station = 7;
-    cfg.baudRate = 19200;
-    cfg.stopBits = 2;
+    cfg.baud_rate = 19200;
+    cfg.stop_bits = 2;
     cfg.parity = QStringLiteral("偶");
-    cfg.timeoutMs = 500;
-    cfg.readRetries = 3;
+    cfg.timeout_ms = 500;
+    cfg.read_retries = 3;
     page.setSerialConfig(cfg);
 
     QCOMPARE(page.comPortEdit()->text(), QStringLiteral("COM3"));

@@ -50,6 +50,8 @@ public:
 
     bool setSetting(const SettingRecord &s, QString *error = nullptr) override;
     std::optional<SettingRecord> getSetting(const QString &key) const override;
+    bool saveSerialSettingsBatch(const SettingsBatch &batch,
+                                 QString *error = nullptr) override;
 
 private:
     QSqlDatabase m_db;

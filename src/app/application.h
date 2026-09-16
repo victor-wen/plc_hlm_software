@@ -16,9 +16,11 @@
 //  - EstopRelease interception (spec §10.6): an admin confirming release of a
 //    latched software estop goes through a QMessageBox before
 //    coordinator.estopRelease(); everything else is coordinator.estopSet().
-//  - Serial config persistence (spec §8.1): saveSerialConfigRequested persists
-//    the 7 serial.* keys to app_settings, then rebuilds the gateway with the
-//    new configuration and re-wires all gateway signals.
+//  - Serial config persistence (spec §8.1, NF-08): one atomic batch writes all
+//    seven serial keys, the matching successful result rebuilds the real
+//    gateway, and a duplicate in-flight save is rejected visibly.
+//  - Passive serial discovery (spec C-11): enumeration runs only on explicit
+//    administrator action and never touches the active gateway.
 //  - D204 write (spec §11.3): the admin password is re-verified via
 //    DatabaseService::verifyPassword before the register write is issued.
 //  - Startup order (spec §13): db.start() -> load persisted serial settings ->
@@ -37,7 +39,8 @@
 #include "app/configuration.h"
 #include "application/control_coordinator.h"
 #include "domain/operator_command_status.h"
-#include "ports/repositories.h" // SettingRecord, UserRecord
+#include "ports/iserial_port_discovery.h"
+#include "ports/repositories.h" // SettingRecord, UserRecord, SettingsBatchResult
 
 class QMainWindow;
 class QTimer;
@@ -57,7 +60,6 @@ class ManualControlPage;
 class AlarmPage;
 class AuditLogPage;
 class DiagnosticsPage;
-struct SerialConfig;
 
 class Application : public QObject
 {
@@ -87,8 +89,10 @@ private:
     void wireSignals();
     void wireGateway(IPlcGateway *gw);
     void startGatewayIfNeeded();
-    void rebuildGateway(const SerialConfig &cfg);
-    void persistSerialConfig(const SerialConfig &cfg);
+    void rebuildGateway(const SerialConnectionSettings &cfg);
+    void persistSerialSettings(const SerialConnectionSettings &settings);
+    void handleSerialSettingsBatchSaved(const SettingsBatchResult &result);
+    void handleEnumerationCompleted(const SerialEnumerationResult &result);
     void handleSettingLoaded(const std::optional<SettingRecord> &setting);
     void handleSubmissionCompleted(const SubmissionCompletion &completion);
     void handleParameterWrite(quint16 address, quint16 value);
@@ -137,12 +141,17 @@ private:
     // request, carried by every projected OperatorCommandStatus.
     quint64 m_commandGeneration = 0;
 
-    // Serial config persistence bookkeeping (spec §8.1).
-    int m_pendingSerialSaves = 0;
-    bool m_serialSaveFailed = false;
-    SerialConfig m_pendingSerialCfg;
+    // Serial config persistence bookkeeping (spec §8.1, NF-08): one atomic
+    // batch in flight at a time, correlated by batch id.
+    quint64 m_nextSerialBatchId = 0;
+    quint64 m_pendingSerialBatchId = 0;
+    SerialConnectionSettings m_pendingSerialSettings;
     int m_pendingSerialLoads = 0;
-    SerialConfig m_loadedSerialCfg;
+    SerialConnectionSettings m_loadedSerialCfg;
+
+    // Passive discovery boundary: injected or owned (created in createObjects).
+    ISerialPortDiscovery *m_discovery = nullptr;
+    quint64 m_pendingEnumerationRequestId = 0;
 
     // Idempotency guard: shutdown() runs from aboutToQuit and again from the
     // destructor; the second call must not re-issue clears against a stopped

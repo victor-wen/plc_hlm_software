@@ -82,7 +82,7 @@ void UsersSettingsModel::setUsers(const QVector<UserRecord> &users)
     emit stateChanged();
 }
 
-void UsersSettingsModel::setSerialConfig(const SerialConfig &cfg)
+void UsersSettingsModel::setSerialConfig(const SerialConnectionSettings &cfg)
 {
     m_serial = cfg;
     emit stateChanged();
@@ -96,21 +96,21 @@ bool UsersSettingsModel::serialConfigValid() const
 QStringList UsersSettingsModel::serialConfigReasons() const
 {
     QStringList reasons;
-    if (m_serial.comPort.trimmed().isEmpty())
+    if (m_serial.port_name.trimmed().isEmpty())
         reasons.append(QStringLiteral("COM 口不能为空"));
     if (m_serial.station < 1 || m_serial.station > 247)
         reasons.append(QStringLiteral("站号需在 1-247 之间"));
-    if (m_serial.baudRate != 9600 && m_serial.baudRate != 19200)
+    if (m_serial.baud_rate != 9600 && m_serial.baud_rate != 19200)
         reasons.append(QStringLiteral("波特率仅支持 9600 或 19200"));
-    if (m_serial.stopBits != 1 && m_serial.stopBits != 2)
+    if (m_serial.stop_bits != 1 && m_serial.stop_bits != 2)
         reasons.append(QStringLiteral("停止位仅支持 1 或 2"));
     if (m_serial.parity != QStringLiteral("无")
         && m_serial.parity != QStringLiteral("奇")
         && m_serial.parity != QStringLiteral("偶"))
         reasons.append(QStringLiteral("校验仅支持 无/奇/偶"));
-    if (m_serial.timeoutMs <= 0)
+    if (m_serial.timeout_ms <= 0)
         reasons.append(QStringLiteral("超时需大于 0"));
-    if (m_serial.readRetries < 0)
+    if (m_serial.read_retries < 0)
         reasons.append(QStringLiteral("读重试次数不能为负"));
     return reasons;
 }

@@ -12,6 +12,7 @@
 #include "adapters/modbus/pulse_state_machine.h"
 #include "adapters/modbus/reconnect_policy.h"
 #include "adapters/modbus/request_queue.h"
+#include "domain/serial_connection_settings.h"
 #include "ports/iplc_gateway.h"
 
 namespace hlm {
@@ -42,6 +43,14 @@ public:
         QSerialPort::StopBits stopBits = QSerialPort::OneStop;
         int timeoutMs = 200;
         int readRetries = 1; // spec §8.4: read requests may retry once
+
+        // Builds a transport configuration from the transport-neutral serial
+        // settings (SerialConnectionSettings.rule, ARCH-005, NF-04). This is
+        // the only place the neutral values are mapped to QSerialPort enums:
+        //   station/baudRate/timeoutMs/readRetries pass through,
+        //   stop_bits 2 -> TwoStop else OneStop,
+        //   parity 奇 -> OddParity, 偶 -> EvenParity, otherwise NoParity.
+        static Config fromSettings(const SerialConnectionSettings &settings);
     };
 
     explicit QtModbusPlcGateway(const Config &cfg, QObject *parent = nullptr);

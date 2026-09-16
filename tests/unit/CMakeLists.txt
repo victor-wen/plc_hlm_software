@@ -362,6 +362,42 @@ target_link_libraries(test_plc_stale_publication_developer PRIVATE
 )
 add_test(NAME plc_stale_publication_developer COMMAND test_plc_stale_publication_developer)
 
-set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page control_panel operator_command_lifecycle command_status_projection command_feedback_pages operator_lifecycle_developer recipe_editor_state recipe_result_feedback recipe_editor_developer PROPERTIES
+# --- PLC-HMI-004: passive serial discovery + atomic settings batch -------------
+# QTEST_GUILESS_MAIN targets (no QApplication): no offscreen entry needed.
+
+add_executable(test_serial_connection_settings serial_connection_settings_test.cpp)
+target_link_libraries(test_serial_connection_settings PRIVATE
+    hlm_core
+    Qt6::Test
+)
+add_test(NAME serial_connection_settings COMMAND test_serial_connection_settings)
+
+add_executable(test_serial_discovery_contract serial_discovery_contract_test.cpp)
+target_link_libraries(test_serial_discovery_contract PRIVATE
+    hlm_core
+    Qt6::Test
+)
+add_test(NAME serial_discovery_contract COMMAND test_serial_discovery_contract)
+
+# QTEST_MAIN widget target: add serial_settings_page to the offscreen
+# set_tests_properties(...) list at the end of this file.
+add_executable(test_serial_settings_page serial_settings_page_test.cpp)
+target_link_libraries(test_serial_settings_page PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME serial_settings_page COMMAND test_serial_settings_page)
+
+# --- PLC-HMI-004: developer-owned batch atomicity regression (D7) ------------
+# QTEST_GUILESS_MAIN (QCoreApplication): no offscreen entry needed.
+
+add_executable(test_serial_settings_batch_developer serial_settings_batch_developer_test.cpp)
+target_link_libraries(test_serial_settings_batch_developer PRIVATE
+    hlm_sqlite
+    Qt6::Test
+)
+add_test(NAME serial_settings_batch_developer COMMAND test_serial_settings_batch_developer)
+
+set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page control_panel operator_command_lifecycle command_status_projection command_feedback_pages operator_lifecycle_developer recipe_editor_state recipe_result_feedback recipe_editor_developer serial_settings_page PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )

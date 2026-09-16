@@ -40,6 +40,28 @@ RequestClass requestClassFor(CommandPriority priority)
 
 } // namespace
 
+// Maps the transport-neutral serial settings onto the gateway transport
+// configuration. The QSerialPort enum conversion lives only here, inside
+// hlm_modbus (SerialConnectionSettings.rule, NF-04); mapping semantics are
+// identical to the previous composition-root helper.
+QtModbusPlcGateway::Config QtModbusPlcGateway::Config::fromSettings(
+    const SerialConnectionSettings &settings)
+{
+    Config cfg;
+    cfg.portName = settings.port_name;
+    cfg.baudRate = settings.baud_rate;
+    cfg.station = quint8(qBound(1, settings.station, 247));
+    cfg.stopBits =
+        settings.stop_bits == 2 ? QSerialPort::TwoStop : QSerialPort::OneStop;
+    cfg.parity = settings.parity == QStringLiteral("偶")
+        ? QSerialPort::EvenParity
+        : (settings.parity == QStringLiteral("奇") ? QSerialPort::OddParity
+                                                   : QSerialPort::NoParity);
+    cfg.timeoutMs = settings.timeout_ms;
+    cfg.readRetries = settings.read_retries;
+    return cfg;
+}
+
 // ---------------------------------------------------------------------------
 // Real transport over QModbusRtuSerialClient (spec §7.2, §8.1).
 // ---------------------------------------------------------------------------

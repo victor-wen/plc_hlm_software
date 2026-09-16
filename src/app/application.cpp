@@ -4,11 +4,11 @@
 #include <QDateTime>
 #include <QDebug>
 #include <QMessageBox>
-#include <QSerialPort>
 #include <QThread>
 #include <QTimer>
 
 #include "adapters/modbus/qt_modbus_plc_gateway.h"
+#include "adapters/modbus/qt_serial_port_discovery.h"
 #include "adapters/simulator/simulated_plc_gateway.h"
 #include "adapters/sqlite/database_service.h"
 #ifdef HLM_ENABLE_VISION
@@ -17,6 +17,7 @@
 #include "app/lifecycle_controller.h"
 #include "application/control_coordinator.h"
 #include "ports/iplc_gateway.h"
+#include "ports/iserial_port_discovery.h"
 #include "ports/ivision_service.h"
 #include "ui/MainWindow.h"
 #include "ui/pages/alarm_page.h"
@@ -64,23 +65,6 @@ OperatorCommandState lifecycleStateForResult(bool ok, const QString &detail)
     return OperatorCommandState::Failed;
 }
 
-// Maps a persisted SerialConfig onto the real gateway's Config (spec §8.1).
-QtModbusPlcGateway::Config toModbusConfig(const SerialConfig &s)
-{
-    QtModbusPlcGateway::Config cfg;
-    cfg.portName = s.comPort;
-    cfg.baudRate = s.baudRate;
-    cfg.station = quint8(qBound(1, s.station, 247));
-    cfg.stopBits = s.stopBits == 2 ? QSerialPort::TwoStop : QSerialPort::OneStop;
-    cfg.parity = s.parity == QStringLiteral("偶")
-        ? QSerialPort::EvenParity
-        : (s.parity == QStringLiteral("奇") ? QSerialPort::OddParity
-                                           : QSerialPort::NoParity);
-    cfg.timeoutMs = s.timeoutMs;
-    cfg.readRetries = s.readRetries;
-    return cfg;
-}
-
 } // namespace
 
 Application::Application(const AppConfig &config, QObject *parent)
@@ -125,13 +109,23 @@ void Application::createObjects()
     m_auditPage = m_window->findChild<AuditLogPage *>();
     m_diagPage = m_window->findChild<DiagnosticsPage *>();
 
+    // Passive serial discovery (spec §8.1, C-11): the configuration carries
+    // only the port pointer; the real adapter is composed here unless an
+    // embedding or test injected one. Nothing is enumerated at startup and
+    // enumeration never touches the gateway.
+    qRegisterMetaType<SerialEnumerationResult>("hlm::SerialEnumerationResult");
+    m_discovery = m_cfg.serialPortDiscovery;
+    if (!m_discovery)
+        m_discovery = new QtSerialPortDiscovery(this);
+
     // Gateway: real Modbus by default. The in-process simulator is enabled
     // only by the explicit --sim command-line option (spec §14.2). This keeps
     // a missing physical/virtual PLC from being reported as online.
     if (m_cfg.useSimulatedGateway) {
         m_gw = new SimulatedPlcGateway(this);
     } else {
-        m_gw = new QtModbusPlcGateway(toModbusConfig(m_cfg.serial), this);
+        m_gw = new QtModbusPlcGateway(
+        QtModbusPlcGateway::Config::fromSettings(m_cfg.serial), this);
     }
     // The composition root owns the gateway generation: it increments before
     // every replacement and rejects events from older generations (D4).
@@ -255,8 +249,19 @@ void Application::wireSignals()
             &DatabaseService::changePassword);
     connect(m_usersPage, &UsersSettingsPage::deleteUserRequested, m_db,
             &DatabaseService::deleteUser);
-    connect(m_usersPage, &UsersSettingsPage::saveSerialConfigRequested, this,
-            &Application::persistSerialConfig);
+    connect(m_usersPage, &UsersSettingsPage::saveSerialSettingsRequested, this,
+            &Application::persistSerialSettings);
+    // Explicit administrator action only: the page triggers one passive
+    // enumeration; the completion is correlated by request id.
+    connect(m_usersPage, &UsersSettingsPage::enumerateSerialPortsRequested, this,
+            [this]() {
+                if (!m_discovery)
+                    return;
+                m_pendingEnumerationRequestId =
+                    m_discovery->enumerateAvailablePorts();
+            });
+    connect(m_discovery, &ISerialPortDiscovery::enumerationCompleted, this,
+            &Application::handleEnumerationCompleted);
     connect(m_usersPage, &UsersSettingsPage::writeParameterRequested, this,
             &Application::handleParameterWrite);
     connect(m_usersPage, &UsersSettingsPage::d204WriteRequested, this,
@@ -381,27 +386,8 @@ void Application::wireSignals()
             });
     connect(m_db, &DatabaseService::settingLoaded, this,
             &Application::handleSettingLoaded);
-    connect(m_db, &DatabaseService::settingSaved, this,
-            [this](bool ok, const QString &) {
-                // Ignore unrelated/late callbacks. A serial-save batch owns
-                // exactly seven replies and completes once.
-                if (m_pendingSerialSaves <= 0)
-                    return;
-                --m_pendingSerialSaves;
-                if (!ok)
-                    m_serialSaveFailed = true;
-                if (m_pendingSerialSaves == 0) {
-                    const bool failed = m_serialSaveFailed;
-                    m_serialSaveFailed = false;
-                    if (failed) {
-                        m_usersPage->setSerialSaveResult(
-                            false, QStringLiteral("数据库写入失败"));
-                    } else {
-                        rebuildGateway(m_pendingSerialCfg);
-                        m_usersPage->setSerialSaveResult(true, QString());
-                    }
-                }
-            });
+    connect(m_db, &DatabaseService::serialSettingsBatchSaved, this,
+            &Application::handleSerialSettingsBatchSaved);
     connect(m_db, &DatabaseService::passwordVerified, this,
             &Application::handlePasswordVerified);
     connect(m_db, &DatabaseService::recentAlarmsLoaded, this,
@@ -547,33 +533,73 @@ void Application::onReady()
     m_db->getSetting(QString::fromLatin1(kSerialReadRetries));
 }
 
-// --- serial config persistence (spec §8.1) -----------------------------------
+// --- serial config persistence (spec §8.1, NF-08) ----------------------------
 
-void Application::persistSerialConfig(const SerialConfig &cfg)
+void Application::persistSerialSettings(const SerialConnectionSettings &settings)
 {
-    // One in-flight batch at a time. This also protects non-UI callers from
-    // corrupting the shared reply counter.
-    if (m_pendingSerialSaves > 0)
+    if (m_pendingSerialBatchId != 0) {
+        // Immediate visible rejection: the accepted request owns the batch and
+        // the duplicate is never queued or silently dropped (spec NF-08).
+        m_usersPage->setSerialSettingsSaveResult(
+            false, QStringLiteral("已有保存请求正在处理中，本次请求未提交"));
         return;
-    m_pendingSerialCfg = cfg;
-    m_pendingSerialSaves = 7;
-    m_serialSaveFailed = false;
-    const QString updatedBy = m_lifecycle ? m_lifecycle->currentUsername()
-                                          : QStringLiteral("anonymous");
-    auto save = [this, updatedBy](const QString &key, const QString &value) {
-        SettingRecord s;
-        s.key = key;
-        s.typedValue = value;
-        s.updatedBy = updatedBy;
-        m_db->setSetting(s);
-    };
-    save(QString::fromLatin1(kSerialComPort), cfg.comPort);
-    save(QString::fromLatin1(kSerialStation), QString::number(cfg.station));
-    save(QString::fromLatin1(kSerialBaudRate), QString::number(cfg.baudRate));
-    save(QString::fromLatin1(kSerialStopBits), QString::number(cfg.stopBits));
-    save(QString::fromLatin1(kSerialParity), cfg.parity);
-    save(QString::fromLatin1(kSerialTimeoutMs), QString::number(cfg.timeoutMs));
-    save(QString::fromLatin1(kSerialReadRetries), QString::number(cfg.readRetries));
+    }
+
+    SettingsBatch batch;
+    batch.batch_id = ++m_nextSerialBatchId;
+    batch.settings = settings;
+    // The audit column is NOT NULL: an absent session must never bind a null
+    // string, so the acting user falls back to "anonymous" like the audit path.
+    const QString username =
+        m_lifecycle ? m_lifecycle->currentUsername() : QString();
+    batch.updated_by = username.isEmpty() ? QStringLiteral("anonymous") : username;
+    m_pendingSerialBatchId = batch.batch_id;
+    m_pendingSerialSettings = settings;
+    m_usersPage->setSerialSettingsSavePending();
+    m_db->saveSerialSettingsBatch(batch);
+}
+
+void Application::handleSerialSettingsBatchSaved(const SettingsBatchResult &result)
+{
+    // Correlate strictly by batch id: a result for an unknown or obsolete
+    // request must not complete the outstanding save or touch the gateway.
+    if (result.batch_id == 0 || result.batch_id != m_pendingSerialBatchId)
+        return;
+    m_pendingSerialBatchId = 0;
+
+    if (!result.committed) {
+        // Failure: the active gateway and the previously committed settings
+        // stay unchanged; only the page shows the terminal failure (NF-08).
+        m_usersPage->setSerialSettingsSaveResult(false, result.error);
+        return;
+    }
+
+    const SerialConnectionSettings committed = m_pendingSerialSettings;
+    m_usersPage->setSerialSettings(committed);
+    m_usersPage->setSerialSettingsSaveResult(true, QString());
+
+    // The gateway rebuild begins only here, after the matching successful
+    // batch result. Serial transport settings only affect the real Modbus
+    // gateway: the in-process simulator has no serial transport and must not
+    // be stopped or replaced.
+    if (!m_cfg.useSimulatedGateway)
+        rebuildGateway(committed);
+}
+
+void Application::handleEnumerationCompleted(const SerialEnumerationResult &result)
+{
+    // Only the outstanding request may complete; an unrelated/obsolete id is
+    // ignored and cannot update the page or the gateway (spec C-11).
+    if (m_pendingEnumerationRequestId == 0
+        || result.enumeration_request_id != m_pendingEnumerationRequestId) {
+        return;
+    }
+    m_pendingEnumerationRequestId = 0;
+    if (!result.completion_error.isEmpty()) {
+        m_usersPage->setSerialSettingsEnumerationError(result.completion_error);
+        return;
+    }
+    m_usersPage->setDiscoveredSerialPorts(result.discovered_descriptors);
 }
 
 void Application::handleSettingLoaded(const std::optional<SettingRecord> &setting)
@@ -587,7 +613,7 @@ void Application::handleSettingLoaded(const std::optional<SettingRecord> &settin
         const QString &value = setting->typedValue;
         bool ok = false;
         if (key == QString::fromLatin1(kSerialComPort)) {
-            m_loadedSerialCfg.comPort = value;
+            m_loadedSerialCfg.port_name = value;
         } else if (key == QString::fromLatin1(kSerialStation)) {
             const int v = value.toInt(&ok);
             if (ok)
@@ -595,21 +621,21 @@ void Application::handleSettingLoaded(const std::optional<SettingRecord> &settin
         } else if (key == QString::fromLatin1(kSerialBaudRate)) {
             const int v = value.toInt(&ok);
             if (ok)
-                m_loadedSerialCfg.baudRate = v;
+                m_loadedSerialCfg.baud_rate = v;
         } else if (key == QString::fromLatin1(kSerialStopBits)) {
             const int v = value.toInt(&ok);
             if (ok)
-                m_loadedSerialCfg.stopBits = v;
+                m_loadedSerialCfg.stop_bits = v;
         } else if (key == QString::fromLatin1(kSerialParity)) {
             m_loadedSerialCfg.parity = value;
         } else if (key == QString::fromLatin1(kSerialTimeoutMs)) {
             const int v = value.toInt(&ok);
             if (ok)
-                m_loadedSerialCfg.timeoutMs = v;
+                m_loadedSerialCfg.timeout_ms = v;
         } else if (key == QString::fromLatin1(kSerialReadRetries)) {
             const int v = value.toInt(&ok);
             if (ok)
-                m_loadedSerialCfg.readRetries = v;
+                m_loadedSerialCfg.read_retries = v;
         }
     }
 
@@ -617,14 +643,14 @@ void Application::handleSettingLoaded(const std::optional<SettingRecord> &settin
         return;
 
     m_pendingSerialLoads = 0;
-    m_usersPage->setSerialConfig(m_loadedSerialCfg);
+    m_usersPage->setSerialSettings(m_loadedSerialCfg);
     if (!m_cfg.useSimulatedGateway)
         rebuildGateway(m_loadedSerialCfg);
 }
 
 // Rebuilds the gateway with a new serial configuration: stop the old one,
 // create the new one, re-wire every signal, start (spec §8.1).
-void Application::rebuildGateway(const SerialConfig &cfg)
+void Application::rebuildGateway(const SerialConnectionSettings &cfg)
 {
     if (m_gw) {
         // D4: disconnect every old-gateway signal before deletion, converge
@@ -643,7 +669,8 @@ void Application::rebuildGateway(const SerialConfig &cfg)
     if (m_cfg.useSimulatedGateway) {
         m_gw = new SimulatedPlcGateway(this);
     } else {
-        m_gw = new QtModbusPlcGateway(toModbusConfig(cfg), this);
+        m_gw = new QtModbusPlcGateway(
+            QtModbusPlcGateway::Config::fromSettings(cfg), this);
     }
     m_gw->setGatewayGeneration(m_gatewayGeneration);
     wireGateway(m_gw);

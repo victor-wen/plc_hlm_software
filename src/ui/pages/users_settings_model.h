@@ -7,24 +7,12 @@
 
 #include <optional>
 
+#include "domain/serial_connection_settings.h"
 #include "ports/repositories.h" // UserRecord, LoginResult, Role
 
 namespace hlm {
 
 class ShellModel;
-
-// Serial port configuration (spec §8.1). Defaults: 站号 1, 波特率 9600,
-// 停止位 1, 校验 无 (8N1). COM 口、站号、波特率、停止位、校验、超时和读重试
-// 次数由管理员配置.
-struct SerialConfig {
-    QString comPort = QStringLiteral("COM1");
-    int station = 1;        // 1-247
-    int baudRate = 9600;    // 9600、19200
-    int stopBits = 1;       // 1、2
-    QString parity = QStringLiteral("无"); // 无、奇、偶
-    int timeoutMs = 200;    // 通讯超时
-    int readRetries = 1;    // 读重试次数
-};
 
 // 用户与设置 page model (spec §8.1, §11.3-§11.5). Pure mapping/state over
 // ShellModel (role/snapshot) plus externally-fed auth/settings data (wired by
@@ -78,8 +66,11 @@ public:
     QVector<UserRecord> users() const { return m_users; }
 
     // --- serial config (admin only, spec §8.1) --------------------------------
-    SerialConfig serialConfig() const { return m_serial; }
-    void setSerialConfig(const SerialConfig &cfg);
+    // The canonical value is the transport-neutral domain type
+    // (SerialConnectionSettings); the model only renders/validates it and
+    // never redefines it (spec ARCH-005).
+    SerialConnectionSettings serialConfig() const { return m_serial; }
+    void setSerialConfig(const SerialConnectionSettings &cfg);
     bool serialConfigValid() const;
     QStringList serialConfigReasons() const;
 
@@ -123,7 +114,7 @@ private:
     bool m_sessionExpired = false;
     int m_sessionRemainingSec = 900; // 15 分钟默认 (spec §11.5)
     QVector<UserRecord> m_users;
-    SerialConfig m_serial;
+    SerialConnectionSettings m_serial;
     int m_editedD122 = 1000; // D122 默认 1000
     int m_editedD204 = 1280; // D204 默认 1280
     int m_editedD220 = 2;    // D220 默认 2

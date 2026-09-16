@@ -3,12 +3,18 @@
 // Application configuration (spec §8.1, §11.5, §12). Plain value struct
 // assembled by the composition root (src/app/application.cpp) from defaults,
 // persisted settings and command-line overrides. No I/O here.
+//
+// The serial settings are the transport-neutral domain value and the passive
+// discovery boundary is port-typed: this layer must not depend on UI-owned or
+// concrete serial types (D1, ARCH-005).
 
 #include <QString>
 
-#include "ui/pages/users_settings_model.h" // SerialConfig
+#include "domain/serial_connection_settings.h"
 
 namespace hlm {
+
+class ISerialPortDiscovery;
 
 struct AppConfig {
     // --- database (spec §12) -------------------------------------------------
@@ -16,7 +22,12 @@ struct AppConfig {
     QString databasePath = QStringLiteral("PLC-HLM/app.db");
 
     // --- serial (spec §8.1) ---------------------------------------------------
-    SerialConfig serial; // defaults: COM1, station 1, 9600 8N1
+    SerialConnectionSettings serial; // defaults: COM1, station 1, 9600 8N1
+
+    // Injected passive serial-port discovery boundary. When null the
+    // composition root creates the real QtSerialPortDiscovery adapter; the
+    // configuration itself carries no concrete serial or UI type.
+    ISerialPortDiscovery *serialPortDiscovery = nullptr;
 
     // --- session (spec §11.5) -------------------------------------------------
     int sessionTimeoutSec = 900; // 15 分钟无操作自动注销

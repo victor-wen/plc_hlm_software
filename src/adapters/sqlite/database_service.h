@@ -76,6 +76,12 @@ public slots:
     void listRecipes();
     void setSetting(const SettingRecord &setting);
     void getSetting(const QString &key);
+    // Writes the complete serial settings set in one transaction on the worker
+    // thread and reports exactly one correlated result (batch id echoed) via
+    // serialSettingsBatchSaved (spec NF-08, ARCH-006). In restricted mode the
+    // result is a deterministic failure carrying the batch id; it never
+    // silently disappears.
+    void saveSerialSettingsBatch(const SettingsBatch &batch);
     void feedPlcAlarmSnapshot(quint16 d110, bool m14, bool m4, quint64 sequence);
     void startHmiAlarm(const QString &message, AlarmSeverity severity, quint64 sequence);
     void endHmiAlarm(quint64 sequence);
@@ -102,6 +108,7 @@ signals:
     void recipesLoaded(const QVector<RecipeRecord> &recipes);
     void settingSaved(bool ok, const QString &error);
     void settingLoaded(const std::optional<SettingRecord> &setting);
+    void serialSettingsBatchSaved(const SettingsBatchResult &result);
     void alarmSnapshotProcessed(bool ok, const QString &error);
     void hmiAlarmStarted(bool ok, const QString &error);
     void hmiAlarmEnded(bool ok, const QString &error);

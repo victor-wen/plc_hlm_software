@@ -59,6 +59,9 @@ add_library(hlm_core STATIC
     src/domain/operator_command_status.cpp
     src/domain/password_derivation.cpp
     src/ports/iplc_gateway.cpp
+    # Header-only Q_OBJECT boundary; listed so AUTOMOC emits its meta-object
+    # into hlm_core (same pattern as iplc_gateway.h/ivision_service.h).
+    src/ports/iserial_port_discovery.h
     src/ports/ivision_service.cpp
 )
 target_include_directories(hlm_core PUBLIC src)
@@ -92,6 +95,7 @@ add_library(hlm_modbus STATIC
     src/adapters/modbus/request_queue.cpp
     src/adapters/modbus/reconnect_policy.cpp
     src/adapters/modbus/qt_modbus_plc_gateway.cpp
+    src/adapters/modbus/qt_serial_port_discovery.cpp
 )
 target_include_directories(hlm_modbus PUBLIC src)
 target_link_libraries(hlm_modbus PUBLIC

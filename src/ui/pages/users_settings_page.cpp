@@ -68,6 +68,13 @@ UsersSettingsPage::UsersSettingsPage(ShellModel &model, QWidget *parent)
 {
     setObjectName(QStringLiteral("usersSettingsPage"));
     buildLayout();
+    // Contract-named aliases are emitted through internal signal chaining, so
+    // a consumer bound to either spelling observes exactly one request per
+    // administrator action (never a duplicate).
+    connect(this, &UsersSettingsPage::saveSerialSettingsRequested, this,
+            &UsersSettingsPage::saveSerialConfigRequested);
+    connect(this, &UsersSettingsPage::enumerateSerialPortsRequested, this,
+            &UsersSettingsPage::refreshPortsRequested);
     connect(&m_model, &ShellModel::stateChanged, this, &UsersSettingsPage::refresh);
     connect(&m_pageModel, &UsersSettingsModel::stateChanged, this,
             &UsersSettingsPage::refresh);
@@ -398,6 +405,19 @@ QWidget *UsersSettingsPage::buildSerialSection()
     m_comPort->setMinimumHeight(48);
     m_comPort->setText(QStringLiteral("COM1"));
     form->addRow(QStringLiteral("COM 口"), m_comPort);
+    // Discovered ports are suggestions for the administrator; selecting one
+    // only fills the manual entry and nothing is applied without an explicit
+    // save (spec C-11).
+    m_serialPortCombo = new QComboBox(box);
+    m_serialPortCombo->setObjectName(QStringLiteral("serialPortComboBox"));
+    m_serialPortCombo->setMinimumHeight(48);
+    form->addRow(QStringLiteral("可用串口"), m_serialPortCombo);
+    connect(m_serialPortCombo, QOverload<int>::of(&QComboBox::activated), this,
+            [this](int index) {
+                const QString port = m_serialPortCombo->itemData(index).toString();
+                if (!port.isEmpty())
+                    m_comPort->setText(port);
+            });
     m_station = new QSpinBox(box);
     m_station->setObjectName(QStringLiteral("station"));
     m_station->setRange(1, 247); // 站号 1-247 (spec §8.1)
@@ -443,6 +463,13 @@ QWidget *UsersSettingsPage::buildSerialSection()
     m_serialStatus->setMinimumHeight(32);
     m_serialStatus->setWordWrap(true);
     layout->addWidget(m_serialStatus);
+
+    m_refreshSerialPorts = new QPushButton(QStringLiteral("刷新串口列表"), box);
+    m_refreshSerialPorts->setObjectName(QStringLiteral("refreshSerialPortsButton"));
+    m_refreshSerialPorts->setMinimumHeight(48);
+    layout->addWidget(m_refreshSerialPorts);
+    connect(m_refreshSerialPorts, &QPushButton::clicked, this,
+            &UsersSettingsPage::onRefreshSerialPortsClicked);
 
     m_saveSerial = new QPushButton(QStringLiteral("保存并重连"), box);
     m_saveSerial->setObjectName(QStringLiteral("saveSerialButton"));
@@ -679,33 +706,131 @@ void UsersSettingsPage::setParameterWriteResult(bool ok, const QString &detail)
     refresh();
 }
 
-void UsersSettingsPage::setSerialConfig(const SerialConfig &config)
+void UsersSettingsPage::setSerialConfig(const SerialConnectionSettings &config)
 {
-    m_pageModel.setSerialConfig(config);
+    setSerialSettings(config);
+}
+
+void UsersSettingsPage::setSerialSettings(const SerialConnectionSettings &settings)
+{
+    m_pageModel.setSerialConfig(settings);
+    m_serialSavePending = false;
+    applySerialSettingsToWidgets(settings);
+}
+
+void UsersSettingsPage::applySerialSettingsToWidgets(const SerialConnectionSettings &settings)
+{
     // 回显实际存储的串口配置 (Task 20 接线 DatabaseService::getSetting).
-    m_comPort->setText(config.comPort);
-    m_station->setValue(config.station);
-    const int baudIdx = m_baudRate->findData(config.baudRate);
+    m_comPort->setText(settings.port_name);
+    m_station->setValue(settings.station);
+    const int baudIdx = m_baudRate->findData(settings.baud_rate);
     if (baudIdx >= 0)
         m_baudRate->setCurrentIndex(baudIdx);
-    const int stopIdx = m_stopBits->findData(config.stopBits);
+    const int stopIdx = m_stopBits->findData(settings.stop_bits);
     if (stopIdx >= 0)
         m_stopBits->setCurrentIndex(stopIdx);
-    const int parityIdx = m_parity->findText(config.parity);
+    const int parityIdx = m_parity->findText(settings.parity);
     if (parityIdx >= 0)
         m_parity->setCurrentIndex(parityIdx);
-    m_timeout->setValue(config.timeoutMs);
-    m_readRetries->setValue(config.readRetries);
-    refresh();
+    m_timeout->setValue(settings.timeout_ms);
+    m_readRetries->setValue(settings.read_retries);
+}
+
+SerialConnectionSettings UsersSettingsPage::serialSettings() const
+{
+    return m_pageModel.serialConfig();
+}
+
+SerialConnectionSettings UsersSettingsPage::serialSettingsFromWidgets() const
+{
+    SerialConnectionSettings cfg;
+    cfg.port_name = m_comPort->text().trimmed();
+    cfg.station = m_station->value();
+    cfg.baud_rate = m_baudRate->currentData().toInt();
+    cfg.stop_bits = m_stopBits->currentData().toInt();
+    cfg.parity = m_parity->currentText();
+    cfg.timeout_ms = m_timeout->value();
+    cfg.read_retries = m_readRetries->value();
+    return cfg;
+}
+
+QString UsersSettingsPage::serialSettingsStatusText() const
+{
+    return m_serialStatus->text();
+}
+
+void UsersSettingsPage::setSerialSettingsSavePending()
+{
+    m_serialSavePending = true;
+    // Keep the control reachable so an explicit duplicate click is visibly
+    // rejected by onSaveSerialClicked instead of being silently swallowed by
+    // a disabled button (single-flight save, spec NF-08).
+    m_saveSerial->setEnabled(true);
+    m_serialStatus->setText(QStringLiteral("正在保存串口配置，等待数据库确认…"));
+}
+
+void UsersSettingsPage::setSerialSettingsSaveResult(bool committed, const QString &error)
+{
+    m_serialSavePending = false;
+    m_saveSerial->setEnabled(true);
+    if (committed) {
+        // 非乐观状态: 保存结果由组合根回填 (spec §11.2).
+        m_serialStatus->setText(QStringLiteral("串口配置已保存并重连"));
+    } else {
+        m_serialStatus->setText(
+            QStringLiteral("串口配置保存失败: %1")
+                .arg(error.trimmed().isEmpty() ? QStringLiteral("数据库写入失败")
+                                               : error));
+    }
+}
+
+void UsersSettingsPage::setSerialSettingsEnumerationError(const QString &error)
+{
+    m_serialStatus->setText(
+        QStringLiteral("枚举串口失败: %1")
+            .arg(error.trimmed().isEmpty() ? QStringLiteral("未知错误") : error));
+}
+
+void UsersSettingsPage::setDiscoveredSerialPorts(const QVector<SerialPortDescriptor> &ports)
+{
+    m_discoveredPorts = ports;
+    const QString savedPort = m_pageModel.serialConfig().port_name;
+    int savedIndex = -1;
+    m_serialPortCombo->clear();
+    for (const SerialPortDescriptor &descriptor : ports) {
+        QString label = descriptor.port_name;
+        const QString detail = descriptor.description.isEmpty()
+            ? descriptor.manufacturer
+            : descriptor.description;
+        if (!detail.isEmpty())
+            label += QStringLiteral(" (%1)").arg(detail);
+        m_serialPortCombo->addItem(label, descriptor.port_name);
+        if (descriptor.port_name == savedPort)
+            savedIndex = m_serialPortCombo->count() - 1;
+    }
+    // The saved port stays selected when present. It is never silently
+    // replaced: when absent, nothing is selected and the status reports it.
+    m_serialPortCombo->setCurrentIndex(savedIndex);
+    if (ports.isEmpty()) {
+        m_serialStatus->setText(QStringLiteral("未发现可用串口，可手动输入 COM 口"));
+    } else if (!savedPort.isEmpty() && savedIndex < 0) {
+        m_serialStatus->setText(
+            QStringLiteral("已保存的串口 %1 当前未发现，请手动输入或刷新；不会自动替换")
+                .arg(savedPort));
+    }
+}
+
+void UsersSettingsPage::setDiscoveredPorts(const QVector<SerialPortDescriptor> &ports,
+                                           quint64 enumeration_request_id)
+{
+    m_lastEnumerationRequestId = enumeration_request_id;
+    setDiscoveredSerialPorts(ports);
 }
 
 void UsersSettingsPage::setSerialSaveResult(bool ok, const QString &detail)
 {
-    m_saveSerial->setEnabled(true);
-    // 非乐观状态: 保存结果由 Task 20 回填 (spec §11.2).
-    m_serialStatus->setText(ok ? QStringLiteral("串口配置已保存并重连")
-                               : QStringLiteral("串口配置保存失败: %1").arg(detail));
-    refresh();
+    // 兼容旧调用方: 与批次结果同一语义, 无乐观状态 (spec §11.2).
+    setSerialSettingsSaveResult(ok, detail);
 }
 
 // --- actions ----------------------------------------------------------------------
@@ -928,16 +1053,15 @@ void UsersSettingsPage::onChangePasswordClicked()
 
 void UsersSettingsPage::onSaveSerialClicked()
 {
-    if (!m_saveSerial->isEnabled())
+    if (m_serialSavePending) {
+        // Immediate, visible duplicate rejection (spec NF-08): no second
+        // request is emitted and the accepted in-flight save is never
+        // replaced or queued behind.
+        m_serialStatus->setText(
+            QStringLiteral("已有保存请求正在处理中，请等待本次保存结果"));
         return;
-    SerialConfig cfg;
-    cfg.comPort = m_comPort->text().trimmed();
-    cfg.station = m_station->value();
-    cfg.baudRate = m_baudRate->currentData().toInt();
-    cfg.stopBits = m_stopBits->currentData().toInt();
-    cfg.parity = m_parity->currentText();
-    cfg.timeoutMs = m_timeout->value();
-    cfg.readRetries = m_readRetries->value();
+    }
+    const SerialConnectionSettings cfg = serialSettingsFromWidgets();
     m_pageModel.setSerialConfig(cfg);
     if (!m_pageModel.serialConfigValid()) {
         m_serialStatus->setText(
@@ -945,11 +1069,18 @@ void UsersSettingsPage::onSaveSerialClicked()
         return;
     }
     // 修改通讯配置必须断开后重连并写入审计 (spec §8.1): 页面只发请求信号,
-    // Task 20 接线 DatabaseService::setSetting + 重连 + 审计.
+    // 组合根把七个键作为一个批次原子持久化, 并只在成功后重建网关.
+    m_serialSavePending = true;
     m_saveSerial->setEnabled(false);
-    emit saveSerialConfigRequested(cfg);
-    // 非乐观状态: 只标记等待确认, 结果由 Task 20 的 feed 接口回填.
     m_serialStatus->setText(QStringLiteral("等待确认保存并重连"));
+    emit saveSerialSettingsRequested(cfg);
+}
+
+void UsersSettingsPage::onRefreshSerialPortsClicked()
+{
+    // 被动枚举只在管理员显式操作时发生 (spec C-11/OB-10).
+    m_serialStatus->setText(QStringLiteral("正在枚举可用串口…"));
+    emit enumerateSerialPortsRequested();
 }
 
 // --- rendering ---------------------------------------------------------------------

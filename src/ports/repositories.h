@@ -19,6 +19,7 @@
 #include <optional>
 
 #include "application/permission_policy.h" // Role
+#include "domain/serial_connection_settings.h"
 
 namespace hlm {
 
@@ -101,6 +102,25 @@ struct SettingRecord {
     QDateTime updatedAt;
 };
 
+// --- serial settings batch (spec §8.1, NF-08, ARCH-006) ----------------------
+//
+// One administrator save request as one atomic unit: the complete settings
+// value plus the request identity and the acting user. The matching result
+// echoes the batch id so a late or unrelated completion can never be mistaken
+// for the accepted request (spec SettingsBatchContract).
+
+struct SettingsBatch {
+    quint64 batch_id = 0;
+    SerialConnectionSettings settings;
+    QString updated_by;
+};
+
+struct SettingsBatchResult {
+    quint64 batch_id = 0;
+    bool committed = false;
+    QString error;
+};
+
 // --- repository ports -------------------------------------------------------
 
 class UserRepository
@@ -136,6 +156,11 @@ public:
     // Upsert by key.
     virtual bool setSetting(const SettingRecord &s, QString *error = nullptr) = 0;
     virtual std::optional<SettingRecord> getSetting(const QString &key) const = 0;
+    // Writes the complete serial settings set in ONE transaction: either all
+    // seven keys commit or none does. Returns false with `error` set on any
+    // failure; no partial commit is observable (spec NF-08).
+    virtual bool saveSerialSettingsBatch(const SettingsBatch &batch,
+                                         QString *error = nullptr) = 0;
 };
 
 class AlarmRepository
@@ -180,6 +205,8 @@ Q_DECLARE_METATYPE(hlm::AuditRecord)
 Q_DECLARE_METATYPE(hlm::AlarmSource)
 Q_DECLARE_METATYPE(hlm::AlarmSeverity)
 Q_DECLARE_METATYPE(hlm::AuditResult)
+Q_DECLARE_METATYPE(hlm::SettingsBatch)
+Q_DECLARE_METATYPE(hlm::SettingsBatchResult)
 Q_DECLARE_METATYPE(QVector<hlm::UserRecord>)
 Q_DECLARE_METATYPE(QVector<hlm::RecipeRecord>)
 Q_DECLARE_METATYPE(QVector<hlm::AlarmEventRecord>)

@@ -120,3 +120,38 @@ add_test(NAME plc_m112_d140_session COMMAND test_plc_m112_d140_session)
 set_tests_properties(plc_m112_d140_session PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )
+
+# --- PLC-HMI-004: serial discovery passivity + atomic settings batch -----------
+
+add_executable(test_serial_settings_application serial_settings_application_test.cpp)
+target_link_libraries(test_serial_settings_application PRIVATE
+    hlm_app_core
+    hlm_simulator
+    hlm_sqlite
+    hlm_ui
+    Qt6::Sql
+    Qt6::Test
+)
+add_test(NAME serial_settings_application COMMAND test_serial_settings_application)
+set_tests_properties(serial_settings_application PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
+)
+
+# --- PLC-HMI-004: developer-owned composition-root regression tests (D7) ------
+# Enumeration purity, in-flight duplicate rejection and real-gateway rebuild
+# gating; the database write lock holds the save open for the ordering checks.
+
+add_executable(test_serial_settings_application_developer serial_settings_application_developer_test.cpp)
+target_link_libraries(test_serial_settings_application_developer PRIVATE
+    hlm_app_core
+    hlm_simulator
+    hlm_modbus
+    hlm_sqlite
+    hlm_ui
+    Qt6::Sql
+    Qt6::Test
+)
+add_test(NAME serial_settings_application_developer COMMAND test_serial_settings_application_developer)
+set_tests_properties(serial_settings_application_developer PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
+)

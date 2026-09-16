@@ -5,6 +5,8 @@
 #include <QPointer>
 #include <QVector>
 
+#include "domain/serial_connection_settings.h"
+#include "domain/serial_port_descriptor.h"
 #include "ui/pages/users_settings_model.h"
 
 class QLabel;
@@ -61,6 +63,33 @@ public:
     QSpinBox *readRetriesSpin() const { return m_readRetries; }
     QLabel *serialStatusLabel() const { return m_serialStatus; }
     QPushButton *saveSerialButton() const { return m_saveSerial; }
+
+    // --- serial discovery / atomic save surface (PLC-HMI-004) ------------------
+    QComboBox *serialPortComboBox() const { return m_serialPortCombo; }
+    QLineEdit *serialPortEdit() const { return m_comPort; }
+    QPushButton *saveSerialSettingsButton() const { return m_saveSerial; }
+    QPushButton *refreshSerialPortsButton() const { return m_refreshSerialPorts; }
+    QString serialSettingsStatusText() const;
+    SerialConnectionSettings serialSettings() const;
+    void setSerialSettings(const SerialConnectionSettings &settings);
+    // Presents a passive discovery result: the saved port stays selected when
+    // present and a missing saved port is reported, never silently replaced;
+    // manual entry remains available in every case.
+    void setDiscoveredSerialPorts(const QVector<SerialPortDescriptor> &ports);
+    // Marks a save as in flight; a duplicate request is visibly rejected by the
+    // page instead of being silently swallowed (spec NF-08).
+    void setSerialSettingsSavePending();
+    // Terminal batch result; `error` carries the database detail on failure.
+    void setSerialSettingsSaveResult(bool committed, const QString &error);
+    // Reports a failed passive enumeration without touching the settings.
+    void setSerialSettingsEnumerationError(const QString &error);
+
+    // Contract-named aliases (change PLC-HMI-004 public_api); the frozen
+    // independent surface above is the primary spelling.
+    void setDiscoveredPorts(const QVector<SerialPortDescriptor> &ports,
+                            quint64 enumeration_request_id);
+    quint64 lastEnumerationRequestId() const { return m_lastEnumerationRequestId; }
+
     QLabel *loginStatusLabel() const { return m_loginStatusLabel; }
     QLabel *createAdminStatusLabel() const { return m_createAdminStatus; }
     QLabel *userStatusLabel() const { return m_userStatus; }
@@ -95,8 +124,9 @@ public:
     void setPasswordChangeResult(bool ok, const QString &detail);
     void setParameterWriteResult(bool ok, const QString &detail);
     // 回显实际存储的串口配置 (Task 20 接线 DatabaseService::getSetting).
-    void setSerialConfig(const SerialConfig &config);
-    // 串口配置保存结果 (Task 20 接线 DatabaseService::settingSaved + 重连).
+    // Legacy spelling retained; the value type is the domain type (D1).
+    void setSerialConfig(const SerialConnectionSettings &config);
+    // 串口配置保存结果, 兼容旧调用方; 等价于 setSerialSettingsSaveResult.
     void setSerialSaveResult(bool ok, const QString &detail);
 
 public slots:
@@ -115,7 +145,13 @@ signals:
     void addUserRequested(const QString &username, Role role, const QString &password);
     void changePasswordRequested(qint64 userId, const QString &newPassword);
     void deleteUserRequested(qint64 userId);
-    void saveSerialConfigRequested(const SerialConfig &config);
+    void saveSerialConfigRequested(const SerialConnectionSettings &config);
+    // Frozen PLC-HMI-004 spellings: the save request carries the domain value
+    // and the refresh is an explicit administrator action only.
+    void saveSerialSettingsRequested(const SerialConnectionSettings &settings);
+    void enumerateSerialPortsRequested();
+    // Contract-named aliases; emitted through internal signal chaining.
+    void refreshPortsRequested();
     // D122/D220 参数写请求, 携带目标值 (D204 走 d204WriteRequested, 需二次验证).
     void writeParameterRequested(quint16 address, quint16 value);
     // D204 写请求, 携带管理员密码供 Task 20 二次验证 (spec §11.3).
@@ -144,6 +180,11 @@ private:
     void onDeleteUserClicked();
     void onChangePasswordClicked();
     void onSaveSerialClicked();
+    void onRefreshSerialPortsClicked();
+    // Reads the widgets into a domain value and validates it via the page
+    // model; used only by the explicit save action.
+    SerialConnectionSettings serialSettingsFromWidgets() const;
+    void applySerialSettingsToWidgets(const SerialConnectionSettings &settings);
 
     ShellModel &m_model;
     UsersSettingsModel m_pageModel;
@@ -177,6 +218,8 @@ private:
     QPushButton *m_changePassword = nullptr;
     QLabel *m_changePasswordStatus = nullptr;
     QLineEdit *m_comPort = nullptr;
+    QComboBox *m_serialPortCombo = nullptr;
+    QPushButton *m_refreshSerialPorts = nullptr;
     QSpinBox *m_station = nullptr;
     QComboBox *m_baudRate = nullptr;
     QComboBox *m_stopBits = nullptr;
@@ -185,6 +228,9 @@ private:
     QSpinBox *m_readRetries = nullptr;
     QPushButton *m_saveSerial = nullptr;
     QLabel *m_serialStatus = nullptr;
+    QVector<SerialPortDescriptor> m_discoveredPorts;
+    bool m_serialSavePending = false;
+    quint64 m_lastEnumerationRequestId = 0;
     QSpinBox *m_d122Spin = nullptr;
     QSpinBox *m_d204Spin = nullptr;
     QSpinBox *m_d220Spin = nullptr;

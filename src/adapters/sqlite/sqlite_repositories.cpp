@@ -4,6 +4,8 @@
 #include <QSqlQuery>
 #include <QVariant>
 
+#include <QPair>
+
 namespace hlm {
 
 namespace {
@@ -309,6 +311,66 @@ std::optional<SettingRecord> SqliteSettingsRepository::getSetting(const QString 
     s.updatedBy = q.value(2).toString();
     s.updatedAt = QDateTime::fromString(q.value(3).toString(), Qt::ISODateWithMs);
     return s;
+}
+
+bool SqliteSettingsRepository::saveSerialSettingsBatch(const SettingsBatch &batch,
+                                                       QString *error)
+{
+    // One transaction for the complete settings set (spec NF-08, ARCH-006): any
+    // failure rolls back every key, so a partially applied configuration is
+    // never observable and the previously committed values stay untouched.
+    if (!m_db.transaction()) {
+        if (error)
+            *error = m_db.lastError().text();
+        return false;
+    }
+
+    // The seven keys keep their existing app_settings storage (no schema or
+    // migration change); the row spelling matches the pre-batch layout so
+    // existing rows load unchanged.
+    const QVector<QPair<QString, QString>> rows{
+        {QStringLiteral("serial.comPort"), batch.settings.port_name},
+        {QStringLiteral("serial.station"), QString::number(batch.settings.station)},
+        {QStringLiteral("serial.baudRate"), QString::number(batch.settings.baud_rate)},
+        {QStringLiteral("serial.stopBits"), QString::number(batch.settings.stop_bits)},
+        {QStringLiteral("serial.parity"), batch.settings.parity},
+        {QStringLiteral("serial.timeoutMs"), QString::number(batch.settings.timeout_ms)},
+        {QStringLiteral("serial.readRetries"), QString::number(batch.settings.read_retries)},
+    };
+
+    const QString updatedAt = nowIso();
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral(
+        "INSERT INTO app_settings(key, typed_value, updated_by, updated_at)"
+        " VALUES (?, ?, ?, ?)"
+        " ON CONFLICT(key) DO UPDATE SET typed_value = excluded.typed_value,"
+        " updated_by = excluded.updated_by, updated_at = excluded.updated_at"));
+    for (const auto &row : rows) {
+        q.bindValue(0, row.first);
+        q.bindValue(1, row.second);
+        q.bindValue(2, batch.updated_by);
+        q.bindValue(3, updatedAt);
+        if (!q.exec()) {
+            const QString failure = q.lastError().text();
+            m_db.rollback();
+            if (error)
+                *error = failure;
+            return false;
+        }
+    }
+
+    if (!m_db.commit()) {
+        QString failure = m_db.lastError().text();
+        if (failure.isEmpty())
+            failure = q.lastError().text();
+        if (failure.isEmpty())
+            failure = QStringLiteral("serial settings batch commit failed");
+        m_db.rollback();
+        if (error)
+            *error = failure;
+        return false;
+    }
+    return true;
 }
 
 // --- alarms ----------------------------------------------------------------
