@@ -11,6 +11,8 @@ namespace hlm {
 namespace {
 
 // Shared model address spaces (spec §14.1): coils M0-M112, registers D100-D223.
+// M112 is only part of the addressed coil range: it has no logic in the
+// authoritative PLC and is never driven by the simulator.
 constexpr int kCoilCount = 113;
 constexpr int kRegisterCount = 224;
 

@@ -55,8 +55,14 @@ OverviewField OverviewModel::beltSpeed() const
 
 OverviewField OverviewModel::productionCount() const
 {
-    return field(QString::number(m_model.snapshot().productionCount()),
-                 quint8(SnapshotField::Heartbeat)); // D138 (no range check)
+    // D138 (累计产量) lives in the fast block and is a 32-bit counter with no
+    // decoded range, so its validity is the fast block's own freshness: a
+    // fresh snapshot whose fast block is Valid. This uses the real per-block
+    // quality (PLC-HMI-003 D6) instead of a no-range placeholder field.
+    const DeviceSnapshot &s = m_model.snapshot();
+    if (!fresh() || s.fastQuality() != DataQuality::Valid)
+        return {}; // invalid -> "—" (spec §9)
+    return {QString::number(s.productionCount()), true};
 }
 
 QString OverviewModel::productionCountReliabilityText() const

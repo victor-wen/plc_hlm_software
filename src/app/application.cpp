@@ -121,7 +121,11 @@ void Application::createObjects()
     // Gateway: real Modbus by default. The in-process simulator is enabled
     // only by the explicit --sim command-line option (spec §14.2). This keeps
     // a missing physical/virtual PLC from being reported as online.
-    if (m_cfg.useSimulatedGateway) {
+    // An injected gateway (S-INJECT, PLC-HMI-007 D7) takes precedence over
+    // both: it is caller-owned, so no composition and no ownership transfer.
+    if (m_cfg.plcGateway) {
+        m_gw = m_cfg.plcGateway;
+    } else if (m_cfg.useSimulatedGateway) {
         m_gw = new SimulatedPlcGateway(this);
     } else {
         m_gw = new QtModbusPlcGateway(
@@ -595,8 +599,9 @@ void Application::handleSerialSettingsBatchSaved(const SettingsBatchResult &resu
     // The gateway rebuild begins only here, after the matching successful
     // batch result. Serial transport settings only affect the real Modbus
     // gateway: the in-process simulator has no serial transport and must not
-    // be stopped or replaced.
-    if (!m_cfg.useSimulatedGateway)
+    // be stopped or replaced, and an injected gateway (S-INJECT, PLC-HMI-007
+    // D7) is caller-owned and stays in place.
+    if (!m_cfg.useSimulatedGateway && m_cfg.plcGateway == nullptr)
         rebuildGateway(committed);
 }
 
@@ -658,7 +663,9 @@ void Application::handleSettingLoaded(const std::optional<SettingRecord> &settin
 
     m_pendingSerialLoads = 0;
     m_usersPage->setSerialSettings(m_loadedSerialCfg);
-    if (!m_cfg.useSimulatedGateway)
+    // An injected gateway (S-INJECT, PLC-HMI-007 D7) is caller-owned: the
+    // persisted serial settings must not replace it.
+    if (!m_cfg.useSimulatedGateway && m_cfg.plcGateway == nullptr)
         rebuildGateway(m_loadedSerialCfg);
 }
 
@@ -989,8 +996,13 @@ void Application::publishOperatorStatus(Command cmd, OperatorCommandState state,
 void Application::handleCommandResult(Command cmd, bool ok, const QString &detail)
 {
     m_shell->setCommandPending(cmd, false);
+    // LogoutClear is an internal clear terminal, not the user request that
+    // triggered it: it must own its generation so a cancelled manual
+    // confirmation and the clear are two distinct lifecycles instead of two
+    // terminals for one generation (PLC-HMI-007 D6-l). Every other command
+    // keeps the generation of its own accepted request.
     publishOperatorStatus(cmd, lifecycleStateForResult(ok, detail), detail,
-                          /*newRequest=*/false);
+                          /*newRequest=*/cmd == Command::LogoutClear);
     if (cmd == Command::AdjustWidth)
         m_recipePage->setAdjustResult(ok, detail);
 }

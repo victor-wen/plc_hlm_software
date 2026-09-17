@@ -450,7 +450,45 @@ target_link_libraries(test_plc_hmi_006_layout PRIVATE
 )
 add_test(NAME plc_hmi_006_layout COMMAND test_plc_hmi_006_layout)
 
-set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page control_panel operator_command_lifecycle command_status_projection command_feedback_pages operator_lifecycle_developer recipe_editor_state recipe_result_feedback recipe_editor_developer serial_settings_page visible_disabled_reasons visible_reasons_developer plc_hmi_006_responsive_envelope plc_hmi_006_layout PROPERTIES
+# --- PLC-HMI-007: independent placeholder/settings-seed/diagnostics tests ----
+# QTEST_MAIN widget targets: all three are in the offscreen
+# set_tests_properties(...) list at the end of this file.
+
+add_executable(test_plc_hmi_007_placeholder plc_hmi_007_placeholder_test.cpp)
+target_link_libraries(test_plc_hmi_007_placeholder PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME plc_hmi_007_placeholder COMMAND test_plc_hmi_007_placeholder)
+
+add_executable(test_plc_hmi_007_settings_seed plc_hmi_007_settings_seed_test.cpp)
+target_link_libraries(test_plc_hmi_007_settings_seed PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME plc_hmi_007_settings_seed COMMAND test_plc_hmi_007_settings_seed)
+
+add_executable(test_plc_hmi_007_diagnostics_surface plc_hmi_007_diagnostics_surface_test.cpp)
+target_link_libraries(test_plc_hmi_007_diagnostics_surface PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME plc_hmi_007_diagnostics_surface COMMAND test_plc_hmi_007_diagnostics_surface)
+
+# --- PLC-HMI-007: developer-owned edit-preservation regression (DISC-1) ------
+# QTEST_MAIN widget target: registered in the offscreen set_tests_properties
+# list at the end of this file.
+
+add_executable(test_plc_hmi_007_settings_edit_preserve_developer
+    plc_hmi_007_settings_edit_preserve_developer_test.cpp)
+target_link_libraries(test_plc_hmi_007_settings_edit_preserve_developer PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME plc_hmi_007_settings_edit_preserve_developer
+    COMMAND test_plc_hmi_007_settings_edit_preserve_developer)
+
+set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page control_panel operator_command_lifecycle command_status_projection command_feedback_pages operator_lifecycle_developer recipe_editor_state recipe_result_feedback recipe_editor_developer serial_settings_page visible_disabled_reasons visible_reasons_developer plc_hmi_006_responsive_envelope plc_hmi_006_layout plc_hmi_007_placeholder plc_hmi_007_settings_seed plc_hmi_007_diagnostics_surface plc_hmi_007_settings_edit_preserve_developer PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )
 
@@ -461,6 +499,6 @@ set_tests_properties(widgets shell overview_page recipe_width_page manual_contro
 # assertion output while the same targets pass in seconds in Release. A per-test
 # TIMEOUT property takes precedence over the command-line --timeout and adds no
 # retry, so genuine failures still surface (only full_flow is retried by policy).
-set_tests_properties(shell auth_service command_status_projection manual_control_page visible_disabled_reasons plc_hmi_006_responsive_envelope plc_hmi_006_layout PROPERTIES
+set_tests_properties(shell auth_service command_status_projection manual_control_page visible_disabled_reasons plc_hmi_006_responsive_envelope plc_hmi_006_layout plc_hmi_007_placeholder plc_hmi_007_settings_seed plc_hmi_007_diagnostics_surface plc_hmi_007_settings_edit_preserve_developer PROPERTIES
     TIMEOUT 240
 )

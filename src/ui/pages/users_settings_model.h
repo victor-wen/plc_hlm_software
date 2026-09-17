@@ -113,9 +113,9 @@ private:
     int m_sessionRemainingSec = 900; // 15 分钟默认 (spec §11.5)
     QVector<UserRecord> m_users;
     SerialConnectionSettings m_serial;
-    int m_editedD122 = 1000; // D122 默认 1000
-    int m_editedD204 = 1280; // D204 默认 1280
-    int m_editedD220 = 2;    // D220 默认 2
+    int m_editedD122 = 5000; // D122 权威默认 5000 Hz
+    int m_editedD204 = 128;  // D204 权威默认 128 脉冲/mm
+    int m_editedD220 = 15;   // D220 权威默认 15 mm/s
     bool m_paramWritePending = false;
     QString m_paramStatus;
 };

@@ -255,8 +255,8 @@ ControlPanel::ControlPanel(H3uSimulationModel &model, QWidget *parent)
     buildLayout();
 
     // Task 18 review: RtuServer never calls handler().tick(), so the panel
-    // drives the simulated PLC time (D140 heartbeat, positioning, home return,
-    // M112 watchdog) and refreshes the register display every second.
+    // drives the simulated PLC time (D140 liveness, positioning, home return)
+    // and refreshes the register display every second.
     m_timer = new QTimer(this);
     m_timer->setInterval(1000);
     connect(m_timer, &QTimer::timeout, this, &ControlPanel::onTick);

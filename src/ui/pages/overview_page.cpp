@@ -143,6 +143,16 @@ void OverviewPage::buildLayout()
     m_alarmLabel->setObjectName(QStringLiteral("overviewAlarm"));
     m_alarmLabel->setMinimumHeight(48); // touch-target-height text line
     root->addWidget(m_alarmLabel);
+
+    // --- 条码/扫码 placeholder status (spec C-05/C-07, D1) ----------------------
+    // Display-only: the integration has no approved ingestion contract yet, so
+    // the surface must say 未配置 instead of implying a connection. No path
+    // input, no activation control, no file I/O and no scan event exists here.
+    m_barcodePlaceholder = new QLabel(
+        QStringLiteral("条码/扫码：未配置（预留）"), this);
+    m_barcodePlaceholder->setObjectName(QStringLiteral("barcodePlaceholderStatus"));
+    m_barcodePlaceholder->setMinimumHeight(48); // touch-target-height text line
+    root->addWidget(m_barcodePlaceholder);
 }
 
 QWidget *OverviewPage::addField(const QString &key, const QString &title)
@@ -178,6 +188,11 @@ QLabel *OverviewPage::latestAlarmLabel() const
 QLabel *OverviewPage::productionCountDisclosureLabel() const
 {
     return m_productionDisclosure;
+}
+
+QLabel *OverviewPage::barcodePlaceholderLabel() const
+{
+    return m_barcodePlaceholder;
 }
 
 QString OverviewPage::latestAlarmText() const

@@ -989,6 +989,12 @@ void ControlCoordinator::failAllManualConfirms(const QString &detail)
 {
     const QVector<ManualConfirm> pending = m_manualPending;
     m_manualPending.clear();
+    // A cancelled confirmation must not leave dangling submission bookkeeping:
+    // drop every submission identity owned by the cancelled command so a late
+    // completion can never converge it a second time (OB-7: exactly one
+    // terminal per generation).
+    for (const ManualConfirm &c : pending)
+        clearPendingSubmissions(c.cmd);
     for (const ManualConfirm &c : pending)
         emit commandResult(c.cmd, false, detail);
 }

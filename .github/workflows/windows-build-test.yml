@@ -294,7 +294,7 @@ jobs:
       - name: Check deploy dependencies (positive)
         run: |
           Expand-Archive -Path dist/plc-hmi-0.1.0-win64.zip -DestinationPath dist/check-positive
-          pwsh -NoProfile -File scripts/check_deploy_deps.ps1 -PackageDir dist/check-positive
+          pwsh -NoProfile -File scripts/check_deploy_deps.ps1 -PackageDir dist/check-positive -VisionEnabled:$true
 
       - name: "Check deploy dependencies (negative: qsqlite.dll removed must fail)"
         run: |
@@ -309,5 +309,125 @@ jobs:
         with:
           name: plc-hmi-0.1.0-win64
           path: dist/plc-hmi-0.1.0-win64.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  # ARCH-010 / quality_acceptance 756: the HLM_ENABLE_VISION=OFF Release
+  # configuration must build, test, package and pass its own deploy-dependency
+  # check (the OpenCV requirement is skipped there, -VisionEnabled:$false).
+  # This job mirrors the canonical configure_release_vision_off /
+  # build_release_vision_off / test_release_vision_off commands and the existing
+  # vision-ON package steps; it does not change any other job's behavior.
+  vision-off:
+    name: Release HLM_ENABLE_VISION=OFF build, test and package check
+    runs-on: windows-2022
+    needs: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Enable MSVC 2022 x64 developer environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+
+      - name: Capture toolchain cache identity
+        id: toolchain
+        shell: pwsh
+        run: |
+          $sdk = "$env:WindowsSDKVersion".TrimEnd('\')
+          "id=$env:VCToolsVersion-$sdk" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Setup vcpkg (bootstrap only)
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
+        with:
+          vcpkgJsonGlob: '**/vcpkg.json'
+          runVcpkgInstall: false
+          doNotCache: false
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.workspace }}\vcpkg-binary-cache
+          key: vcpkg-binary-v1-${{ runner.os }}-x64-${{ steps.toolchain.outputs.id }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-binary-v1-${{ runner.os }}-x64-${{ steps.toolchain.outputs.id }}-
+            vcpkg-binary-v1-${{ runner.os }}-x64-
+
+      - name: Ensure vcpkg binary cache directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path "${{ runner.workspace }}\vcpkg-binary-cache" | Out-Null
+
+      - name: Configure (HLM_ENABLE_VISION=OFF, Release)
+        env:
+          VCPKG_BINARY_SOURCES: 'clear;files,${{ runner.workspace }}\vcpkg-binary-cache,readwrite'
+        run: |
+          cmake -S . -B build-release-vision-off -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DHLM_ENABLE_VISION=OFF
+
+      - name: Build (HLM_ENABLE_VISION=OFF, Release)
+        run: cmake --build build-release-vision-off --config Release
+
+      - name: Test (ctest, HLM_ENABLE_VISION=OFF, Release)
+        shell: pwsh
+        run: |
+          # Same app-local Qt plugin wiring as the vision-ON matrix: point Qt at
+          # the Release vcpkg plugin tree and expose plugin dependencies.
+          $vcpkgPrefix = "build-release-vision-off/vcpkg_installed/x64-windows"
+          $qtPluginRoot = Join-Path $vcpkgPrefix "Qt6/plugins"
+          $qtPlatformRoot = Join-Path $qtPluginRoot "platforms"
+          $vcpkgBin = Join-Path $vcpkgPrefix "bin"
+          if (-not (Test-Path $qtPluginRoot)) {
+            throw "Qt plugin directory not found: $qtPluginRoot"
+          }
+          if (-not (Test-Path $qtPlatformRoot)) {
+            throw "Qt platform plugin directory not found: $qtPlatformRoot"
+          }
+          if (-not (Test-Path $vcpkgBin)) {
+            throw "vcpkg runtime directory not found: $vcpkgBin"
+          }
+
+          $env:PATH = "$(Resolve-Path $vcpkgBin);$env:PATH"
+          $env:QT_PLUGIN_PATH = (Resolve-Path $qtPluginRoot).Path
+          $env:QT_QPA_PLATFORM_PLUGIN_PATH = (Resolve-Path $qtPlatformRoot).Path
+
+          ctest --test-dir build-release-vision-off -C Release --parallel 4 --timeout 60 -E full_flow --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          ctest --test-dir build-release-vision-off -C Release --parallel 4 --timeout 60 -R full_flow --repeat until-pass:2 --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Package (windeployqt + OpenSSL DLLs + LICENSES, vision OFF)
+        run: |
+          $vcpkgInstalled = "build-release-vision-off/vcpkg_installed/x64-windows"
+          if (-not (Test-Path $vcpkgInstalled)) {
+            $vcpkgInstalled = "$env:VCPKG_ROOT/installed/x64-windows"
+          }
+          if (-not (Test-Path $vcpkgInstalled)) {
+            throw "vcpkg installed tree not found (tried VCPKG_ROOT and build-release-vision-off/vcpkg_installed)"
+          }
+          pwsh -NoProfile -File scripts/package.ps1 `
+            -BuildDir build-release-vision-off `
+            -OutDir dist/vision-off `
+            -Config Release `
+            -VcpkgInstalledDir $vcpkgInstalled `
+            -QtBinDir "$vcpkgInstalled/tools/Qt6/bin" `
+            -Version 0.1.0
+
+      - name: Check deploy dependencies (vision OFF)
+        run: |
+          Expand-Archive -Path dist/vision-off/plc-hmi-0.1.0-win64.zip -DestinationPath dist/check-vision-off
+          pwsh -NoProfile -File scripts/check_deploy_deps.ps1 `
+            -PackageDir dist/check-vision-off `
+            -VisionEnabled:$false
+
+      - name: Upload vision-OFF package artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: plc-hmi-0.1.0-win64-vision-off
+          path: dist/vision-off/plc-hmi-0.1.0-win64.zip
           if-no-files-found: error
           retention-days: 30

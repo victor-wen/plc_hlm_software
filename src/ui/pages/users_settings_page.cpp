@@ -419,7 +419,7 @@ QWidget *UsersSettingsPage::buildSerialSection()
                     m_comPort->setText(port);
             });
     m_station = new QSpinBox(box);
-    m_station->setObjectName(QStringLiteral("station"));
+    m_station->setObjectName(QStringLiteral("plcAddressSpin"));
     m_station->setRange(1, 247); // 站号 1-247 (spec §8.1)
     m_station->setValue(1);
     m_station->setMinimumHeight(48);
@@ -513,21 +513,21 @@ QWidget *UsersSettingsPage::buildParameterSection()
     m_d122Spin = new QSpinBox(box);
     m_d122Spin->setObjectName(QStringLiteral("d122Spin"));
     m_d122Spin->setRange(100, 20000); // D122 100-20000 Hz
-    m_d122Spin->setValue(1000);
+    m_d122Spin->setValue(5000);
     m_d122Spin->setSuffix(QStringLiteral(" Hz"));
     m_d122Spin->setMinimumHeight(48);
     form->addRow(QStringLiteral("D122"), m_d122Spin);
     m_d204Spin = new QSpinBox(box);
     m_d204Spin->setObjectName(QStringLiteral("d204Spin"));
     m_d204Spin->setRange(1, 32767); // D204 1-32767 脉冲/mm
-    m_d204Spin->setValue(1280);
+    m_d204Spin->setValue(128);
     m_d204Spin->setSuffix(QStringLiteral(" 脉冲/mm"));
     m_d204Spin->setMinimumHeight(48);
     form->addRow(QStringLiteral("D204"), m_d204Spin);
     m_d220Spin = new QSpinBox(box);
     m_d220Spin->setObjectName(QStringLiteral("d220Spin"));
     m_d220Spin->setRange(1, 15); // D220 1-15 mm/s
-    m_d220Spin->setValue(2);
+    m_d220Spin->setValue(15);
     m_d220Spin->setSuffix(QStringLiteral(" mm/s"));
     m_d220Spin->setMinimumHeight(48);
     form->addRow(QStringLiteral("D220"), m_d220Spin);
@@ -774,8 +774,9 @@ void UsersSettingsPage::setSerialSettingsSaveResult(bool committed, const QStrin
     m_serialSavePending = false;
     m_saveSerial->setEnabled(true);
     if (committed) {
-        // 非乐观状态: 保存结果由组合根回填 (spec §11.2).
-        m_serialStatus->setText(QStringLiteral("串口配置已保存并重连"));
+        // 非乐观状态: 保存结果由组合根回填 (spec §11.2). 仅声明已持久化,
+        // 不声明已重连: 模拟网关路径不重建连接.
+        m_serialStatus->setText(QStringLiteral("串口配置已保存"));
     } else {
         m_serialStatus->setText(
             QStringLiteral("串口配置保存失败: %1")
@@ -1110,6 +1111,26 @@ void UsersSettingsPage::refresh()
           SnapshotField::PulsePerMm, QStringLiteral("脉冲/mm"));
     field(QStringLiteral("d220"), QString::number(s.widthSpeed()),
           SnapshotField::WidthSpeed, QStringLiteral("mm/s"));
+
+    // Seed the editors from the same fresh snapshot (spec §11.2: 无乐观更新).
+    // setValue is render-only: no write request is emitted from refresh().
+    // An editor is re-rendered only while its current value still equals the
+    // last value this page seeded (the baseline), so an operator's in-progress
+    // edit is not clobbered by a state-change reentrancy (DISC-1). After
+    // rendering, the baseline advances to the seeded value.
+    const auto seedEditor = [](QSpinBox *editor, int &baseline, bool valid,
+                               int snapshotValue) {
+        if (valid && editor->value() == baseline)
+            editor->setValue(snapshotValue);
+        if (valid)
+            baseline = snapshotValue;
+    };
+    seedEditor(m_d122Spin, m_lastSeededD122,
+               fresh && s.fieldValid(SnapshotField::BeltSpeed), s.beltSpeed());
+    seedEditor(m_d204Spin, m_lastSeededD204,
+               fresh && s.fieldValid(SnapshotField::PulsePerMm), s.pulsePerMm());
+    seedEditor(m_d220Spin, m_lastSeededD220,
+               fresh && s.fieldValid(SnapshotField::WidthSpeed), s.widthSpeed());
 
     // Parameter write status.
     m_paramStatus->setText(m_pageModel.paramStatusText());

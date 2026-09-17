@@ -78,7 +78,7 @@ public:
 
     // --- simulation time -------------------------------------------------------
     // Advance the simulated PLC time by one second (drives D140, positioning,
-    // home return and the M112 watchdog). The panel's QTimer calls this
+    // home return). The panel's QTimer calls this
     // periodically; tests call it directly for determinism.
     void tick();
 

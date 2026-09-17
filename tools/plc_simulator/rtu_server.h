@@ -30,7 +30,7 @@ struct RtuRequestLogEntry {
 // logic is testable without a virtual COM pair.
 //
 // The model clock is advanced by tick() (1 simulated second per call), which
-// drives D140, positioning, home return and the M112 watchdog exactly like
+// drives D140, positioning and home return exactly like
 // the in-process SimulatedPlcGateway.
 class RtuRequestHandler
 {

@@ -15,6 +15,7 @@
 namespace hlm {
 
 class ISerialPortDiscovery;
+class IPlcGateway;
 
 struct AppConfig {
     // --- database (spec §12) -------------------------------------------------
@@ -50,6 +51,15 @@ struct AppConfig {
     // --sim is usable interactively. Set to 0 in deterministic tests that
     // advance SimulatedPlcGateway::tick() explicitly.
     int simulatedTickIntervalMs = 1000;
+
+    // --- injected gateway (S-INJECT, PLC-HMI-007 D7) --------------------------
+    // Optional caller-owned gateway. When null the composition root composes
+    // the gateway selected by useSimulatedGateway above; when non-null that
+    // instance is used as the initial gateway and receives the assigned
+    // generation like any other. The configuration never owns it: Application
+    // neither deletes nor reparents it, and the caller keeps it alive for the
+    // whole application lifetime (same pattern as serialPortDiscovery).
+    IPlcGateway *plcGateway = nullptr;
 };
 
 } // namespace hlm

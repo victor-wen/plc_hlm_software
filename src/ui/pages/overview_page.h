@@ -36,6 +36,8 @@ public:
     QString latestAlarmText() const;
     // Visible reliability disclosure for the D138/D139 production count.
     QLabel *productionCountDisclosureLabel() const;
+    // 条码/扫码 placeholder status: visibly not-configured, never a connection.
+    QLabel *barcodePlaceholderLabel() const;
 
 public slots:
     // Re-renders every field from the model's current snapshot.
@@ -51,6 +53,7 @@ private:
     QLabel *m_alarmLabel = nullptr;
     QLabel *m_productionCountLabel = nullptr;
     QLabel *m_productionDisclosure = nullptr;
+    QLabel *m_barcodePlaceholder = nullptr;
     QVector<StatusLight *> m_statusLights; // online, mode, running, fault
     QHash<QString, ValueDisplay *> m_displays;
 };

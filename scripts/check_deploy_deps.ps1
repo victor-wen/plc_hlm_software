@@ -6,10 +6,14 @@
 #   sqldrivers/qsqlite.dll
 #   Qt6SerialBus*.dll, Qt6SerialPort*.dll
 #   libcrypto-3-x64.dll (OpenSSL Crypto)
-#   opencv_core*.dll (OpenCV, HLM_ENABLE_VISION=ON)
+#   opencv_core*.dll (OpenCV, only when -VisionEnabled $true)
 #   transitive Qt/vcpkg runtime DLLs (FreeType, HarfBuzz, PNG, PCRE2, etc.)
 #   complete VC143 runtime DLL subset imported by Qt
 #   LICENSES/ present and non-empty
+#
+# -VisionEnabled <bool> (default $true): the vision-ON package must carry
+# OpenCV; the vision-OFF package (HLM_ENABLE_VISION=OFF) must not be required
+# to (quality_acceptance 756).
 #
 # -ExpectMissing <name>: negative test support. If <name> is missing, the
 # check PASSES (the expected failure was observed); if <name> is present, the
@@ -17,11 +21,13 @@
 #
 # Usage:
 #   pwsh -NoProfile -File scripts/check_deploy_deps.ps1 -PackageDir dist/check
+#   pwsh -NoProfile -File scripts/check_deploy_deps.ps1 -PackageDir dist/check -VisionEnabled:$false
 #   pwsh -NoProfile -File scripts/check_deploy_deps.ps1 -PackageDir dist/check -ExpectMissing sqldrivers/qsqlite.dll
 
 param(
     [Parameter(Mandatory = $true)]
     [string]$PackageDir,
+    [bool]$VisionEnabled = $true,
     [string]$ExpectMissing = ""
 )
 
@@ -52,8 +58,12 @@ if (-not $serialPort) { $missing += "Qt6SerialPort*.dll" }
 
 Test-Required "libcrypto-3-x64.dll"
 
-$opencv = Get-ChildItem -Path $PackageDir -Filter "opencv_core*.dll" -ErrorAction SilentlyContinue
-if (-not $opencv) { $missing += "opencv_core*.dll" }
+# OpenCV is required only for the HLM_ENABLE_VISION=ON package; the vision-OFF
+# package legitimately ships without it (quality_acceptance 756).
+if ($VisionEnabled) {
+    $opencv = Get-ChildItem -Path $PackageDir -Filter "opencv_core*.dll" -ErrorAction SilentlyContinue
+    if (-not $opencv) { $missing += "opencv_core*.dll" }
+}
 
 # vcpkg's Qt build links these libraries dynamically. windeployqt does not
 # reliably deploy non-Qt libraries, so explicitly enforce their presence.

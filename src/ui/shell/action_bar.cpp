@@ -41,8 +41,9 @@ void setActiveState(QWidget *widget, bool active)
 // any unrelated out-of-range decoded field (e.g. an un-homed D130 of 0)
 // disabled the whole bar (spec §9, §11.2). ShellModel::modeKnown() scopes the
 // same connected + fastQuality()==Valid gate to the fast block; reuse it
-// instead of duplicating the predicate. Note: the current adapters hard-code
-// the fast block to Valid, so this currently reduces to connected().
+// instead of duplicating the predicate. The adapters publish evidence-based
+// per-block quality (PLC-HMI-003 D6), so this gate uses the real fast-block
+// quality rather than assuming it Valid.
 //
 // gatedCheck runs an interlock once the data it depends on is usable. Offline
 // keeps the interlock's own communications reason; online-but-unusable reports

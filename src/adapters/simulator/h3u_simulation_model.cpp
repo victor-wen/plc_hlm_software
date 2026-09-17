@@ -277,6 +277,12 @@ void H3uSimulationModel::onM43RisingEdge()
             * quint64(m_regs[kD204]);
         m_remaining = (pulseLoad + frequency - 1) / frequency;
     } else {
+        // D220 = 0 (outside the decoded 1-15 range, unreachable from the HMI:
+        // spin range + paramReasons + interlock + clamp all enforce it) makes
+        // the ideal duration exceed the fixed 30 s T6 K300 window. tick()
+        // evaluates completion before the timeout in the same scan, so such a
+        // run completes successfully instead of timing out: intentional parity
+        // with the decoded PLC, and no in-contract path reaches this branch.
         m_remaining = kFixedTimeoutTicks / 10; // D220 = 0: timeout-bound
     }
 

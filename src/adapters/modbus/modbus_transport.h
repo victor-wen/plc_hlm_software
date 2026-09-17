@@ -22,7 +22,7 @@ struct TransferResult {
 // TransferResult::values. Input is one entry per coil (0/1, LSB-first as
 // returned by QModbusDataUnit); output has bit i = coil i. A single-coil
 // readback (count == 1) is therefore unchanged: bit0 == the coil value.
-// Blocks are <= 16 coils (command 13, home 4), so one quint16 suffices.
+// Blocks are <= 16 coils (command 12, home 4), so one quint16 suffices.
 quint16 packCoilBits(const QList<quint16> &coilValues);
 
 // Builds the TransferResult for one completed request from the raw values the

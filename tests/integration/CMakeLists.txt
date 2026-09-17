@@ -225,6 +225,47 @@ set_tests_properties(plc_hmi_006_release_and_envelope PROPERTIES
 # adds no retry, so genuine errors still surface (only full_flow is retried by
 # policy). full_flow keeps its own global budget; its Debug retry path is
 # unchanged.
-set_tests_properties(operator_command_application plc_m112_d140_session serial_settings_application serial_settings_application_developer restricted_mode_routing restricted_routing_developer plc_hmi_005_authoritative_values plc_hmi_006_release_and_envelope PROPERTIES
+# --- PLC-HMI-007: S-INJECT generation rejection + cancelled-manual lock -------
+
+add_executable(test_plc_hmi_007_generation_rejection plc_hmi_007_generation_rejection_test.cpp)
+target_link_libraries(test_plc_hmi_007_generation_rejection PRIVATE
+    hlm_app_core
+    hlm_simulator
+    hlm_sqlite
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME plc_hmi_007_generation_rejection COMMAND test_plc_hmi_007_generation_rejection)
+set_tests_properties(plc_hmi_007_generation_rejection PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
+)
+
+add_executable(test_plc_hmi_007_cancelled_manual plc_hmi_007_cancelled_manual_test.cpp)
+target_link_libraries(test_plc_hmi_007_cancelled_manual PRIVATE
+    hlm_app_core
+    hlm_simulator
+    hlm_sqlite
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME plc_hmi_007_cancelled_manual COMMAND test_plc_hmi_007_cancelled_manual)
+set_tests_properties(plc_hmi_007_cancelled_manual PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
+)
+
+add_executable(test_plc_hmi_007_cancelled_manual_developer plc_hmi_007_cancelled_manual_developer_test.cpp)
+target_link_libraries(test_plc_hmi_007_cancelled_manual_developer PRIVATE
+    hlm_app_core
+    hlm_simulator
+    hlm_sqlite
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME plc_hmi_007_cancelled_manual_developer COMMAND test_plc_hmi_007_cancelled_manual_developer)
+set_tests_properties(plc_hmi_007_cancelled_manual_developer PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
+)
+
+set_tests_properties(operator_command_application plc_m112_d140_session serial_settings_application serial_settings_application_developer restricted_mode_routing restricted_routing_developer plc_hmi_005_authoritative_values plc_hmi_006_release_and_envelope plc_hmi_007_generation_rejection plc_hmi_007_cancelled_manual plc_hmi_007_cancelled_manual_developer PROPERTIES
     TIMEOUT 240
 )

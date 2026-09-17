@@ -234,6 +234,13 @@ private:
     QSpinBox *m_d122Spin = nullptr;
     QSpinBox *m_d204Spin = nullptr;
     QSpinBox *m_d220Spin = nullptr;
+    // Last value this page seeded into each editor from a snapshot (or from the
+    // authoritative default at construction). refresh() only re-renders an
+    // editor whose current value is still this baseline, so an operator's
+    // in-progress edit is never clobbered by a state-change reentrancy.
+    int m_lastSeededD122 = 5000;
+    int m_lastSeededD204 = 128;
+    int m_lastSeededD220 = 15;
     QPushButton *m_writeD122 = nullptr;
     QPushButton *m_writeD204 = nullptr;
     QPushButton *m_writeD220 = nullptr;
