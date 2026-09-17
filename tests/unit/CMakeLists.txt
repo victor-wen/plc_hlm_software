@@ -488,6 +488,17 @@ target_link_libraries(test_plc_hmi_007_settings_edit_preserve_developer PRIVATE
 add_test(NAME plc_hmi_007_settings_edit_preserve_developer
     COMMAND test_plc_hmi_007_settings_edit_preserve_developer)
 
+# --- CI-CACHE-001: independent windows-build-test cache-identity contract -----
+# QTEST_GUILESS_MAIN (QCoreApplication): no offscreen environment or extra
+# timeout needed; the test reads the workflow file as text and is instant.
+
+add_executable(test_ci_workflow_structure ci_workflow_structure_test.cpp)
+target_link_libraries(test_ci_workflow_structure PRIVATE
+    Qt6::Core
+    Qt6::Test
+)
+add_test(NAME ci_workflow_structure COMMAND test_ci_workflow_structure)
+
 set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page control_panel operator_command_lifecycle command_status_projection command_feedback_pages operator_lifecycle_developer recipe_editor_state recipe_result_feedback recipe_editor_developer serial_settings_page visible_disabled_reasons visible_reasons_developer plc_hmi_006_responsive_envelope plc_hmi_006_layout plc_hmi_007_placeholder plc_hmi_007_settings_seed plc_hmi_007_diagnostics_surface plc_hmi_007_settings_edit_preserve_developer PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )

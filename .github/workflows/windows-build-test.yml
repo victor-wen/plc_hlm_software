@@ -37,6 +37,7 @@ on:
   push:
     branches: [ main, plc-hmi-implementation ]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -66,14 +67,20 @@ jobs:
         with:
           arch: x64
 
-      # Include the compiler/SDK identity in the cache key so a hosted-runner
-      # toolchain update cannot silently feed ABI-incompatible binaries to vcpkg.
+      # The vcpkg binary cache key must track the real ABI drivers: the runner
+      # image version, the compiler binary content, and vcpkg.json. An image
+      # rollover can change cl.exe without changing VCToolsVersion, so the
+      # image and binary-hash parts make a new image SAVE its own cache entry
+      # instead of colliding with (and silently reusing) the old key.
       - name: Capture toolchain cache identity
         id: toolchain
         shell: pwsh
         run: |
           $sdk = "$env:WindowsSDKVersion".TrimEnd('\')
-          "id=$env:VCToolsVersion-$sdk" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $image = if ("$env:ImageVersion") { "$env:ImageVersion" } else { "noimage" }
+          $cl = Join-Path "$env:VCToolsInstallDir" 'bin\HostX64\x64\cl.exe'
+          $clHash = if (Test-Path $cl) { (Get-FileHash $cl -Algorithm SHA256).Hash.Substring(0,16).ToLowerInvariant() } else { 'nocl' }
+          "id=$env:VCToolsVersion-$sdk-image$image-cl$clHash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       # USER-REQUESTED CI OPTIMIZATION: this action only bootstraps/restores the
       # vcpkg tool itself. Manifest installation is deliberately left to CMake
@@ -96,7 +103,6 @@ jobs:
           key: vcpkg-binary-v1-${{ runner.os }}-x64-${{ steps.toolchain.outputs.id }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
             vcpkg-binary-v1-${{ runner.os }}-x64-${{ steps.toolchain.outputs.id }}-
-            vcpkg-binary-v1-${{ runner.os }}-x64-
 
       - name: Ensure vcpkg binary cache directory
         shell: pwsh
@@ -212,7 +218,10 @@ jobs:
         shell: pwsh
         run: |
           $sdk = "$env:WindowsSDKVersion".TrimEnd('\')
-          "id=$env:VCToolsVersion-$sdk" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $image = if ("$env:ImageVersion") { "$env:ImageVersion" } else { "noimage" }
+          $cl = Join-Path "$env:VCToolsInstallDir" 'bin\HostX64\x64\cl.exe'
+          $clHash = if (Test-Path $cl) { (Get-FileHash $cl -Algorithm SHA256).Hash.Substring(0,16).ToLowerInvariant() } else { 'nocl' }
+          "id=$env:VCToolsVersion-$sdk-image$image-cl$clHash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       # Same user-requested bootstrap-only policy as the build matrix. CMake is
       # the single owner of manifest installation in this job too.
@@ -230,7 +239,6 @@ jobs:
           key: vcpkg-binary-v1-${{ runner.os }}-x64-${{ steps.toolchain.outputs.id }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
             vcpkg-binary-v1-${{ runner.os }}-x64-${{ steps.toolchain.outputs.id }}-
-            vcpkg-binary-v1-${{ runner.os }}-x64-
 
       - name: Ensure vcpkg binary cache directory
         shell: pwsh
@@ -322,7 +330,10 @@ jobs:
         shell: pwsh
         run: |
           $sdk = "$env:WindowsSDKVersion".TrimEnd('\')
-          "id=$env:VCToolsVersion-$sdk" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $image = if ("$env:ImageVersion") { "$env:ImageVersion" } else { "noimage" }
+          $cl = Join-Path "$env:VCToolsInstallDir" 'bin\HostX64\x64\cl.exe'
+          $clHash = if (Test-Path $cl) { (Get-FileHash $cl -Algorithm SHA256).Hash.Substring(0,16).ToLowerInvariant() } else { 'nocl' }
+          "id=$env:VCToolsVersion-$sdk-image$image-cl$clHash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Setup vcpkg (bootstrap only)
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
@@ -338,7 +349,6 @@ jobs:
           key: vcpkg-binary-v1-${{ runner.os }}-x64-${{ steps.toolchain.outputs.id }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
             vcpkg-binary-v1-${{ runner.os }}-x64-${{ steps.toolchain.outputs.id }}-
-            vcpkg-binary-v1-${{ runner.os }}-x64-
 
       - name: Ensure vcpkg binary cache directory
         shell: pwsh
