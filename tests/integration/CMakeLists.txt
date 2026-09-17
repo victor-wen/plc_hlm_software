@@ -215,3 +215,16 @@ add_test(NAME plc_hmi_006_release_and_envelope COMMAND test_plc_hmi_006_release_
 set_tests_properties(plc_hmi_006_release_and_envelope PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )
+
+# CI-only timeout budget for the Debug-slow composition-root targets (PLC-HMI-006
+# CI triage, run 35160221139): serial_settings_application passed at 59.16 s and
+# seven other targets here measured 16-24 s under the shared
+# `ctest ... --timeout 60` on a contended windows-2022 runner, so a normal
+# execution-time fluctuation kills a correct test with no assertion output. A
+# per-test TIMEOUT property takes precedence over the command-line --timeout and
+# adds no retry, so genuine errors still surface (only full_flow is retried by
+# policy). full_flow keeps its own global budget; its Debug retry path is
+# unchanged.
+set_tests_properties(operator_command_application plc_m112_d140_session serial_settings_application serial_settings_application_developer restricted_mode_routing restricted_routing_developer plc_hmi_005_authoritative_values plc_hmi_006_release_and_envelope PROPERTIES
+    TIMEOUT 240
+)

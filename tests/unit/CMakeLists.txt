@@ -453,3 +453,14 @@ add_test(NAME plc_hmi_006_layout COMMAND test_plc_hmi_006_layout)
 set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page control_panel operator_command_lifecycle command_status_projection command_feedback_pages operator_lifecycle_developer recipe_editor_state recipe_result_feedback recipe_editor_developer serial_settings_page visible_disabled_reasons visible_reasons_developer plc_hmi_006_responsive_envelope plc_hmi_006_layout PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )
+
+# CI-only timeout budget for the Debug-slow widget targets (PLC-HMI-006 CI
+# triage, run 35160221139): the shared `ctest ... --timeout 60` is a wall-clock
+# budget these Debug widget builds cannot meet on a contended windows-2022
+# runner - shell and plc_hmi_006_responsive_envelope were killed at 60 s with no
+# assertion output while the same targets pass in seconds in Release. A per-test
+# TIMEOUT property takes precedence over the command-line --timeout and adds no
+# retry, so genuine failures still surface (only full_flow is retried by policy).
+set_tests_properties(shell auth_service command_status_projection manual_control_page visible_disabled_reasons plc_hmi_006_responsive_envelope plc_hmi_006_layout PROPERTIES
+    TIMEOUT 240
+)
