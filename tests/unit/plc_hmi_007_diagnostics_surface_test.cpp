@@ -52,9 +52,15 @@ constexpr int kSecondFreshAgeMs = 4500;
 constexpr int kOtherBlockAgeMs = 0;
 constexpr int kStaleAgeMs = 9000;
 
-// The 005 test file's legible touch-text minimum; the brief requires a visible,
-// non-hidden, legible disclosure.
-constexpr int kMinimumDisclosureFontHeight = 16;
+// Frozen project legibility floor (12 px), cited from the established minimum
+// used by the earlier independent and developer UI tests: 005
+// kMinimumLegibleFontHeight = 12, visible_disabled_reasons_test
+// kMinimumLegibleFontHeight = 12, visible_reasons_developer_test
+// kMinimumFontHeight = 12, and PLC-HMI-008 PermissionButton
+// kReasonMinimumFontHeight = 12. The brief requires a visible, non-hidden,
+// legible disclosure and fixes no pixel size, so the project's established
+// minimum applies; 16 was an authoring error (Windows font metrics render 12).
+constexpr int kMinimumDisclosureFontHeight = 12;
 
 DeviceSnapshotData snapshotData(qint64 fastAge, DataQuality fastQuality)
 {
