@@ -499,6 +499,43 @@ target_link_libraries(test_ci_workflow_structure PRIVATE
 )
 add_test(NAME ci_workflow_structure COMMAND test_ci_workflow_structure)
 
+# --- PLC-HMI-009: independent offline-close transport test (OB-2) -------------
+# QTEST_GUILESS_MAIN over the gateway worker's public seams and an injected
+# fake transport; mirrors the test_gateway link pattern (hlm_modbus + Qt6::Test).
+
+add_executable(test_plc_hmi_009_offline_close plc_hmi_009_offline_close_test.cpp)
+target_link_libraries(test_plc_hmi_009_offline_close PRIVATE
+    hlm_modbus
+    Qt6::Test
+)
+add_test(NAME plc_hmi_009_offline_close COMMAND test_plc_hmi_009_offline_close)
+
+# --- PLC-HMI-009: developer-owned offline-close regression (D2) ---------------
+# QTEST_GUILESS_MAIN over the gateway worker's public seams and an injected
+# fake transport; same link pattern as the independent offline-close test.
+
+add_executable(test_plc_hmi_009_offline_close_developer
+    plc_hmi_009_offline_close_developer_test.cpp)
+target_link_libraries(test_plc_hmi_009_offline_close_developer PRIVATE
+    hlm_modbus
+    Qt6::Test
+)
+add_test(NAME plc_hmi_009_offline_close_developer
+    COMMAND test_plc_hmi_009_offline_close_developer)
+
+# --- PLC-HMI-009: developer-owned logout-clear/confirmation regression (D1/D3)
+# QTEST_GUILESS_MAIN over ControlCoordinator with a recording fake
+# PulseTransport; hlm_core carries the coordinator (same as test_control_coordinator).
+
+add_executable(test_plc_hmi_009_developer_regression
+    plc_hmi_009_developer_regression_test.cpp)
+target_link_libraries(test_plc_hmi_009_developer_regression PRIVATE
+    hlm_core
+    Qt6::Test
+)
+add_test(NAME plc_hmi_009_developer_regression
+    COMMAND test_plc_hmi_009_developer_regression)
+
 set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page control_panel operator_command_lifecycle command_status_projection command_feedback_pages operator_lifecycle_developer recipe_editor_state recipe_result_feedback recipe_editor_developer serial_settings_page visible_disabled_reasons visible_reasons_developer plc_hmi_006_responsive_envelope plc_hmi_006_layout plc_hmi_007_placeholder plc_hmi_007_settings_seed plc_hmi_007_diagnostics_surface plc_hmi_007_settings_edit_preserve_developer PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )

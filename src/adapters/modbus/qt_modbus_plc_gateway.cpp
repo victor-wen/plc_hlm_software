@@ -648,6 +648,13 @@ void ModbusGatewayWorker::enterOffline()
     reportDroppedWrites(QStringLiteral("offline"));
     m_queue.clear();
     emit connectionStateChanged(m_gatewayGeneration, false);
+    // A logical offline must actually close the transport: QModbusRtuSerialClient
+    // ::open() returns immediately while the client state is still Connected, so
+    // a reconnect after a freeze/failure offline would never reopen the port
+    // (REV-P0-2). Close only an open transport; a not-open transport is left
+    // alone, and the reconnect backoff is unchanged.
+    if (m_transport && m_transport->isOpen())
+        m_transport->close();
     scheduleReconnect();
 }
 

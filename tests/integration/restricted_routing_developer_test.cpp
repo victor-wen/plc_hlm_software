@@ -136,6 +136,27 @@ void expectRejected(const QString &entry, const Recorder &recorder, int statusMa
     QCOMPARE(recorder.submissions.size(), submissionMark);
 }
 
+// PLC-HMI-009 D1: the logout/session-timeout clear now emits an immediate
+// visible request-start (accepted/pending) before its correlated terminal, so a
+// Pending status may legitimately appear. Convergence means the final observed
+// state of every command lifecycle is terminal: a lifecycle that emits only its
+// request-start and never converges within the bounded ticks still fails.
+bool everyCommandLifecycleReachedTerminal(const QVector<OperatorCommandStatus> &produced)
+{
+    for (int i = 0; i < produced.size(); ++i) {
+        bool superseded = false;
+        for (int j = i + 1; j < produced.size(); ++j) {
+            if (produced.at(j).command == produced.at(i).command) {
+                superseded = true;
+                break;
+            }
+        }
+        if (!superseded && !isTerminal(produced.at(i).lifecycle_state))
+            return false;
+    }
+    return true;
+}
+
 } // namespace
 
 class RestrictedRoutingDeveloperTest : public QObject
@@ -189,11 +210,13 @@ void RestrictedRoutingDeveloperTest::
     QVERIFY(manual != nullptr);
 
     Recorder recorder;
-    connect(started.app->shell(), &ShellModel::operatorCommandStatusChanged, this,
+    QObject sinkScope;       // RAII: severs the connection before the recorder dies
+    QObject submissionScope; // RAII: severs the connection before the recorder dies
+    connect(started.app->shell(), &ShellModel::operatorCommandStatusChanged, &sinkScope,
             [&recorder](const OperatorCommandStatus &s) {
                 recorder.statuses.append(s);
             });
-    connect(started.gw, &SimulatedPlcGateway::submissionCompleted, this,
+    connect(started.gw, &SimulatedPlcGateway::submissionCompleted, &submissionScope,
             [&recorder](const SubmissionCompletion &c) {
                 recorder.submissions.append(c.address);
             });
@@ -272,11 +295,13 @@ void RestrictedRoutingDeveloperTest::restrictedAnonymousBlockedWithTheSameRestri
     QVERIFY(manual != nullptr);
 
     Recorder recorder;
-    connect(started.app->shell(), &ShellModel::operatorCommandStatusChanged, this,
+    QObject sinkScope;       // RAII: severs the connection before the recorder dies
+    QObject submissionScope; // RAII: severs the connection before the recorder dies
+    connect(started.app->shell(), &ShellModel::operatorCommandStatusChanged, &sinkScope,
             [&recorder](const OperatorCommandStatus &s) {
                 recorder.statuses.append(s);
             });
-    connect(started.gw, &SimulatedPlcGateway::submissionCompleted, this,
+    connect(started.gw, &SimulatedPlcGateway::submissionCompleted, &submissionScope,
             [&recorder](const SubmissionCompletion &c) {
                 recorder.submissions.append(c.address);
             });
@@ -322,11 +347,13 @@ void RestrictedRoutingDeveloperTest::restrictedModeStillRoutesStopAndSoftwareEst
     QVERIFY(bar != nullptr);
 
     Recorder recorder;
-    connect(started.app->shell(), &ShellModel::operatorCommandStatusChanged, this,
+    QObject sinkScope;       // RAII: severs the connection before the recorder dies
+    QObject submissionScope; // RAII: severs the connection before the recorder dies
+    connect(started.app->shell(), &ShellModel::operatorCommandStatusChanged, &sinkScope,
             [&recorder](const OperatorCommandStatus &s) {
                 recorder.statuses.append(s);
             });
-    connect(started.gw, &SimulatedPlcGateway::submissionCompleted, this,
+    connect(started.gw, &SimulatedPlcGateway::submissionCompleted, &submissionScope,
             [&recorder](const SubmissionCompletion &c) {
                 recorder.submissions.append(c.address);
             });
@@ -424,7 +451,8 @@ void RestrictedRoutingDeveloperTest::restrictedModeBlocksParameterWritesVisibly(
     QVERIFY(users != nullptr);
 
     Recorder recorder;
-    connect(started.gw, &SimulatedPlcGateway::submissionCompleted, this,
+    QObject submissionScope; // RAII: severs the connection before the recorder dies
+    connect(started.gw, &SimulatedPlcGateway::submissionCompleted, &submissionScope,
             [&recorder](const SubmissionCompletion &c) {
                 recorder.submissions.append(c.address);
             });
@@ -486,11 +514,13 @@ void RestrictedRoutingDeveloperTest::healthyDatabaseKeepsRoutingUnrestricted()
     QVERIFY(bar != nullptr);
 
     Recorder recorder;
-    connect(started.app->shell(), &ShellModel::operatorCommandStatusChanged, this,
+    QObject sinkScope;       // RAII: severs the connection before the recorder dies
+    QObject submissionScope; // RAII: severs the connection before the recorder dies
+    connect(started.app->shell(), &ShellModel::operatorCommandStatusChanged, &sinkScope,
             [&recorder](const OperatorCommandStatus &s) {
                 recorder.statuses.append(s);
             });
-    connect(started.gw, &SimulatedPlcGateway::submissionCompleted, this,
+    connect(started.gw, &SimulatedPlcGateway::submissionCompleted, &submissionScope,
             [&recorder](const SubmissionCompletion &c) {
                 recorder.submissions.append(c.address);
             });
@@ -521,11 +551,14 @@ void RestrictedRoutingDeveloperTest::healthyDatabaseKeepsRoutingUnrestricted()
 void RestrictedRoutingDeveloperTest::
     restrictedEntryClearsHeldOutputVisiblyWithoutDanglingPending()
 {
-    // PLC-HMI-006 D3/D6: a healthy session enters restricted mode with an
-    // established held output. The entry-clear must drop the output bounded and
-    // keep it clear, report a visible terminal command state (no dangling
-    // pending confirmation), and the restricted gate must keep rejecting a
-    // repeated hold press with a non-empty reason and zero PLC submissions.
+    // PLC-HMI-006 D3/D6 with PLC-HMI-009 D1: a healthy session enters
+    // restricted mode with an established held output. The entry-clear must drop
+    // the output bounded and keep it clear, and it must converge visibly: the
+    // mandated request-start (accepted/pending) may appear, but within the
+    // bounded ticks the final state of every command lifecycle must be terminal
+    // (no dangling pending confirmation). The restricted gate must keep
+    // rejecting a repeated hold press with a non-empty reason and zero PLC
+    // submissions.
     StartedApp started;
     started.start();
     QVERIFY(started.app != nullptr);
@@ -536,11 +569,13 @@ void RestrictedRoutingDeveloperTest::
     started.app->coordinator()->setRole(Role::Admin);
 
     Recorder recorder;
-    connect(started.app->shell(), &ShellModel::operatorCommandStatusChanged, this,
+    QObject sinkScope;       // RAII: severs the connection before the recorder dies
+    QObject submissionScope; // RAII: severs the connection before the recorder dies
+    connect(started.app->shell(), &ShellModel::operatorCommandStatusChanged, &sinkScope,
             [&recorder](const OperatorCommandStatus &s) {
                 recorder.statuses.append(s);
             });
-    connect(started.gw, &SimulatedPlcGateway::submissionCompleted, this,
+    connect(started.gw, &SimulatedPlcGateway::submissionCompleted, &submissionScope,
             [&recorder](const SubmissionCompletion &c) {
                 recorder.submissions.append(c.address);
             });
@@ -572,10 +607,11 @@ void RestrictedRoutingDeveloperTest::
 
     const QVector<OperatorCommandStatus> produced = recorder.statuses.mid(statusMark);
     QVERIFY2(!produced.isEmpty(),
-             "restricted-mode entry must produce a visible terminal command state");
-    for (const OperatorCommandStatus &s : produced)
-        QVERIFY2(s.lifecycle_state != OperatorCommandState::Pending,
-                 "no command may dangle pending after restricted-mode entry");
+             "restricted-mode entry must produce a visible command state");
+    QVERIFY2(everyCommandLifecycleReachedTerminal(produced),
+             "restricted-mode entry must converge within the bounded ticks: the immediate "
+             "request-start may be accepted/pending, but the final state of every command "
+             "lifecycle must be terminal (no lifecycle may dangle pending)");
 
     const QString reason = started.app->lifecycle()->commandRejectionReason();
     QVERIFY2(!reason.isEmpty(), "restricted mode must expose a non-empty reason");

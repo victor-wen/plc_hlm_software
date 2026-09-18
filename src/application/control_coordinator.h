@@ -121,6 +121,10 @@ public:
     // 注销/会话超时: try to clear M42/M106-M111; M100 is never touched
     // (spec §11.5, §13).
     void logoutClear();
+    // Converges a still-pending logout clear to a visible failure. Used by the
+    // composition root at shutdown after its bounded delivery/confirmation
+    // window (REV-P0-1 D1(f)); no-op when no clear is pending.
+    void failPendingLogoutClear(const QString &detail);
 
     // --- snapshot / submission result feed (from the gateway) ----------------
     void onSnapshot(const DeviceSnapshot &s);
@@ -139,6 +143,10 @@ public:
     bool adjustInProgress() const { return m_adjustPhase != AdjustPhase::Idle; }
     bool startInProgress() const { return m_startPhase != StartPhase::Idle; }
     bool stopInProgress() const { return m_stopPhase != StopPhase::Idle; }
+    // True while a logout/session-timeout clear is awaiting its correlated
+    // write confirmations (REV-P0-1). The composition root uses this to bound
+    // its shutdown delivery/confirmation window.
+    bool logoutClearPending() const { return m_pendingClear.has_value(); }
     // Saved command context (spec §10.3 step 4): the D130 == target result
     // comparison. The start width/speed are no longer saved because the
     // defensive deadline is now the fixed PLC timeout (+3 s), not an
@@ -183,6 +191,18 @@ private:
         qint64 deadlineMs = 0;
     };
 
+    // One logout/session-timeout clear generation awaiting its correlated
+    // write confirmations (REV-P0-1). The seven M42/M106-M111 writes are
+    // registered in m_pendingSubmissions under Command::LogoutClear; this
+    // keeps the completion count. Success may only be reported when every
+    // registered write completion reports result==true; a failed completion,
+    // link loss or the defensive deadline converges to a visible failure.
+    struct PendingClear {
+        int total = 0;
+        int completed = 0;
+        qint64 deadlineMs = 0;
+    };
+
     // One accepted submission awaiting its correlated terminal completion.
     struct PendingSubmission {
         quint64 request_id = 0;
@@ -208,6 +228,9 @@ private:
                          PlcOperation operation, quint16 address);
     void clearPendingSubmissions(Command cmd);
     void finishCommand(Command cmd, bool ok, const QString &detail);
+    // Converges the pending logout clear to exactly one terminal. No-op when no
+    // clear is pending (late/duplicate completions are ignored).
+    void finishLogoutClear(bool ok, const QString &detail);
 
     // Emits commandPending(cmd) plus its phase detail.
     void emitPending(Command cmd);
@@ -264,6 +287,10 @@ private:
     qint64 m_estopDeadlineMs = 0;
     // Accepted hold/latch/bypass commands waiting for snapshot confirmation.
     QVector<ManualConfirm> m_manualPending;
+    // Pending logout/session-timeout clear generation (REV-P0-1). Only one
+    // clear may be in flight; a duplicate logoutClear() while it is pending is
+    // absorbed (no second generation, no second request-start).
+    std::optional<PendingClear> m_pendingClear;
 };
 
 } // namespace hlm

@@ -47,6 +47,10 @@ constexpr qint64 kEstopTimeoutMs = 5'000;
 // accepted continuous command only succeeds when a confirmed snapshot shows
 // the requested state; without confirmation it converges to failure.
 constexpr qint64 kManualConfirmTimeoutMs = 3'000;
+// Defensive logout/session-timeout clear deadline (REV-P0-1): the seven
+// M42/M106-M111 writes must converge even if no correlated completion ever
+// arrives. Same 3 s class as the manual confirmation timeout.
+constexpr qint64 kLogoutClearTimeoutMs = 3'000;
 
 // Reads the M42/M105-M111 readback bit that confirms a hold/latch/bypass
 // command. Addresses are the coordinator's whitelisted ones (spec §10.7-§10.8).
@@ -76,6 +80,21 @@ QString manualTimeoutDetail(Command cmd)
     return cmd == Command::Bypass
         ? QStringLiteral("屏蔽命令确认超时, 请检查设备")
         : QStringLiteral("手动命令确认超时, 请检查设备");
+}
+
+// REV-P1-2: a confirming bit may only be taken from the source block that
+// actually carries it and only while that block's evidence is fresh/valid for
+// the address. M42 is sourced from the fast block (quality encodes staleness,
+// the age guard is defensive); M105-M111 from the command block. A stale or
+// failed block therefore cannot confirm a just-issued command: the pending
+// entry is left to the existing defensive timeout.
+bool confirmationEvidenceFresh(const DeviceSnapshot &s, quint16 address)
+{
+    if (address == kM42)
+        return s.fast_quality == DataQuality::Valid
+            && s.fast_age_ms <= kFastStaleMs;
+    return s.command_quality == DataQuality::Valid
+        && s.command_age_ms <= kCommandStaleMs;
 }
 
 } // namespace
@@ -487,30 +506,80 @@ ControlCoordinator::CommandResult ControlCoordinator::bypass(quint16 address, bo
 void ControlCoordinator::logoutClear()
 {
     // 注销/会话超时: try to clear M42/M106-M111 (spec §11.5, §13). M100 is
-    // never touched; M105 模式选择保持不变 (spec §10.8). Every submission
-    // result is inspected: the clear may only be reported as succeeded when
-    // all seven writes were accepted (NF-03, no optimistic success). A missing
-    // or rejecting transport converges to a visible communications-lost
-    // failure instead of a fabricated success.
-    bool allAccepted = static_cast<bool>(m_transport.writeCoil);
-    if (m_transport.writeCoil) {
-        allAccepted = m_transport.writeCoil(kM42, false, CommandPriority::Normal).accepted;
-        for (quint16 a = kM106; a <= kM111; ++a)
-            allAccepted = m_transport.writeCoil(a, false, CommandPriority::Normal).accepted
-                          && allAccepted;
-    }
+    // never touched; M105 模式选择保持不变 (spec §10.8).
+    //
+    // REV-P0-1: enqueue acceptance is not machine confirmation. The clear is a
+    // tracked command generation: it first becomes visibly Accepted/Pending,
+    // its seven writes are registered for correlated completion through the
+    // existing submission bookkeeping, and success may only be reported once
+    // every registered completion reports result==true. Any rejected write, any
+    // failed completion, link loss or the defensive deadline converges the
+    // clear to exactly one visible failure — never a fabricated success.
+    //
+    // Duplicate guard: a clear already awaiting confirmation owns the single
+    // lifecycle; a second request neither starts a new generation nor emits a
+    // second request-start.
+    if (m_pendingClear.has_value())
+        return;
+
     // 清零是原因, 保持命令的取消是结果: 被本次清零撤销的保持/锁存/屏蔽请求
-    // 不可能再确认, 必须先以失败收敛, 否则会悬空到确认超时. Then report the
-    // clear itself as a terminal result so restricted-mode entry has a visible,
-    // converging command state (PLC-HMI-006 D3).
+    // 不可能再确认, 必须先以失败收敛, 否则会悬空到确认超时.
     failAllManualConfirms(QStringLiteral("注销清零: 保持命令已取消"));
-    if (allAccepted)
-        emit commandResult(Command::LogoutClear, true,
-                           QStringLiteral("注销清零: 连续输出已清除"));
-    else
-        emit commandResult(Command::LogoutClear, false,
-                           QStringLiteral("注销清零: 通讯中断, 连续输出清零未确认"));
+
+    // Immediate visible request-start (before any terminal result), mirroring
+    // the other command flows. `total` is the fixed seven-write expectation so
+    // a synchronously delivered completion can never complete the clear before
+    // all seven submissions were accepted.
+    m_pendingClear = PendingClear{7, 0, m_nowMs() + kLogoutClearTimeoutMs};
+    emit commandAccepted(Command::LogoutClear);
+    emitPending(Command::LogoutClear);
+
+    // Register each accepted write for correlated completion. The seven
+    // addresses are M42 and M106-M111, all written false.
+    int acceptedCount = 0;
+    auto submitClearWrite = [this, &acceptedCount](quint16 address) {
+        if (!m_transport.writeCoil)
+            return;
+        const SubmissionResult result =
+            m_transport.writeCoil(address, false, CommandPriority::Normal);
+        if (!result.accepted)
+            return;
+        ++acceptedCount;
+        // A synchronous completion may already have converged the clear; a
+        // late registration for it would only leak bookkeeping.
+        if (m_pendingClear.has_value())
+            trackSubmission(Command::LogoutClear, result, PlcOperation::WriteCoil,
+                            address);
+    };
+    submitClearWrite(kM42);
+    for (quint16 a = kM106; a <= kM111; ++a)
+        submitClearWrite(a);
+
+    if (m_pendingClear.has_value()) {
+        if (acceptedCount != 7) {
+            // A missing or rejecting transport can never confirm: visible
+            // communications-lost failure immediately.
+            finishLogoutClear(
+                false, QStringLiteral("注销清零: 通讯中断, 连续输出清零未确认"));
+        } else if (m_pendingClear->completed >= m_pendingClear->total) {
+            // All completions were already delivered synchronously.
+            finishLogoutClear(true, QStringLiteral("注销清零: 连续输出已清除"));
+        }
+    }
+    // The hold-intent release stays immediate and is emitted exactly once per
+    // clear request, independent of the terminal outcome (consumers:
+    // LifecycleController / MainWindow::clearHoldIntents).
     emit continuousCleared();
+}
+
+void ControlCoordinator::finishLogoutClear(bool ok, const QString &detail)
+{
+    if (!m_pendingClear.has_value())
+        return; // already converged: late/duplicate results are ignored
+    m_pendingClear.reset();
+    // No further completion may converge this generation (exactly one terminal).
+    clearPendingSubmissions(Command::LogoutClear);
+    emit commandResult(Command::LogoutClear, ok, detail);
 }
 
 // --- gateway feed -----------------------------------------------------------
@@ -561,6 +630,15 @@ void ControlCoordinator::onSnapshot(const DeviceSnapshot &s)
     // Hold/latch/bypass confirmation and defensive timeout (D4): the terminal
     // success only follows a snapshot that shows the requested machine state.
     confirmManualFromSnapshot(s);
+
+    // Logout-clear defensive deadline (REV-P0-1): a correlated completion that
+    // never arrives still converges the clear to one visible failure. The
+    // check rides the snapshot feed (the same clock/tick a manual confirm
+    // timeout uses).
+    if (m_pendingClear.has_value() && m_nowMs() >= m_pendingClear->deadlineMs) {
+        finishLogoutClear(
+            false, QStringLiteral("注销清零: 确认超时, 连续输出清零未确认"));
+    }
 
     // Estop confirmation (spec §8.4: 直到 M0=1 或读回 M100=1).
     if (m_estopSetPending && (s.m0() || s.m100())) {
@@ -630,6 +708,27 @@ void ControlCoordinator::onSubmissionCompleted(const SubmissionCompletion &compl
     if (index < 0)
         return;
     const PendingSubmission pending = m_pendingSubmissions.takeAt(index);
+
+    // REV-P0-1: logout-clear completions only update the clear bookkeeping.
+    // Success is emitted when every registered completion reported result==true;
+    // the first failed completion converges the clear to one visible failure.
+    if (pending.cmd == Command::LogoutClear) {
+        if (!m_pendingClear.has_value())
+            return; // already converged: late/duplicate completion ignored
+        if (!completion.result) {
+            finishLogoutClear(
+                false,
+                completion.error.trimmed().isEmpty()
+                    ? QStringLiteral("注销清零: 通讯中断, 连续输出清零未确认")
+                    : QStringLiteral("注销清零: 连续输出清零未确认 (%1)")
+                          .arg(completion.error));
+            return;
+        }
+        ++m_pendingClear->completed;
+        if (m_pendingClear->completed >= m_pendingClear->total)
+            finishLogoutClear(true, QStringLiteral("注销清零: 连续输出已清除"));
+        return;
+    }
 
     // A successful completion is not machine confirmation: the snapshot still
     // decides (spec §11.2 no optimistic success). Only a failed transfer
@@ -738,6 +837,15 @@ void ControlCoordinator::onConnectionChanged(bool online)
     }
     // Accepted hold/latch/bypass commands converge too (never pending forever).
     failAllManualConfirms(QStringLiteral("通讯中断"));
+    // A pending logout/session-timeout clear converges on link loss as well:
+    // its correlated write completions can no longer confirm the clear. The
+    // error text carries 通讯中断 so the projection reports CommunicationsLost
+    // (PLC-HMI-006 D3 / NF-03).
+    if (m_pendingClear.has_value()) {
+        // m_pendingSubmissions was already cleared above: converge directly.
+        finishLogoutClear(
+            false, QStringLiteral("注销清零: 通讯中断, 连续输出清零未确认"));
+    }
 }
 
 // --- flow snapshot handlers -------------------------------------------------
@@ -953,6 +1061,8 @@ QString ControlCoordinator::pendingDetail(Command cmd) const
         return QStringLiteral("手动命令已发送: 等待 PLC 确认");
     case Command::Bypass:
         return QStringLiteral("屏蔽命令已发送: 等待 PLC 确认");
+    case Command::LogoutClear:
+        return QStringLiteral("注销清零: 已提交, 等待 PLC 确认");
     default:
         return QStringLiteral("命令已发送: 等待 PLC 确认");
     }
@@ -971,7 +1081,11 @@ void ControlCoordinator::confirmManualFromSnapshot(const DeviceSnapshot &s)
 {
     for (int i = 0; i < m_manualPending.size();) {
         const ManualConfirm c = m_manualPending.at(i);
-        if (commandCoilValue(s, c.address) == c.value) {
+        // REV-P1-2: only fresh/valid evidence for the confirmed address may
+        // confirm. A block that is stale or failed does not confirm; the entry
+        // stays pending and the defensive timeout below converges it.
+        if (confirmationEvidenceFresh(s, c.address)
+            && commandCoilValue(s, c.address) == c.value) {
             m_manualPending.removeAt(i);
             emit commandResult(c.cmd, true, manualConfirmDetail(c.cmd));
             continue;
@@ -997,6 +1111,14 @@ void ControlCoordinator::failAllManualConfirms(const QString &detail)
         clearPendingSubmissions(c.cmd);
     for (const ManualConfirm &c : pending)
         emit commandResult(c.cmd, false, detail);
+}
+
+void ControlCoordinator::failPendingLogoutClear(const QString &detail)
+{
+    finishLogoutClear(
+        false, detail.trimmed().isEmpty()
+                   ? QStringLiteral("注销清零: 通讯中断, 连续输出清零未确认")
+                   : detail);
 }
 
 void ControlCoordinator::setResetTimeoutSec(int sec)

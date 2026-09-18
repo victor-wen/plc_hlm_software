@@ -266,6 +266,36 @@ set_tests_properties(plc_hmi_007_cancelled_manual_developer PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )
 
-set_tests_properties(operator_command_application plc_m112_d140_session serial_settings_application serial_settings_application_developer restricted_mode_routing restricted_routing_developer plc_hmi_005_authoritative_values plc_hmi_006_release_and_envelope plc_hmi_007_generation_rejection plc_hmi_007_cancelled_manual plc_hmi_007_cancelled_manual_developer PROPERTIES
+# --- PLC-HMI-009: independent honest-logout-clear + fresh-confirm tests -------
+# QTEST_MAIN (QApplication) through the composition root; offscreen headless.
+# Both are registered in the TIMEOUT 240 list below like their 005/006/007 peers.
+
+add_executable(test_plc_hmi_009_logout_clear plc_hmi_009_logout_clear_test.cpp)
+target_link_libraries(test_plc_hmi_009_logout_clear PRIVATE
+    hlm_app_core
+    hlm_simulator
+    hlm_sqlite
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME plc_hmi_009_logout_clear COMMAND test_plc_hmi_009_logout_clear)
+set_tests_properties(plc_hmi_009_logout_clear PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
+)
+
+add_executable(test_plc_hmi_009_fresh_confirm plc_hmi_009_fresh_confirm_test.cpp)
+target_link_libraries(test_plc_hmi_009_fresh_confirm PRIVATE
+    hlm_app_core
+    hlm_simulator
+    hlm_sqlite
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME plc_hmi_009_fresh_confirm COMMAND test_plc_hmi_009_fresh_confirm)
+set_tests_properties(plc_hmi_009_fresh_confirm PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
+)
+
+set_tests_properties(operator_command_application plc_m112_d140_session serial_settings_application serial_settings_application_developer restricted_mode_routing restricted_routing_developer plc_hmi_005_authoritative_values plc_hmi_006_release_and_envelope plc_hmi_007_generation_rejection plc_hmi_007_cancelled_manual plc_hmi_007_cancelled_manual_developer plc_hmi_009_logout_clear plc_hmi_009_fresh_confirm PROPERTIES
     TIMEOUT 240
 )

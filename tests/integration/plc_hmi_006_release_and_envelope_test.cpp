@@ -179,6 +179,28 @@ bool allTerminal(const QVector<OperatorCommandStatus> &produced)
     return true;
 }
 
+// PLC-HMI-009 D1: the restricted-entry clear now emits an immediate visible
+// request-start (accepted/pending) before its correlated terminal, so a Pending
+// status may legitimately appear. Convergence means the final observed state of
+// every command lifecycle is terminal: the request-start is allowed, but a
+// lifecycle that emits only its request-start and never converges within the
+// bounded ticks still fails (the request-start is not a terminal).
+bool everyCommandLifecycleReachedTerminal(const QVector<OperatorCommandStatus> &produced)
+{
+    for (int i = 0; i < produced.size(); ++i) {
+        bool superseded = false;
+        for (int j = i + 1; j < produced.size(); ++j) {
+            if (produced.at(j).command == produced.at(i).command) {
+                superseded = true;
+                break;
+            }
+        }
+        if (!superseded && !isTerminal(produced.at(i).lifecycle_state))
+            return false;
+    }
+    return true;
+}
+
 bool anyRejectionWithReason(const QVector<OperatorCommandStatus> &produced)
 {
     for (const OperatorCommandStatus &status : produced) {
@@ -338,8 +360,10 @@ void PlcHmi006ReleaseAndEnvelopeTest::restrictedEntryClearsHeldOutputAndConverge
     const QVector<OperatorCommandStatus> produced = sink.since(mark);
     QVERIFY2(!produced.isEmpty(),
              "the release of a held output must produce a visible command state");
-    QVERIFY2(allTerminal(produced),
-             "no command may be left pending after restricted-mode entry");
+    QVERIFY2(everyCommandLifecycleReachedTerminal(produced),
+             "the release of a held output must converge within the bounded ticks: the "
+             "immediate request-start may be accepted/pending, but the final state of every "
+             "command lifecycle must be terminal (no command may be left dangling pending)");
     QVERIFY2(!started.gw->model().readCoil(kM106),
              "the release must not leave the output energized");
 
@@ -354,8 +378,8 @@ void PlcHmi006ReleaseAndEnvelopeTest::restrictedEntryClearsHeldLatchAndConverges
     // release-direction exemption is rejected), so this mirrors the manual-hold
     // case above for the latch family and enters immediately after the latch
     // energizes, which keeps any still-pending latch confirmation in scope:
-    // every status produced from entry on must be terminal, and the latch
-    // output must clear and stay clear.
+    // every command lifecycle from entry on must converge to a terminal state,
+    // and the latch output must clear and stay clear.
     StartedApp started;
     started.start();
     QVERIFY(started.app != nullptr);
@@ -393,13 +417,17 @@ void PlcHmi006ReleaseAndEnvelopeTest::restrictedEntryClearsHeldLatchAndConverges
     QVERIFY2(!started.gw->model().readCoil(kM109),
              "the released latch must not re-energize after the release converged");
 
-    // No dangling latch confirmation: every status produced from entry on is
-    // terminal, and the release itself is visible in the UI state.
+    // No dangling latch confirmation: the mandated request-start
+    // (accepted/pending) may appear from entry on, but within the bounded ticks
+    // every command lifecycle must reach a terminal state, and the release
+    // itself must be visible in the UI state.
     const QVector<OperatorCommandStatus> produced = sink.since(mark);
     QVERIFY2(!produced.isEmpty(),
              "the release of a held latch must produce a visible command state");
-    QVERIFY2(allTerminal(produced),
-             "no pending latch confirmation may remain dangling after restricted-mode entry");
+    QVERIFY2(everyCommandLifecycleReachedTerminal(produced),
+             "the release of a held latch must converge within the bounded ticks: the "
+             "immediate request-start may be accepted/pending, but no latch confirmation "
+             "may remain dangling pending as a final state");
     QVERIFY2(!started.gw->model().readCoil(kM109),
              "the release must not leave the latch energized");
 
@@ -492,9 +520,10 @@ void PlcHmi006ReleaseAndEnvelopeTest::restrictedEntryWhileOfflineNeverReportsThe
 {
     // NF-03 lock: with the PLC link down the entry clear cannot be confirmed
     // by the machine, so restricted-mode entry must never report the clear as
-    // a machine success. The gateway rejects offline submissions, so every
-    // produced status must be terminal, none may be Succeeded, and the failure
-    // must be visible to the operator with a reason.
+    // a machine success. The gateway rejects offline submissions, so within the
+    // bounded ticks the clear must converge to a non-success terminal (the
+    // mandated request-start may appear first), and the failure must be visible
+    // to the operator with a reason.
     StartedApp started;
     started.start();
     QVERIFY(started.app != nullptr);
@@ -529,8 +558,10 @@ void PlcHmi006ReleaseAndEnvelopeTest::restrictedEntryWhileOfflineNeverReportsThe
     const QVector<OperatorCommandStatus> produced = sink.since(mark);
     QVERIFY2(!produced.isEmpty(),
              "restricted-mode entry while offline must still produce a visible command state");
-    QVERIFY2(allTerminal(produced),
-             "no command may be left dangling when restricted-mode entry runs offline");
+    QVERIFY2(everyCommandLifecycleReachedTerminal(produced),
+             "restricted-mode entry while offline must converge within the bounded ticks: the "
+             "immediate request-start may be accepted/pending, but no command lifecycle may "
+             "be left dangling pending");
     for (const OperatorCommandStatus &status : produced) {
         QVERIFY2(status.lifecycle_state != OperatorCommandState::Succeeded,
                  qPrintable(QStringLiteral("the offline entry clear reported %1 instead of a "

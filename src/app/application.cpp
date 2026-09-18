@@ -1,8 +1,11 @@
 #include "app/application.h"
 
 #include <QApplication>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDebug>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QMessageBox>
 #include <QThread>
 #include <QTimer>
@@ -49,6 +52,14 @@ constexpr quint16 kD220 = 220; // 调宽速度
 // Defensive parameter-write confirmation timeout (PLC-HMI-003 D4): a lost
 // completion must never leave the settings page pending forever.
 constexpr int kParamWriteTimeoutMs = 5000;
+
+// Bounded shutdown window for a pending logout/session-timeout clear
+// (PLC-HMI-009 D1(f)). The clear is never reported successful from enqueue
+// acceptance, so shutdown must give its correlated write confirmations a
+// limited chance to arrive before the gateway stops, then converge honestly.
+// The window is wall-clock bounded so shutdown always returns.
+constexpr int kShutdownClearWindowMs = 2000;
+constexpr int kShutdownClearSliceMs = 10;
 
 // Maps a coordinator terminal result onto the projected lifecycle state. The
 // coordinator's existing commandResult(cmd, ok, detail) signature is unchanged
@@ -523,6 +534,33 @@ void Application::shutdown()
     // gateway, database, vision. M100 is never auto-cleared.
     if (m_lifecycle)
         m_lifecycle->shutdown();
+    // PLC-HMI-009 D1(f): the clear is never reported successful from enqueue
+    // acceptance, so give its correlated write confirmations a bounded chance
+    // to arrive before the gateway stops. The window is wall-clock bounded and
+    // always returns; an in-process simulator is ticked like the interactive
+    // simulation timer, but only when the composition root itself drives the
+    // simulator (tests with simulatedTickIntervalMs=0 own the clock and keep
+    // their deterministic tick semantics). Any clear still pending afterwards
+    // is converged honestly (failure) before the gateway stops.
+    if (m_coordinator && m_coordinator->logoutClearPending()) {
+        const bool drivenSimulator =
+            m_cfg.useSimulatedGateway && m_cfg.simulatedTickIntervalMs > 0;
+        QElapsedTimer window;
+        window.start();
+        while (m_coordinator->logoutClearPending()
+               && window.elapsed() < kShutdownClearWindowMs) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents,
+                                            kShutdownClearSliceMs);
+            if (drivenSimulator) {
+                if (auto *sim = qobject_cast<SimulatedPlcGateway *>(m_gw))
+                    sim->tick();
+            }
+        }
+        if (m_coordinator->logoutClearPending()) {
+            m_coordinator->failPendingLogoutClear(
+                QStringLiteral("注销清零: 通讯中断, 连续输出清零未确认"));
+        }
+    }
     if (m_gw)
         m_gw->stop();
     m_gatewayStarted = false;
