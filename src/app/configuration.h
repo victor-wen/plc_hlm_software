@@ -37,9 +37,6 @@ struct AppConfig {
     // --- retention (spec §12) -------------------------------------------------
     int retentionDays = 365;
 
-    // --- control (spec §10.2) -------------------------------------------------
-    int resetTimeoutSec = 120; // HMI 防御性复位超时 30-600
-
     // --- gateway selection -----------------------------------------------------
     // True: in-process SimulatedPlcGateway (only when explicitly requested
     // with --sim). False: real QtModbusPlcGateway over the serial port.

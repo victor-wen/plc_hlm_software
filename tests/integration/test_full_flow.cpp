@@ -337,13 +337,14 @@ void FullFlowTest::fullFlowResetAdjustAutoStartStop()
                 results.append({cmd, ok});
             });
 
-    // 复位 (M103 pulse) -> home return completes.
+    // 复位 (M103 pulse only) -> converges on the fixed 200 ms boundary
+    // (PLC-HMI-010 D1/D3); no M50/M61 readback participates in the result.
     QVERIFY(c->reset().accepted);
     gw.tick();
-    QVERIFY(gw.lastSnapshot().m50()); // homing
+    QVERIFY(gw.lastSnapshot().m50()); // the PLC still starts its own homing
+    QVERIFY(c->resetInProgress());
+    now += ControlCoordinator::kResetCompletionDelayMs;
     gw.tick();
-    QVERIFY(gw.lastSnapshot().m9()); // M61 via M9: homed
-    QVERIFY(!gw.lastSnapshot().m50());
     QVERIFY(accepted.contains(Command::Reset));
     QVERIFY(results.contains({Command::Reset, true}));
 
@@ -452,10 +453,13 @@ void FullFlowTest::estopSetReleaseLatchesFault()
     QVERIFY(gw.lastSnapshot().m14());
     QCOMPARE(gw.lastSnapshot().faultCode(), quint16(1));
 
-    // Reset clears the latched fault.
+    // Reset (M103 pulse): the PLC clears the latched fault and converges on the
+    // HMI's fixed 200 ms boundary (PLC-HMI-010 D3).
     QVERIFY(c->reset().accepted);
     gw.tick();
+    now += ControlCoordinator::kResetCompletionDelayMs;
     gw.tick();
+    QVERIFY(!c->resetInProgress());
     QVERIFY(!gw.lastSnapshot().m14());
     QCOMPARE(gw.lastSnapshot().faultCode(), quint16(0));
 }

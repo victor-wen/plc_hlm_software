@@ -37,7 +37,6 @@ constexpr quint16 kD128 = 128;
 
 constexpr quint64 kAdjustTimeoutMs = 3'600'001;
 constexpr quint64 kModeSwitchTimeoutMs = 60'000;
-constexpr quint64 kResetTimeoutMs = 200'000;
 
 struct SubmissionRecord
 {
@@ -204,7 +203,7 @@ private slots:
     void unknownRequestIdCompletionIsIgnored();
     void obsoleteGenerationCompletionIsIgnored();
     void duplicateCompletionProducesExactlyOneTerminal();
-    void lateCompletionAfterTimeoutIsIgnored();
+    void lateCompletionAfterFixedDelayTerminalIsIgnored();
     void lateCompletionFromAnEarlierRequestCannotSatisfyANewerRequest();
 
     // --- OB-3: overlapping same-address commands and duplicates ---------------
@@ -347,7 +346,7 @@ void PlcCommandCorrelationTest::duplicateCompletionProducesExactlyOneTerminal()
     QCOMPARE(outcomes.size(), 1);
 }
 
-void PlcCommandCorrelationTest::lateCompletionAfterTimeoutIsIgnored()
+void PlcCommandCorrelationTest::lateCompletionAfterFixedDelayTerminalIsIgnored()
 {
     Rig rig;
     rig.start();
@@ -356,28 +355,35 @@ void PlcCommandCorrelationTest::lateCompletionAfterTimeoutIsIgnored()
     putInAutoMode(rig.gateway);
 
     QVector<bool> outcomes;
+    QString detail;
     connect(rig.coordinator.get(), &ControlCoordinator::commandResult, this,
-            [&](Command cmd, bool ok, const QString &) {
-                if (cmd == Command::Reset)
+            [&](Command cmd, bool ok, const QString &d) {
+                if (cmd == Command::Reset) {
                     outcomes.append(ok);
+                    detail = d;
+                }
             });
 
     QVERIFY(rig.coordinator->reset().accepted);
     const quint64 id = rig.fake.records().first().request_id;
 
-    rig.now += static_cast<qint64>(kResetTimeoutMs);
+    // PLC-HMI-010 D3: the reset converges to exactly one success terminal once
+    // the fixed 200 ms from the M103 pulse submission has elapsed.
+    rig.now += ControlCoordinator::kResetCompletionDelayMs;
     rig.gateway.tick();
     QCOMPARE(outcomes.size(), 1);
-    QVERIFY(!outcomes[0]);
+    QVERIFY(outcomes[0]);
+    QCOMPARE(detail, QStringLiteral("复位完成"));
     QVERIFY(!rig.coordinator->resetInProgress());
 
-    // A late success must not turn an already-terminal timeout into success,
-    // and must not produce a second terminal result.
-    rig.fake.complete(*rig.coordinator, id, true);
+    // A late failed completion for the already-converged request must not turn
+    // the terminal success into a failure, and must not produce a second result.
+    rig.fake.complete(*rig.coordinator, id, false, QStringLiteral("late failure"));
     QCOMPARE(outcomes.size(), 1);
-    QVERIFY(!outcomes[0]);
+    QVERIFY(outcomes[0]);
+    QCOMPARE(detail, QStringLiteral("复位完成"));
 
-    rig.now += static_cast<qint64>(kResetTimeoutMs);
+    rig.now += ControlCoordinator::kResetCompletionDelayMs;
     rig.gateway.tick();
     QCOMPARE(outcomes.size(), 1);
 }
@@ -446,7 +452,7 @@ void PlcCommandCorrelationTest::overlappingSameAddressCommandsNeverConsumeEachOt
             });
     QSignalSpy rejected(rig.coordinator.get(), &ControlCoordinator::commandRejected);
 
-    QVERIFY(rig.coordinator->reset().accepted); // writes M104 = 0
+    QVERIFY(rig.coordinator->reset().accepted); // M103 pulse only (PLC-HMI-010)
     QVERIFY(rig.coordinator->resetInProgress());
 
     const ControlCoordinator::CommandResult second = rig.coordinator->setMode(true);
@@ -461,7 +467,7 @@ void PlcCommandCorrelationTest::overlappingSameAddressCommandsNeverConsumeEachOt
 
     // Both commands are pending and each owns its own request identity.
     QVERIFY2(rig.fake.records().size() >= 2,
-             "both overlapping M104 commands must own their submissions");
+             "both overlapping commands must own their submissions");
     const quint64 modeId = rig.fake.records().last().request_id;
     const quint64 resetId = rig.fake.records().first().request_id;
     QVERIFY(modeId != resetId);

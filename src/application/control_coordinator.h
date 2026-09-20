@@ -29,9 +29,11 @@ namespace hlm {
 //    abstraction (PulseTransport) so the coordinator stays testable against a
 //    fake or the SimulatedPlcGateway; the real worker thread wires the
 //    PulseStateMachine callbacks into the gateway (spec §7.2, §8.5).
-//  - Command lifecycle is tracked per flow: reset waits for M61, adjust waits
-//    for M44/M45 with the saved target, start waits for M3, stop waits for
-//    M3=0. Timeouts converge to the actual PLC state (spec §13).
+//  - Command lifecycle is tracked per flow: reset is a
+//    fire-and-confirm-by-fixed-delay request that sends the M103 pulse only and
+//    converges after a fixed 200 ms (spec §10.2, PLC-HMI-010); adjust waits for
+//    M44/M45 with the saved target, start waits for M3, stop waits for M3=0.
+//    Timeouts converge to the actual PLC state (spec §13).
 //  - Hold/latch/bypass commands are accepted+pending on submission and only
 //    report success when a confirmed snapshot shows the requested machine
 //    state; a transport write rejection is visible and a defensive timeout
@@ -55,14 +57,11 @@ public:
         std::function<SubmissionResult(quint16 address, quint16 value, CommandPriority priority)> writeRegister;
     };
 
-    // Config (spec §10.2: HMI defensive reset timeout, admin-configurable).
+    // Config. The former administrator-configurable 30-600 s reset timeout was
+    // replaced by a fixed 200 ms completion delay (PLC-HMI-010 D3, spec §10.2);
+    // no reset timing is configurable any more. The struct is retained as the
+    // constructor's value parameter so existing wiring keeps one stable shape.
     struct Config {
-        Config() : resetTimeoutSec(120) {}
-        explicit Config(int resetTimeout)
-            : resetTimeoutSec(qBound(30, resetTimeout, 600)) // clamp 30-600 (spec §10.2)
-        {
-        }
-        int resetTimeoutSec; // 30-600 (spec §10.2)
     };
 
     // Result of a command submission (accepted vs rejected with a reason).
@@ -139,7 +138,7 @@ public:
     bool online() const { return m_online; }
     bool hasSnapshot() const { return m_snapshot.has_value(); }
     DeviceSnapshot snapshot() const { return m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData())); }
-    bool resetInProgress() const { return m_resetPhase != ResetPhase::Idle; }
+    bool resetInProgress() const { return m_resetPending; }
     bool adjustInProgress() const { return m_adjustPhase != AdjustPhase::Idle; }
     bool startInProgress() const { return m_startPhase != StartPhase::Idle; }
     bool stopInProgress() const { return m_stopPhase != StopPhase::Idle; }
@@ -153,9 +152,9 @@ public:
     // estimated-motion formula.
     std::optional<quint16> adjustTarget() const { return m_adjustTarget; }
 
-    // --- config -------------------------------------------------------------
-    void setResetTimeoutSec(int sec); // 30-600 (spec §10.2)
-    int resetTimeoutSec() const { return m_cfg.resetTimeoutSec; }
+    // The fixed reset completion delay from the M103 pulse submission
+    // (PLC-HMI-010 D3, user decision U1: 200 ms).
+    static constexpr qint64 kResetCompletionDelayMs = 200;
 
 signals:
     // Command accepted and dispatched (waiting for PLC confirmation).
@@ -176,7 +175,6 @@ signals:
     void continuousCleared();
 
 private:
-    enum class ResetPhase { Idle, WaitManual, Homing };
     enum class AdjustPhase { Idle, WaitTargetWrite, WaitResult };
     enum class StartPhase { Idle, WaitM3 };
     enum class StopPhase { Idle, WaitM3Clear };
@@ -240,10 +238,12 @@ private:
     void confirmManualFromSnapshot(const DeviceSnapshot &s);
     void failAllManualConfirms(const QString &detail);
 
-    void onResetSnapshot(const DeviceSnapshot &s);
     void onAdjustSnapshot(const DeviceSnapshot &s);
     void onStartSnapshot(const DeviceSnapshot &s);
     void onStopSnapshot(const DeviceSnapshot &s);
+    // Converges an accepted fire-and-confirm reset once the fixed delay has
+    // elapsed. No-op when no reset is pending (exactly one terminal).
+    void confirmResetByFixedDelay();
 
     PulseTransport m_transport;
     Config m_cfg;
@@ -256,20 +256,19 @@ private:
     std::optional<DeviceSnapshot> m_snapshot;
 
     // Command lifecycle state.
-    ResetPhase m_resetPhase = ResetPhase::Idle;
+    // Reset is a fire-and-confirm-by-fixed-delay request (PLC-HMI-010): the
+    // M103 pulse is its only submission and the flow converges on the fixed
+    // completion delay, so a single pending flag replaces the removed
+    // WaitManual/Homing phases and the homing-confirmation state.
+    bool m_resetPending = false;
     AdjustPhase m_adjustPhase = AdjustPhase::Idle;
     StartPhase m_startPhase = StartPhase::Idle;
     StopPhase m_stopPhase = StopPhase::Idle;
     std::optional<quint16> m_adjustTarget;
-    qint64 m_resetDeadlineMs = 0; // clock time of the reset timeout
+    qint64 m_resetCompletionDeadlineMs = 0; // clock time of the fixed 200 ms boundary
     qint64 m_adjustDeadlineMs = 0; // fixed PLC width timeout + 3 s (spec §10.3)
     qint64 m_startDeadlineMs = 0;
     qint64 m_stopDeadlineMs = 0;
-    bool m_resetTimeoutArmed = false;
-    // True once the Homing phase has observed M50=1 (home return actually
-    // started). Success is only accepted after this, so a lost M103 pulse can
-    // never report a false "回原点完成" (spec §10.2 step 3, §13).
-    bool m_resetHomingStarted = false;
     bool m_adjustTimeoutArmed = false;
     bool m_startTimeoutArmed = false;
     bool m_stopTimeoutArmed = false;

@@ -10,7 +10,6 @@ namespace {
 
 // Protocol addresses (0-based, matching AddressTable). No bare addresses in
 // UI/flow code (spec §8.2) — these are the coordinator's own flow constants.
-constexpr quint16 kM1 = 1;    // manual mode
 constexpr quint16 kM2 = 2;    // auto mode
 constexpr quint16 kM42 = 42;  // belt continuous
 constexpr quint16 kM43 = 43;  // width adjust command (pulse)
@@ -185,36 +184,23 @@ ControlCoordinator::CommandResult ControlCoordinator::reset()
     CommandResult g = gate(Command::Reset, s);
     if (!g.accepted)
         return rejectCommand(Command::Reset, g.reason);
-    if (m_resetPhase != ResetPhase::Idle)
+    if (m_resetPending)
         return rejectCommand(Command::Reset,
                              QStringLiteral("复位已在进行中, 请等待当前复位结束"));
-    // Reset selects manual mode through M104; a mode switch in flight would
-    // share that coil and must never consume this flow's confirmation.
-    if (m_modePending)
-        return rejectCommand(Command::Reset,
-                             QStringLiteral("模式切换已在进行中, 请稍后再试"));
 
-    m_resetPhase = ResetPhase::WaitManual;
-    m_resetHomingStarted = false;
-    m_resetDeadlineMs = m_nowMs() + qint64(m_cfg.resetTimeoutSec) * 1000;
-    m_resetTimeoutArmed = true;
+    // Fire-and-confirm-by-fixed-delay (PLC-HMI-010 D1/D2/D3, user decisions
+    // U1-U4): the reset sends the M103 pulse directly — it never writes M104,
+    // never waits for M1=1, and its result never depends on M50/M61/M14/D110.
+    // The command converges to exactly one terminal 复位完成 once the fixed
+    // 200 ms from this pulse submission has elapsed.
+    m_resetPending = true;
+    m_resetCompletionDeadlineMs = m_nowMs() + kResetCompletionDelayMs;
     emit commandAccepted(Command::Reset);
 
-    if (s.m1()) {
-        // Already manual: pulse M103 directly (spec §10.2 step 2).
-        if (submitPulse(Command::Reset, kM103)) {
-            m_resetPhase = ResetPhase::Homing;
-            emitPending(Command::Reset);
-        } else {
-            finishCommand(Command::Reset, false, QStringLiteral("M103 脉冲发送失败"));
-        }
-    } else {
-        // Not manual: write M104=0 and wait for M1=1 (spec §10.2 step 1).
-        // The pending phase is visible before the write result so the operator
-        // sees the manual-switch phase (D4/OB-5).
+    if (submitPulse(Command::Reset, kM103)) {
         emitPending(Command::Reset);
-        if (!submitCoil(Command::Reset, kM104, false, CommandPriority::Normal))
-            finishCommand(Command::Reset, false, QStringLiteral("命令发送失败"));
+    } else {
+        finishCommand(Command::Reset, false, QStringLiteral("M103 脉冲发送失败"));
     }
     return {true, QString()};
 }
@@ -283,10 +269,8 @@ ControlCoordinator::CommandResult ControlCoordinator::setMode(bool autoMode)
     if (m_modePending)
         return rejectCommand(Command::ModeSwitch,
                              QStringLiteral("模式切换已在进行中, 请稍后再试"));
-    // Reset also drives M104; two flows sharing the coil must not interleave.
-    if (m_resetPhase != ResetPhase::Idle)
-        return rejectCommand(Command::ModeSwitch,
-                             QStringLiteral("复位已在进行中, 无法切换模式"));
+    // Reset no longer drives M104 (PLC-HMI-010 D1): it sends the M103 pulse
+    // only, so a mode switch and a reset no longer share a coil and may overlap.
 
     m_modePending = true;
     m_modeTarget = autoMode;
@@ -593,11 +577,6 @@ void ControlCoordinator::onSnapshot(const DeviceSnapshot &s)
         m_online = true;
 
     // Timeout convergence first (spec §13: 写结果不确定 -> 向安全状态收敛).
-    if (m_resetTimeoutArmed && m_nowMs() >= m_resetDeadlineMs) {
-        m_resetTimeoutArmed = false;
-        finishCommand(Command::Reset, false,
-                      QStringLiteral("回原点等待超时, 请检查设备"));
-    }
     if (m_adjustTimeoutArmed && m_nowMs() >= m_adjustDeadlineMs) {
         m_adjustTimeoutArmed = false;
         finishCommand(Command::AdjustWidth, false,
@@ -681,8 +660,13 @@ void ControlCoordinator::onSnapshot(const DeviceSnapshot &s)
         }
     }
 
-    if (m_resetPhase != ResetPhase::Idle)
-        onResetSnapshot(s);
+    // Fire-and-confirm-by-fixed-delay reset (PLC-HMI-010 D3): exactly one
+    // terminal 复位完成 once the fixed 200 ms from the M103 pulse submission
+    // has elapsed. This is evaluated on the snapshot feed (the same clock/tick
+    // the other defensive deadlines use) and is independent of every readback
+    // bit/register (D2).
+    confirmResetByFixedDelay();
+
     if (m_adjustPhase != AdjustPhase::Idle)
         onAdjustSnapshot(s);
     if (m_startPhase != StartPhase::Idle)
@@ -738,13 +722,11 @@ void ControlCoordinator::onSubmissionCompleted(const SubmissionCompletion &compl
 
     switch (pending.cmd) {
     case Command::Reset:
-        // Only converge while the reset flow is still waiting; otherwise the
-        // flow already converged (spec §13: never double-report).
-        if (m_resetPhase == ResetPhase::Homing) {
+        // The only reset submission is the M103 pulse (PLC-HMI-010 D1/D4): a
+        // failed completion surfaces as a visible failure. The fixed-delay
+        // success is decided by the clock, never by a submission completion.
+        if (m_resetPending)
             finishCommand(Command::Reset, false, QStringLiteral("M103 脉冲发送失败"));
-        } else if (m_resetPhase != ResetPhase::Idle) {
-            finishCommand(Command::Reset, false, QStringLiteral("写 M104 失败"));
-        }
         break;
     case Command::AdjustWidth:
         if (pending.operation == PlcOperation::Pulse) {
@@ -795,10 +777,8 @@ void ControlCoordinator::onConnectionChanged(bool online)
     if (online)
         return;
     // Offline: abort active flows, never optimistic, never replay (spec §13).
-    if (m_resetPhase != ResetPhase::Idle) {
-        m_resetPhase = ResetPhase::Idle;
-        m_resetTimeoutArmed = false;
-        m_resetHomingStarted = false;
+    if (m_resetPending) {
+        m_resetPending = false;
         emit commandResult(Command::Reset, false, QStringLiteral("通讯中断"));
     }
     if (m_adjustPhase != AdjustPhase::Idle) {
@@ -850,49 +830,14 @@ void ControlCoordinator::onConnectionChanged(bool online)
 
 // --- flow snapshot handlers -------------------------------------------------
 
-void ControlCoordinator::onResetSnapshot(const DeviceSnapshot &s)
+void ControlCoordinator::confirmResetByFixedDelay()
 {
-    if (m_resetPhase == ResetPhase::WaitManual) {
-        if (s.m1()) {
-            if (submitPulse(Command::Reset, kM103)) {
-                m_resetPhase = ResetPhase::Homing;
-                emitPending(Command::Reset);
-            } else {
-                finishCommand(Command::Reset, false, QStringLiteral("M103 脉冲发送失败"));
-            }
-        }
+    if (!m_resetPending)
         return;
-    }
-    if (m_resetPhase == ResetPhase::Homing) {
-        // The flow enters Homing the moment the M103 pulse is sent, while the
-        // pulse is still in flight. A snapshot read before the PLC processes
-        // the rising edge still shows the pre-pulse state (spec §10.2 step 2).
-        // Because reset does not require M14=0, a latched fault (the primary
-        // use case) appears in that stale snapshot and must not be judged.
-        // Only judge faults (or success) after M50=1 has been observed, i.e.
-        // the home return actually started (spec §10.2 step 3 "监视 M50").
-        if (s.m50())
-            m_resetHomingStarted = true;
-        if (m_resetHomingStarted) {
-            // Fault check takes precedence over success (spec §10.2 step 6): a
-            // latched fault (M14) or fault code must never be reported cleared.
-            if (s.m14() || s.faultCode() != 0) {
-                // PLC fault: keep the actual state, no optimistic success, no
-                // fabricated fault code (spec §10.2 step 6).
-                finishCommand(Command::Reset, false, QStringLiteral("回原点故障"));
-                return;
-            }
-            // Success: home return started, then M61=1 and M50=0 (spec §10.2
-            // step 4).
-            if (s.m9() && !s.m50()) {
-                finishCommand(Command::Reset, true, QStringLiteral("回原点完成"));
-            }
-        }
-        // Before M50=1: keep waiting. If the M103 pulse was lost the machine
-        // was already homed, M50 never rises and the flow converges to the
-        // defensive timeout instead of a false success or premature fault
-        // (spec §13: 不显示乐观成功, 每阶段收敛).
-    }
+    // Fixed completion delay from the M103 pulse submission (PLC-HMI-010 D3).
+    // No M50/M61/M14/D110 readback participates in the result (D2).
+    if (m_nowMs() >= m_resetCompletionDeadlineMs)
+        finishCommand(Command::Reset, true, QStringLiteral("复位完成"));
 }
 
 void ControlCoordinator::onAdjustSnapshot(const DeviceSnapshot &s)
@@ -995,9 +940,7 @@ void ControlCoordinator::finishCommand(Command cmd, bool ok, const QString &deta
 {
     switch (cmd) {
     case Command::Reset:
-        m_resetPhase = ResetPhase::Idle;
-        m_resetTimeoutArmed = false;
-        m_resetHomingStarted = false;
+        m_resetPending = false;
         break;
     case Command::AdjustWidth:
         m_adjustPhase = AdjustPhase::Idle;
@@ -1040,9 +983,10 @@ QString ControlCoordinator::pendingDetail(Command cmd) const
 {
     switch (cmd) {
     case Command::Reset:
-        return m_resetPhase == ResetPhase::WaitManual
-            ? QStringLiteral("复位中: 正在切换到手动模式")
-            : QStringLiteral("复位中: 回原点进行中");
+        // Fire-and-confirm-by-fixed-delay (PLC-HMI-010 D1/D5): a single honest
+        // pending detail — no manual-switch and no homing step, neither of
+        // which the request performs.
+        return QStringLiteral("复位中: 正在发送复位信号");
     case Command::AdjustWidth:
         return m_adjustPhase == AdjustPhase::WaitTargetWrite
             ? QStringLiteral("调宽: 正在写入目标宽度")
@@ -1119,11 +1063,6 @@ void ControlCoordinator::failPendingLogoutClear(const QString &detail)
         false, detail.trimmed().isEmpty()
                    ? QStringLiteral("注销清零: 通讯中断, 连续输出清零未确认")
                    : detail);
-}
-
-void ControlCoordinator::setResetTimeoutSec(int sec)
-{
-    m_cfg.resetTimeoutSec = qBound(30, sec, 600); // spec §10.2: 30-600
 }
 
 } // namespace hlm

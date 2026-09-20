@@ -9,6 +9,8 @@
 
 #include <QtTest>
 
+#include <QApplication>
+#include <QFile>
 #include <QSpinBox>
 #include <QTemporaryDir>
 
@@ -17,7 +19,9 @@
 #include "adapters/simulator/simulated_plc_gateway.h"
 #include "app/application.h"
 #include "app/configuration.h"
+#include "app/lifecycle_controller.h"
 #include "domain/operator_command_status.h"
+#include "ports/iplc_gateway.h"
 #include "ui/MainWindow.h"
 #include "ui/pages/recipe_width_page.h"
 #include "ui/shell/action_bar.h"
@@ -65,6 +69,21 @@ bool capturedWarning()
     return false;
 }
 
+// RAII handle that guarantees Application::shutdown() runs before the object is
+// destroyed, so an early QVERIFY/QCOMPARE return from an (expected) failing
+// assertion can never leave a live application to destruct uncleanly.
+struct ApplicationShutdown
+{
+    void operator()(Application *app) const
+    {
+        if (app != nullptr)
+            app->shutdown();
+        delete app;
+    }
+};
+
+using ApplicationHandle = std::unique_ptr<Application, ApplicationShutdown>;
+
 // Builds a running application on the in-process simulator with an isolated
 // database path. The simulated clock advances only through explicit ticks.
 Application *startSimulatedApplication(const QTemporaryDir &dir, SimulatedPlcGateway **gwOut)
@@ -94,9 +113,14 @@ private slots:
     // --- OB-1: every entry point produces a visible state immediately --------
     void everyCommandEntryPointProducesVisibleState();
 
-    // --- OB-5: reset pending detail names the manual switch and homing -------
-    void resetPendingDetailNamesManualSwitchThenHoming();
-    void resetFromManualHomedMachineConvergesVisibly();
+    // --- PLC-HMI-010 OB-1/OB-6: reset pending visible, then fixed-delay success
+    void resetProjectsPendingThenFixedDelaySuccess();
+    // --- PLC-HMI-010 OB-7: exactly one terminal per accepted reset -------------
+    void resetTerminalIsEmittedExactlyOnce();
+    // --- PLC-HMI-010 OB-3: restricted-mode reset stays visibly rejected --------
+    void resetRejectedVisiblyInRestrictedModeWithoutSubmission();
+    // --- PLC-HMI-010 OB-3/OB-7 (verify-phase edge case): repeated clicks -------
+    void duplicateResetClicksWhilePendingAreRejectedAndOneTerminalSuccessProjected();
 
     // --- OB-9: coordinator terminal result is the projected adjust verdict ---
     void adjustTimeoutProjectsToShellAsTerminalFailure();
@@ -206,118 +230,277 @@ void OperatorCommandApplicationTest::everyCommandEntryPointProducesVisibleState(
     app->shutdown();
 }
 
-// --- OB-5 ---------------------------------------------------------------------
+// --- PLC-HMI-010 OB-1 / OB-6 --------------------------------------------------
 
-void OperatorCommandApplicationTest::resetPendingDetailNamesManualSwitchThenHoming()
+void OperatorCommandApplicationTest::resetProjectsPendingThenFixedDelaySuccess()
 {
+    // The reset is a fire-and-confirm-by-fixed-delay request: it must expose a
+    // pending state with a non-empty human-readable detail that does NOT promise
+    // a machine-confirmation step that no longer occurs, and then converge to a
+    // single success terminal with the fixed detail 复位完成.
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     SimulatedPlcGateway *gw = nullptr;
-    std::unique_ptr<Application> app(startSimulatedApplication(dir, &gw));
+    ApplicationHandle app(startSimulatedApplication(dir, &gw));
     QVERIFY(gw != nullptr);
 
     for (int i = 0; i < 3 && !gw->isOnline(); ++i)
         gw->tick();
     QVERIFY(gw->isOnline());
 
-    // Homed machine in automatic mode: reset must first switch to manual mode.
-    homeReady(*gw);
-    gw->writeCoil(kM104, true);
-    gw->tick();
-    QVERIFY(gw->lastSnapshot().m2());
-
+    homeReady(*gw); // homed and left in manual mode: no mode switch is needed
     app->coordinator()->setRole(Role::Admin);
 
+    // RAII: the connection is severed before the captured vector or the
+    // application dies, so a failing assertion cannot crash the runner.
     QVector<OperatorCommandStatus> statuses;
-    connect(app->shell(), &ShellModel::operatorCommandStatusChanged, this,
+    QObject statusScope;
+    connect(app->shell(), &ShellModel::operatorCommandStatusChanged, &statusScope,
             [&statuses](const OperatorCommandStatus &s) { statuses.append(s); });
 
     ActionBar *bar = app->window()->findChild<ActionBar *>();
     QVERIFY(bar != nullptr);
     emit bar->actionRequested(Command::Reset);
 
-    const auto scan = [&statuses](bool &sawManual, bool &sawHoming,
-                                  bool &sawTerminal) {
-        for (const OperatorCommandStatus &s : statuses) {
-            if (s.lifecycle_state == OperatorCommandState::Pending) {
-                if (s.human_readable_detail.contains(QStringLiteral("手动")))
-                    sawManual = true;
-                if (s.human_readable_detail.contains(QStringLiteral("回原点"))
-                    || s.human_readable_detail.contains(QStringLiteral("回零")))
-                    sawHoming = true;
-            }
-            if (isTerminal(s.lifecycle_state))
-                sawTerminal = true;
-        }
-    };
-
-    bool sawManual = false;
-    bool sawHoming = false;
+    // A pending state is visible before any terminal, with a non-empty detail.
+    const OperatorCommandStatus first = app->shell()->operatorCommandStatus();
+    QVERIFY2(!isTerminal(first.lifecycle_state) || statuses.size() > 1,
+             "no pending reset state was projected before the terminal");
+    bool sawPendingWithDetail = false;
     bool sawTerminal = false;
-    scan(sawManual, sawHoming, sawTerminal);
-
-    for (int i = 0; i < 6; ++i) {
-        gw->tick();
-        scan(sawManual, sawHoming, sawTerminal);
+    bool pendingPromisesMachineConfirmation = false;
+    for (const OperatorCommandStatus &s : statuses) {
+        if (s.lifecycle_state == OperatorCommandState::Pending) {
+            if (!s.human_readable_detail.trimmed().isEmpty())
+                sawPendingWithDetail = true;
+            // The superseded flow promised waiting for a machine-confirmation
+            // step (M50/M61 homing confirmation); the fire-and-confirm reset
+            // must not advertise it.
+            if (s.human_readable_detail.contains(QStringLiteral("等待 PLC 确认"))
+                || s.human_readable_detail.contains(QStringLiteral("等待确认"))
+                || s.human_readable_detail.contains(QStringLiteral("回原点完成")))
+                pendingPromisesMachineConfirmation = true;
+        }
+        if (isTerminal(s.lifecycle_state))
+            sawTerminal = true;
     }
 
-    QVERIFY2(sawManual, "reset pending detail never mentioned the manual switch");
-    QVERIFY2(sawHoming, "reset pending detail never mentioned homing");
-    QVERIFY(sawTerminal);
+    // The fixed 200 ms completion is short: observe a bounded window of ticks.
+    for (int i = 0; i < 20 && !sawTerminal; ++i) {
+        gw->tick();
+        const OperatorCommandStatus s = app->shell()->operatorCommandStatus();
+        if (s.lifecycle_state == OperatorCommandState::Pending
+            && !s.human_readable_detail.trimmed().isEmpty())
+            sawPendingWithDetail = true;
+        sawTerminal = isTerminal(s.lifecycle_state);
+    }
 
-    QVERIFY(!statuses.isEmpty());
+    QVERIFY2(sawPendingWithDetail,
+             "no pending reset status with a non-empty detail was projected");
+    QVERIFY2(!pendingPromisesMachineConfirmation,
+             "the reset pending detail still promises a machine-confirmation step");
+
     const OperatorCommandStatus latest = app->shell()->operatorCommandStatus();
     QVERIFY(isTerminal(latest.lifecycle_state));
-    QVERIFY(!latest.human_readable_detail.isEmpty());
+    QVERIFY2(latest.lifecycle_state == OperatorCommandState::Succeeded,
+             qPrintable(QStringLiteral("the reset terminal state was %1, not success")
+                            .arg(toString(latest.lifecycle_state))));
+    QCOMPARE(latest.human_readable_detail, QStringLiteral("复位完成"));
 
     app->shutdown();
 }
 
-void OperatorCommandApplicationTest::resetFromManualHomedMachineConvergesVisibly()
+void OperatorCommandApplicationTest::resetTerminalIsEmittedExactlyOnce()
 {
-    // Brief boundary_cases: reset from manual mode and already-homed reset.
-    // The machine is already homed and already in manual mode, so no mode
-    // switch is needed, but the reset must still expose a homing pending
-    // detail and converge to a visible terminal result.
+    // OB-7: no accepted reset stays pending indefinitely and exactly one
+    // terminal result is projected per accepted reset.
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     SimulatedPlcGateway *gw = nullptr;
-    std::unique_ptr<Application> app(startSimulatedApplication(dir, &gw));
+    ApplicationHandle app(startSimulatedApplication(dir, &gw));
     QVERIFY(gw != nullptr);
 
     for (int i = 0; i < 3 && !gw->isOnline(); ++i)
         gw->tick();
     QVERIFY(gw->isOnline());
 
-    homeReady(*gw); // machine is homed and left in manual mode
+    homeReady(*gw);
     app->coordinator()->setRole(Role::Admin);
 
-    QVector<OperatorCommandStatus> statuses;
-    connect(app->shell(), &ShellModel::operatorCommandStatusChanged, this,
-            [&statuses](const OperatorCommandStatus &s) { statuses.append(s); });
+    int terminalTransitions = 0;
+    OperatorCommandStatus previous = app->shell()->operatorCommandStatus();
+    QObject statusScope;
+    connect(app->shell(), &ShellModel::operatorCommandStatusChanged, &statusScope,
+            [&terminalTransitions, &previous](const OperatorCommandStatus &s) {
+                if (s.command == Command::Reset
+                    && isTerminal(s.lifecycle_state)
+                    && !(previous.command == Command::Reset
+                         && isTerminal(previous.lifecycle_state)))
+                    ++terminalTransitions;
+                if (s.command == Command::Reset)
+                    previous = s;
+            });
 
     ActionBar *bar = app->window()->findChild<ActionBar *>();
     QVERIFY(bar != nullptr);
     emit bar->actionRequested(Command::Reset);
 
-    bool sawHoming = false;
-    for (int i = 0; i < 20; ++i) {
+    for (int i = 0; i < 30 && terminalTransitions == 0; ++i)
         gw->tick();
-        for (const OperatorCommandStatus &s : statuses) {
-            if (s.lifecycle_state == OperatorCommandState::Pending
-                && (s.human_readable_detail.contains(QStringLiteral("回原点"))
-                    || s.human_readable_detail.contains(QStringLiteral("回零"))))
-                sawHoming = true;
-        }
-        if (!statuses.isEmpty()
-            && isTerminal(app->shell()->operatorCommandStatus().lifecycle_state))
-            break;
-    }
 
-    QVERIFY2(sawHoming, "reset pending detail never mentioned homing");
+    QVERIFY2(terminalTransitions >= 1,
+             "the accepted reset never converged to a terminal status");
+    QCOMPARE(terminalTransitions, 1);
+
+    // Further ticks must not produce a second terminal for the same reset.
+    for (int i = 0; i < 20; ++i)
+        gw->tick();
+    QCOMPARE(terminalTransitions, 1);
+
     const OperatorCommandStatus latest = app->shell()->operatorCommandStatus();
     QVERIFY(isTerminal(latest.lifecycle_state));
-    QVERIFY(!latest.human_readable_detail.isEmpty());
+    QCOMPARE(latest.human_readable_detail, QStringLiteral("复位完成"));
+
+    app->shutdown();
+}
+
+// --- PLC-HMI-010 OB-3: restricted-mode reset -------------------------------
+
+void OperatorCommandApplicationTest::resetRejectedVisiblyInRestrictedModeWithoutSubmission()
+{
+    // Restricted mode is entered through the production path (storage that
+    // cannot hold a valid database, spec section 13). An administrator reset
+    // must be rejected visibly with a non-empty reason and no reset signal may
+    // be sent.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    AppConfig cfg;
+    cfg.useSimulatedGateway = true;
+    cfg.simulatedTickIntervalMs = 0;
+    cfg.databasePath = dir.filePath(QStringLiteral("app.db"));
+
+    QFile file(cfg.databasePath);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    file.write("This file is not an SQLite database.");
+    file.close();
+
+    ApplicationHandle app(new Application(cfg));
+    app->start();
+    auto *gw = qobject_cast<SimulatedPlcGateway *>(app->gateway());
+    QVERIFY(gw != nullptr);
+    QTRY_VERIFY_WITH_TIMEOUT(app->lifecycle()->restricted(), 5000);
+
+    for (int i = 0; i < 20 && !gw->isOnline(); ++i)
+        gw->tick();
+    QVERIFY(gw->isOnline());
+    homeReady(*gw);
+    gw->model().writeCoil(kM103, false); // observe only a new reset signal
+
+    app->coordinator()->setRole(Role::Admin);
+
+    QVector<OperatorCommandStatus> statuses;
+    QObject statusScope;
+    connect(app->shell(), &ShellModel::operatorCommandStatusChanged, &statusScope,
+            [&statuses](const OperatorCommandStatus &s) { statuses.append(s); });
+    int submissions = 0;
+    QObject submissionScope;
+    connect(gw, &SimulatedPlcGateway::submissionCompleted, &submissionScope,
+            [&submissions](const SubmissionCompletion &) { ++submissions; });
+
+    ActionBar *bar = app->window()->findChild<ActionBar *>();
+    QVERIFY(bar != nullptr);
+    emit bar->actionRequested(Command::Reset);
+    for (int i = 0; i < 6; ++i)
+        gw->tick();
+    QApplication::processEvents();
+
+    QVERIFY2(!statuses.isEmpty(), "the restricted reset produced no visible state");
+    const OperatorCommandStatus status = statuses.last();
+    QVERIFY2(status.lifecycle_state == OperatorCommandState::Rejected,
+             qPrintable(QStringLiteral("the restricted reset state was %1, not a rejection")
+                            .arg(toString(status.lifecycle_state))));
+    QVERIFY2(!status.human_readable_detail.trimmed().isEmpty(),
+             "the restricted reset rejection carried no reason");
+    QCOMPARE(submissions, 0);
+    QVERIFY2(!gw->model().readCoil(kM103),
+             "the restricted reset sent the reset signal anyway");
+}
+
+// --- PLC-HMI-010 OB-3/OB-7 verify-phase edge case: repeated clicks ---------
+
+void OperatorCommandApplicationTest::duplicateResetClicksWhilePendingAreRejectedAndOneTerminalSuccessProjected()
+{
+    // Repeated operator clicks on Reset while the first reset is pending must
+    // each be projected as a visible rejection with a non-empty reason, and the
+    // accepted reset must still project exactly one success terminal with the
+    // fixed detail 复位完成 - never a second terminal, never a silent click.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SimulatedPlcGateway *gw = nullptr;
+    ApplicationHandle app(startSimulatedApplication(dir, &gw));
+    QVERIFY(gw != nullptr);
+
+    for (int i = 0; i < 3 && !gw->isOnline(); ++i)
+        gw->tick();
+    QVERIFY(gw->isOnline());
+
+    homeReady(*gw); // homed, manual mode
+    app->coordinator()->setRole(Role::Admin);
+
+    QVector<OperatorCommandStatus> statuses;
+    QObject statusScope;
+    connect(app->shell(), &ShellModel::operatorCommandStatusChanged, &statusScope,
+            [&statuses](const OperatorCommandStatus &s) { statuses.append(s); });
+
+    ActionBar *bar = app->window()->findChild<ActionBar *>();
+    QVERIFY(bar != nullptr);
+
+    // First click: accepted, then two further clicks while it is pending.
+    emit bar->actionRequested(Command::Reset);
+    QVERIFY(app->coordinator()->resetInProgress());
+    emit bar->actionRequested(Command::Reset);
+    emit bar->actionRequested(Command::Reset);
+
+    int rejections = 0;
+    for (const OperatorCommandStatus &s : statuses) {
+        if (s.command == Command::Reset
+            && s.lifecycle_state == OperatorCommandState::Rejected) {
+            ++rejections;
+            QVERIFY2(!s.human_readable_detail.trimmed().isEmpty(),
+                     "a duplicate reset rejection carried no reason");
+        }
+    }
+    QCOMPARE(rejections, 2);
+
+    // Drive the fixed delay; the accepted reset must converge exactly once.
+    bool sawTerminal = false;
+    for (int i = 0; i < 30 && !sawTerminal; ++i) {
+        gw->tick();
+        sawTerminal = isTerminal(app->shell()->operatorCommandStatus().lifecycle_state);
+    }
+    QVERIFY2(sawTerminal, "the accepted reset never converged to a terminal status");
+
+    // Further ticks must not add a second terminal or a second success.
+    for (int i = 0; i < 20; ++i)
+        gw->tick();
+
+    int terminalEmissions = 0;
+    int successEmissions = 0;
+    for (const OperatorCommandStatus &s : statuses) {
+        if (s.command != Command::Reset)
+            continue;
+        if (isTerminal(s.lifecycle_state))
+            ++terminalEmissions;
+        if (s.lifecycle_state == OperatorCommandState::Succeeded)
+            ++successEmissions;
+    }
+    QCOMPARE(terminalEmissions, 1);
+    QCOMPARE(successEmissions, 1);
+
+    const OperatorCommandStatus latest = app->shell()->operatorCommandStatus();
+    QVERIFY(isTerminal(latest.lifecycle_state));
+    QCOMPARE(latest.human_readable_detail, QStringLiteral("复位完成"));
 
     app->shutdown();
 }

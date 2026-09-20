@@ -59,6 +59,65 @@ SubmissionResult rejectedResult(const QString &reason)
     return r;
 }
 
+// PLC-HMI-010: records reset submissions and answers with correlated accepted
+// results without mutating any PLC state, so the reset result can be observed
+// against independently injected synthetic snapshots.
+struct ResetRecorder
+{
+    QVector<quint16> pulses;
+
+    ControlCoordinator::PulseTransport make()
+    {
+        ControlCoordinator::PulseTransport t;
+        t.startPulse = [this](quint16 address) -> SubmissionResult {
+            pulses.append(address);
+            return acceptedResult();
+        };
+        t.writeHold = [](quint16, bool) { return acceptedResult(); };
+        t.writeCoil = [](quint16, bool, CommandPriority) { return acceptedResult(); };
+        t.writeRegister = [](quint16, quint16, CommandPriority) {
+            return acceptedResult();
+        };
+        return t;
+    }
+};
+
+// Synthetic not-running-machine snapshot (PLC-HMI-010 D2). homeBits carries M50
+// (bit 0); statusWord1 carries M1 (manual), M9 (home complete) and M14
+// (latched fault); faultCode is D110. Per-block quality is Valid so every field
+// is usable evidence.
+DeviceSnapshot syntheticResetSnapshot(bool m50, bool m9, bool m14,
+                                      quint16 faultCode)
+{
+    DeviceSnapshotData d;
+    d.connected = true;
+    quint16 sw1 = quint16(1) << 1; // M1 manual
+    if (m9)
+        sw1 |= quint16(1) << 9; // M9 home complete
+    if (m14)
+        sw1 |= quint16(1) << 14; // M14 latched fault
+    d.statusWord1 = sw1;
+    d.homeBits = m50 ? quint16(1) : quint16(0);
+    d.faultCode = faultCode;
+    d.targetWidth = 200;
+    d.currentWidth = 200;
+    d.widthDelta = 0;
+    d.pulsePerMm = 128;
+    d.widthSpeed = 15;
+    d.beltSpeed = 5000;
+    d.heartbeat = 1;
+    d.fast_quality = DataQuality::Valid;
+    d.fast_age_ms = 0;
+    d.home_quality = DataQuality::Valid;
+    d.home_age_ms = 0;
+    d.command_quality = DataQuality::Valid;
+    d.command_age_ms = 0;
+    d.slow_quality = DataQuality::Valid;
+    d.slow_age_ms = 0;
+    d.overall_quality = aggregateQuality(d);
+    return DeviceSnapshot(d);
+}
+
 } // namespace
 
 class ControlCoordinatorTest : public QObject
@@ -74,13 +133,12 @@ private slots:
     void operatorCannotResetOrAdjust();
     void adminCanResetAndAdjust();
 
-    // --- reset flow ----------------------------------------------------------
-    void resetFromAutoModeWritesM104ThenPulsesM103();
-    void resetWaitsForM61AndSucceeds();
-    void resetTimeoutKeepsActualState();
+    // --- reset flow (PLC-HMI-010 fire-and-confirm-by-fixed-delay) -----------
+    void resetFromAutoModePulsesM103WithoutWritingM104();
+    void resetConvergesAfterFixedDelayNotBefore();
+    void resetConvergesWhenPulseAcceptedButHomeNeverStarts();
+    void resetResultIgnoresHomeBitsAndFaultCode();
     void resetRejectedWhenRunning();
-    void resetDoesNotReportSuccessWithoutHomingStarted();
-    void resetDoesNotReportFaultOnStalePrePulseSnapshot();
 
     // --- adjust width flow ---------------------------------------------------
     void adjustWidthWritesD128ThenPulsesM43();
@@ -280,30 +338,38 @@ void ControlCoordinatorTest::adminCanResetAndAdjust()
 
     c->setRole(Role::Admin);
     QVERIFY(c->reset().accepted);
+    QVERIFY(c->resetInProgress());
 
-    // PLC-HMI-001 D3 (contract invariant: commands sharing M104 cannot consume
-    // each other's completion): a mode switch overlapping the in-flight reset
-    // is now visibly rejected instead of being silently accepted and sharing
-    // the reset's M104 write/confirmation.
-    QSignalSpy rejected(c.get(), &ControlCoordinator::commandRejected);
-    QVERIFY(!c->setMode(true).accepted);
-    QCOMPARE(rejected.count(), 1);
-    QCOMPARE(rejected[0][0].value<Command>(), Command::ModeSwitch);
-    QVERIFY(!rejected[0][1].toString().isEmpty());
+    // PLC-HMI-010 D1 supersedes the PLC-HMI-001 M104-sharing conflict: the
+    // reset no longer writes M104, so a mode switch and a reset do not share a
+    // coil and may overlap. The overlap still produces a visible signal (an
+    // accepted mode switch), never a silent return.
+    QSignalSpy accepted(c.get(), &ControlCoordinator::commandAccepted);
+    QVERIFY(c->setMode(true).accepted);
+    QCOMPARE(accepted.count(), 1);
+    QCOMPARE(accepted[0][0].value<Command>(), Command::ModeSwitch);
 
-    // Let the reset converge; the admin can then issue the other commands.
-    gw.tick();
+    // Let the reset converge on its fixed 200 ms boundary (PLC-HMI-010 D3).
+    now += ControlCoordinator::kResetCompletionDelayMs;
     gw.tick();
     QVERIFY(!c->resetInProgress());
 
-    QVERIFY(c->setMode(true).accepted);
+    // The PLC still runs its own home return after M103; wait for it so the
+    // machine is ready again, then return to manual mode and confirm the admin
+    // can still issue the other commands.
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m9()); // M61 via M9: homed
+    QVERIFY(c->setMode(false).accepted);
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m1()); // manual mode
+
     QVERIFY(c->manualHold(kM106, true).accepted);
     QVERIFY(c->bypass(kM110, true).accepted);
 }
 
-// --- reset flow -------------------------------------------------------------
+// --- reset flow (PLC-HMI-010 fire-and-confirm-by-fixed-delay) ---------------
 
-void ControlCoordinatorTest::resetFromAutoModeWritesM104ThenPulsesM103()
+void ControlCoordinatorTest::resetFromAutoModePulsesM103WithoutWritingM104()
 {
     SimulatedPlcGateway gw;
     gw.start();
@@ -315,18 +381,22 @@ void ControlCoordinatorTest::resetFromAutoModeWritesM104ThenPulsesM103()
     gw.model().writeCoil(kM104, true);
     gw.tick();
     QVERIFY(gw.lastSnapshot().m2());
+    QVERIFY(gw.model().readCoil(kM104));
 
     QVERIFY(c->reset().accepted);
-    // M104=0 written (auto -> manual), then M103 pulse.
-    QVERIFY(!gw.model().readCoil(kM104));
-    gw.tick();
-    QVERIFY(gw.lastSnapshot().m1()); // manual mode
-    gw.tick(); // the M103 pulse fired during the previous snapshot's processing
-    QVERIFY(gw.lastSnapshot().m50()); // homing
+    // PLC-HMI-010 D1: the reset sends the M103 pulse only. It never writes M104
+    // (no auto -> manual switch) and never waits for M1=1, so the mode coil is
+    // left exactly where it was.
+    QVERIFY2(gw.model().readCoil(kM104), "the reset wrote M104");
     QVERIFY(c->resetInProgress());
+
+    // The M103 pulse was submitted on the same call; the simulator starts its
+    // homing, but that flag no longer participates in the HMI result (D2).
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m50());
 }
 
-void ControlCoordinatorTest::resetWaitsForM61AndSucceeds()
+void ControlCoordinatorTest::resetConvergesAfterFixedDelayNotBefore()
 {
     SimulatedPlcGateway gw;
     gw.start();
@@ -334,57 +404,155 @@ void ControlCoordinatorTest::resetWaitsForM61AndSucceeds()
     std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
     c->setRole(Role::Admin);
 
-    bool result = false;
+    int terminals = 0;
+    bool lastOk = false;
     QString detail;
     connect(c.get(), &ControlCoordinator::commandResult, this,
             [&](Command cmd, bool ok, const QString &d) {
                 if (cmd == Command::Reset) {
-                    result = ok;
+                    ++terminals;
+                    lastOk = ok;
                     detail = d;
                 }
             });
 
     QVERIFY(c->reset().accepted);
-    gw.tick(); // homing in progress
     QVERIFY(c->resetInProgress());
-    QVERIFY(!result); // no optimistic success
 
-    gw.tick(); // home return completes: M61=1, M50=0
-    QVERIFY(gw.lastSnapshot().m9()); // M61 via M9
-    QVERIFY(!gw.lastSnapshot().m50());
-    QVERIFY(result);
+    // PLC-HMI-010 D3: the fixed completion delay is 200 ms from the M103 pulse
+    // submission; the result may not arrive before that boundary.
+    gw.tick();
+    QCOMPARE(terminals, 0); // no optimistic success
+
+    now += ControlCoordinator::kResetCompletionDelayMs - 1;
+    gw.tick();
+    QCOMPARE(terminals, 0);
+    QVERIFY(c->resetInProgress());
+
+    now += 1;
+    gw.tick();
+    QCOMPARE(terminals, 1);
+    QVERIFY(lastOk);
+    QCOMPARE(detail, QStringLiteral("复位完成"));
     QVERIFY(!c->resetInProgress());
+
+    // Exactly one terminal: a later snapshot must not emit a second result.
+    gw.tick();
+    now += 5'000;
+    gw.tick();
+    QCOMPARE(terminals, 1);
 }
 
-void ControlCoordinatorTest::resetTimeoutKeepsActualState()
+void ControlCoordinatorTest::resetConvergesWhenPulseAcceptedButHomeNeverStarts()
 {
     SimulatedPlcGateway gw;
     gw.start();
     qint64 now = 0;
-    ControlCoordinator::Config cfg;
-    cfg.resetTimeoutSec = 30;
-    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now, cfg));
+    // No-op startPulse: the M103 pulse is accepted but never delivered to the
+    // PLC, so M50 never rises (lost-pulse scenario).
+    std::unique_ptr<ControlCoordinator> c(makeCoordinatorNoPulse(gw, now));
     c->setRole(Role::Admin);
 
-    bool result = true; // must flip to false
+    // Machine already homed (M61=1 via M9) with a latched fault (M14=1).
+    homeReady(gw);
+    gw.model().writeCoil(kM100, true); // estop latches M14=1, D110=1
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m9()); // M61 via M9
+    QVERIFY(gw.lastSnapshot().m14());
+
+    int terminals = 0;
+    bool lastOk = false;
     QString detail;
     connect(c.get(), &ControlCoordinator::commandResult, this,
             [&](Command cmd, bool ok, const QString &d) {
                 if (cmd == Command::Reset) {
-                    result = ok;
+                    ++terminals;
+                    lastOk = ok;
                     detail = d;
                 }
             });
 
     QVERIFY(c->reset().accepted);
-    gw.tick(); // homing in progress
-
-    // Advance the injected clock past the timeout without the PLC homing.
-    now += 31'000;
+    QVERIFY(c->resetInProgress());
     gw.tick();
-    QVERIFY(!result); // timeout: not optimistic success
+    QVERIFY(!gw.lastSnapshot().m50()); // the lost pulse never started homing
+    QCOMPARE(terminals, 0);
+
+    // PLC-HMI-010 D2/D5: the result no longer depends on M50/M61/M14/D110, so
+    // the reset still converges to exactly one success at the fixed boundary.
+    now += ControlCoordinator::kResetCompletionDelayMs;
+    gw.tick();
+    QCOMPARE(terminals, 1);
+    QVERIFY(lastOk);
+    QCOMPARE(detail, QStringLiteral("复位完成"));
     QVERIFY(!c->resetInProgress());
-    QVERIFY(detail.contains(QStringLiteral("超时")));
+    QVERIFY(gw.lastSnapshot().m14()); // the HMI result never pretends a fault cleared
+
+    gw.tick();
+    QCOMPARE(terminals, 1);
+}
+
+void ControlCoordinatorTest::resetResultIgnoresHomeBitsAndFaultCode()
+{
+    // PLC-HMI-010 D2: the reset result must be identical whether the snapshot
+    // shows M50 low/high, M61 (M9) clear/set, M14 set/clear, or D110 zero or
+    // non-zero. The machine state is injected as synthetic snapshots so each
+    // bit is varied independently of the simulator's own flag handling.
+    struct Case
+    {
+        QString name;
+        bool m50;
+        bool m9;
+        bool m14;
+        quint16 faultCode;
+    };
+    const QVector<Case> cases{
+        {QStringLiteral("M50 low/M9 clear/no fault"), false, false, false, 0},
+        {QStringLiteral("M50 high"), true, true, false, 0},
+        {QStringLiteral("M9 set with M14 latched"), false, true, true, 1},
+        {QStringLiteral("D110 non-zero"), false, true, false, 9},
+        {QStringLiteral("M50 high/M9 clear/M14 latched/D110=7"), true, false, true, 7},
+    };
+
+    QVector<QPair<bool, QString>> results;
+    for (const Case &k : cases) {
+        ResetRecorder rec;
+        qint64 now = 0;
+        std::unique_ptr<ControlCoordinator> c(
+            new ControlCoordinator(rec.make(), ControlCoordinator::Config(),
+                                   [&now]() { return now; }));
+        c->setRole(Role::Admin);
+        c->onConnectionChanged(true);
+        c->onSnapshot(syntheticResetSnapshot(k.m50, k.m9, k.m14, k.faultCode));
+
+        QVector<QPair<bool, QString>> terminals;
+        connect(c.get(), &ControlCoordinator::commandResult, this,
+                [&terminals](Command cmd, bool ok, const QString &d) {
+                    if (cmd == Command::Reset)
+                        terminals.append({ok, d});
+                });
+
+        const ControlCoordinator::CommandResult r = c->reset();
+        QVERIFY2(r.accepted, qPrintable(QStringLiteral("%1: reset rejected: %2")
+                                            .arg(k.name, r.reason)));
+        QVERIFY2(rec.pulses.contains(kM103),
+                 qPrintable(QStringLiteral("%1: no M103 pulse was sent").arg(k.name)));
+
+        now += ControlCoordinator::kResetCompletionDelayMs;
+        c->onSnapshot(syntheticResetSnapshot(k.m50, k.m9, k.m14, k.faultCode));
+
+        QCOMPARE(terminals.size(), 1);
+        QVERIFY(terminals.first().first);
+        QCOMPARE(terminals.first().second, QStringLiteral("复位完成"));
+        results.append(terminals.first());
+    }
+
+    // Every scenario produced the identical single success: the result is
+    // independent of M50, M61 (M9), M14 and D110.
+    for (int i = 1; i < results.size(); ++i) {
+        QCOMPARE(results[i].first, results[0].first);
+        QCOMPARE(results[i].second, results[0].second);
+    }
 }
 
 void ControlCoordinatorTest::resetRejectedWhenRunning()
@@ -405,111 +573,6 @@ void ControlCoordinatorTest::resetRejectedWhenRunning()
     QVERIFY(gw.lastSnapshot().m3());
 
     QVERIFY(!c->reset().accepted); // M3=1: 禁止复位
-}
-
-void ControlCoordinatorTest::resetDoesNotReportSuccessWithoutHomingStarted()
-{
-    SimulatedPlcGateway gw;
-    gw.start();
-    qint64 now = 0;
-    ControlCoordinator::Config cfg;
-    cfg.resetTimeoutSec = 30;
-    // No-op startPulse: the M103 pulse is "sent" but never delivered to the
-    // PLC, so M50 never rises (lost-pulse scenario).
-    std::unique_ptr<ControlCoordinator> c(makeCoordinatorNoPulse(gw, now, cfg));
-    c->setRole(Role::Admin);
-
-    // Machine already homed (M61=1) with a latched fault (M14=1).
-    homeReady(gw);
-    gw.model().writeCoil(kM100, true); // estop latches M14=1, D110=1
-    gw.tick();
-    QVERIFY(gw.lastSnapshot().m9()); // M61 via M9
-    QVERIFY(gw.lastSnapshot().m14());
-
-    bool result = true; // must not stay true
-    QString detail;
-    connect(c.get(), &ControlCoordinator::commandResult, this,
-            [&](Command cmd, bool ok, const QString &d) {
-                if (cmd == Command::Reset) {
-                    result = ok;
-                    detail = d;
-                }
-            });
-
-    QVERIFY(c->reset().accepted);
-    gw.tick(); // M103 lost: M50 never rises, M61 stays 1, M14 stays 1
-    // Still pending: the fault check is gated on observing M50=1, so the
-    // latched fault alone must not prematurely abort the reset.
-    QVERIFY(c->resetInProgress());
-
-    // Advance the injected clock past the timeout: M50 never rises and the
-    // fault stays latched, so the flow converges to the defensive timeout.
-    now += 31'000;
-    gw.tick();
-
-    // The flow must NOT report success: the reset never executed and the
-    // fault was never cleared. It converges to failure (defensive timeout)
-    // rather than an optimistic "回原点完成".
-    QVERIFY(!result);
-    QVERIFY(!c->resetInProgress());
-    QVERIFY(detail.contains(QStringLiteral("超时")));
-    QVERIFY(gw.lastSnapshot().m14()); // fault not reported cleared
-}
-
-void ControlCoordinatorTest::resetDoesNotReportFaultOnStalePrePulseSnapshot()
-{
-    SimulatedPlcGateway gw;
-    gw.start();
-    qint64 now = 0;
-    ControlCoordinator::Config cfg;
-    cfg.resetTimeoutSec = 30;
-    // No-op startPulse: the M103 pulse is "sent" but the PLC has not yet
-    // processed it, so the pre-pulse state (M14=1, M50=0) persists. This
-    // simulates the async-pulse window the synchronous SimulatedPlcGateway
-    // cannot reproduce: a snapshot read before the PLC sees the M103 rising
-    // edge still shows the latched fault.
-    std::unique_ptr<ControlCoordinator> c(makeCoordinatorNoPulse(gw, now, cfg));
-    c->setRole(Role::Admin);
-
-    // Machine already homed (M61=1) with a latched fault (M14=1).
-    homeReady(gw);
-    gw.model().writeCoil(kM100, true); // estop latches M14=1, D110=1
-    gw.tick();
-    QVERIFY(gw.lastSnapshot().m9()); // M61 via M9
-    QVERIFY(gw.lastSnapshot().m14());
-
-    bool result = true; // must not be a premature fault result
-    QString detail;
-    connect(c.get(), &ControlCoordinator::commandResult, this,
-            [&](Command cmd, bool ok, const QString &d) {
-                if (cmd == Command::Reset) {
-                    result = ok;
-                    detail = d;
-                }
-            });
-
-    QVERIFY(c->reset().accepted);
-
-    // Inject a stale pre-pulse snapshot that still shows the latched fault,
-    // as if read while the M103 pulse is in flight. The flow must NOT report
-    // "回原点故障" prematurely: the fault check is only meaningful once the
-    // home return has actually started (M50=1 observed).
-    DeviceSnapshotData prePulse;
-    prePulse.connected = true;
-    prePulse.statusWord1 = (1u << 1) | (1u << 9) | (1u << 14); // M1, M61, M14
-    prePulse.homeBits = 0; // M50=0: not yet homing
-    c->onSnapshot(DeviceSnapshot(prePulse));
-    QVERIFY(c->resetInProgress()); // still waiting for M50=1
-    QVERIFY(result); // no premature fault result
-    QVERIFY(!detail.contains(QStringLiteral("故障")));
-
-    // The pulse never takes effect (M50 never rises) and the fault stays
-    // latched; the flow must converge to the defensive timeout, not a fault.
-    now += 31'000;
-    c->onSnapshot(DeviceSnapshot(prePulse));
-    QVERIFY(!c->resetInProgress());
-    QVERIFY(!result); // timeout: not optimistic success
-    QVERIFY(detail.contains(QStringLiteral("超时")));
 }
 
 // --- adjust width flow ------------------------------------------------------

@@ -160,6 +160,21 @@ void Application::createObjects()
     // (spec §8.5, PLC-HMI-003 D1/D5). Every callback returns the structured
     // SubmissionResult so the coordinator can correlate completions by
     // request identity + gateway generation.
+    //
+    // Reset is now a fire-and-confirm-by-fixed-delay command (PLC-HMI-010 D3):
+    // its completion is decided by the coordinator clock. The composition root
+    // therefore shares the deterministic simulator time base whenever a test
+    // owns that clock (simulatedTickIntervalMs == 0), so gw->tick() alone
+    // advances a pending reset. Real gateways and the interactive --sim timer
+    // keep the wall clock, preserving the real fixed 200 ms.
+    std::function<qint64()> coordinatorNowMs;
+    if (m_cfg.useSimulatedGateway && m_cfg.simulatedTickIntervalMs == 0) {
+        coordinatorNowMs = [this]() -> qint64 {
+            if (auto *sim = qobject_cast<SimulatedPlcGateway *>(m_gw))
+                return static_cast<qint64>(sim->elapsedSeconds()) * 1000;
+            return QDateTime::currentMSecsSinceEpoch();
+        };
+    }
     ControlCoordinator::PulseTransport transport;
     transport.startPulse = [this](quint16 address) {
         return m_gw->submitPulse(address);
@@ -176,8 +191,8 @@ void Application::createObjects()
         return m_gw->submitWriteRegister(address, value, priority);
     };
     m_coordinator = new ControlCoordinator(
-        std::move(transport), ControlCoordinator::Config(m_cfg.resetTimeoutSec),
-        nullptr, this);
+        std::move(transport), ControlCoordinator::Config(),
+        std::move(coordinatorNowMs), this);
 
     // Database: no parent, moved onto its own worker thread by start()
     // (spec §7.3).
