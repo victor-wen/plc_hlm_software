@@ -43,13 +43,20 @@ struct StartedApp
 
 void startAndWaitReady(Application &app, DatabaseService *&db)
 {
-    app.start();
     db = app.database();
     QVERIFY(db != nullptr);
+
+    // Subscribe before start(): in an optimized Release build the database
+    // worker can open the temporary database and emit recipesLoaded before
+    // start() returns. Connecting afterwards races that one-shot startup
+    // signal and leaves this helper waiting for an event that already happened.
+    QSignalSpy readySpy(db, &DatabaseService::recipesLoaded);
+
+    app.start();
+
     // `isRestricted()` is false before the worker opens the database, so wait
     // for the startup listRecipes() in Application::onReady, which only runs
     // on the ready() path.
-    QSignalSpy readySpy(db, &DatabaseService::recipesLoaded);
     QTRY_VERIFY_WITH_TIMEOUT(readySpy.count() >= 1, 5000);
 }
 
@@ -187,3 +194,4 @@ void RecipeDatabaseRoutingDeveloperTest::failureResultsRouteErrorDetailToPage()
 
 QTEST_MAIN(RecipeDatabaseRoutingDeveloperTest)
 #include "recipe_database_routing_developer_test.moc"
+
