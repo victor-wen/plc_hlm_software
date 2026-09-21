@@ -63,7 +63,18 @@ void startAndWaitReady(Application &app, DatabaseService *&db)
 // The page only dispatches recipe mutations for a logged-in administrator, and
 // Application records the session username as created_by, so the routing test
 // follows the same bootstrap as the production first-run flow.
-void loginAsAdmin(DatabaseService *db)
+//
+// The username the save path binds comes from LifecycleController, which is
+// updated by Application::handleLoginResult — a *queued* slot on the main
+// thread. The DB worker emits loginResult cross-thread, and a QSignalSpy
+// observes it through a DirectConnection, so returning on the spy alone can
+// still leave handleLoginResult undelivered. A save issued immediately after
+// that would bind a null created_by and fail the NOT NULL constraint
+// (reproduced as the CI flake: 'NOT NULL constraint failed:
+// recipes.created_by'). The helper therefore waits for the login to be
+// *projected into the application* — the exact state the save reads — before
+// it returns, which is a state poll, not a one-shot signal.
+void loginAsAdmin(Application &app, DatabaseService *db)
 {
     QSignalSpy adminSpy(db, &DatabaseService::initialAdminCreated);
     QVERIFY(QMetaObject::invokeMethod(
@@ -80,6 +91,12 @@ void loginAsAdmin(DatabaseService *db)
         Q_ARG(QString, QStringLiteral("s3cret!"))));
     QTRY_VERIFY_WITH_TIMEOUT(loginSpy.count() > 0, 10000);
     QVERIFY(loginSpy[0][0].value<LoginResult>().ok);
+
+    // Deterministic readiness for every consumer below: the session username
+    // must be visible in the shell model (set synchronously inside
+    // handleLoginResult) before any recipe mutation is issued.
+    QTRY_COMPARE_WITH_TIMEOUT(app.shell()->userName(),
+                              QStringLiteral("admin"), 10000);
 }
 
 } // namespace
@@ -99,7 +116,7 @@ void RecipeDatabaseRoutingDeveloperTest::saveAndDeleteResultsRouteToPageAndReloa
     Application app(started.cfg);
     DatabaseService *db = nullptr;
     startAndWaitReady(app, db);
-    loginAsAdmin(db);
+    loginAsAdmin(app, db);
     auto *page = app.window()->findChild<RecipeWidthPage *>();
     QVERIFY(page != nullptr);
 
@@ -158,7 +175,7 @@ void RecipeDatabaseRoutingDeveloperTest::failureResultsRouteErrorDetailToPage()
     Application app(started.cfg);
     DatabaseService *db = nullptr;
     startAndWaitReady(app, db);
-    loginAsAdmin(db);
+    loginAsAdmin(app, db);
     auto *page = app.window()->findChild<RecipeWidthPage *>();
     QVERIFY(page != nullptr);
 
