@@ -33,6 +33,7 @@ namespace {
 
 // Protocol addresses (0-based, matching the centralized AddressTable).
 constexpr quint16 kM103 = 103;
+constexpr quint16 kM50 = 50; // PLC-HMI-011: home-start coil
 constexpr quint16 kM104 = 104;
 constexpr quint16 kM110 = 110;
 constexpr quint16 kD130 = 130;
@@ -41,6 +42,7 @@ void homeReady(SimulatedPlcGateway &gw)
 {
     gw.writeCoil(kM103, true);
     gw.writeCoil(kM103, false);
+    gw.writeCoil(kM50, true); // PLC-HMI-011: homing starts on the home-start write
     gw.tick();
     gw.tick(); // home return takes 2 s
 }

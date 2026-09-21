@@ -59,6 +59,13 @@ constexpr int kM42 = 42;
 constexpr int kFirstManualOutput = 106;
 constexpr int kLastManualOutput = 111;
 
+// PLC-HMI-011 OB-9: the HMI-writable home-start coil. The online logout /
+// session-timeout clear must release it together with the existing continuous
+// outputs (M42, M106-M111) without touching M100 (estop) or M105.
+constexpr int kM50 = 50;
+constexpr int kM100 = 100;
+constexpr int kM105 = 105;
+
 constexpr int kConfirmedClearTicks = 30;
 constexpr int kOfflineSettleTicks = 20;
 constexpr int kOfflineClearTicks = 10;
@@ -173,6 +180,8 @@ private slots:
     void shutdownWithPendingClearClaimsNoSuccess();
     void duplicateClearWhilePendingStartsNoSecondLifecycle();
     void clearLeavesM100AndM105Untouched();
+    // --- PLC-HMI-011 OB-9: the clear also releases the home-start bit ----------
+    void clearReleasesTheHomeStartBitWithTheContinuousOutputs();
     void cleanupTestCase() {}
 };
 
@@ -614,6 +623,109 @@ void PlcHmi009LogoutClearTest::clearLeavesM100AndM105Untouched()
         QVERIFY2(!started.gw->model().readCoil(address),
                  qPrintable(QStringLiteral("the clear must clear M%1").arg(address)));
     }
+
+    started.shutdown();
+}
+
+// --- PLC-HMI-011 OB-9: the clear also releases the home-start bit ---------------
+//
+// Brief OB-9: a logout or session-timeout clear while online writes the
+// home-start bit (coil 50) to 0 together with the existing continuous-output
+// clears, and reports exactly one success only when every write is confirmed.
+// The clear still never touches the emergency-stop request (M100) or the
+// passthrough mode bit (M105).
+
+void PlcHmi009LogoutClearTest::clearReleasesTheHomeStartBitWithTheContinuousOutputs()
+{
+    StartedApp started;
+    started.start();
+    QVERIFY2(started.app != nullptr, "the application must be composed");
+    QVERIFY2(started.gw != nullptr, "the composed application must expose the gateway");
+    QVERIFY2(started.app->shell() != nullptr, "the composed application must expose the shell");
+    QVERIFY2(started.app->lifecycle() != nullptr,
+             "the composed application must expose the lifecycle controller");
+    started.advanceUntilOnline();
+    QVERIFY2(started.gw->isOnline(), "precondition: the simulator gateway must come online");
+
+    // Observable pre-state: a homing request is in progress (M50 energized),
+    // the clear's own addresses are energized (M42, M106), and the two
+    // protected bits are set to their non-default values so "untouched" is
+    // observable in both directions (M100 on, M105 off).
+    started.gw->model().writeCoil(kM50, true);
+    started.gw->model().writeCoil(kM42, true);
+    started.gw->model().writeCoil(kFirstManualOutput, true);
+    started.gw->model().writeCoil(kM100, true);
+    started.gw->model().writeCoil(kM105, false);
+    QVERIFY2(started.gw->model().readCoil(kM50),
+             "precondition: the home-start bit must be set before the clear");
+
+    StatusSink sink;
+    QObject sinkScope; // RAII: severs the connection before the sink dies
+    attachStatusSink(&sinkScope, started.app->shell(), sink);
+
+    // Record every submission touching M50 so the assertion cannot pass merely
+    // because the simulated controller cleared its own start bit during the
+    // ticks: the clear itself must have written the home-start bit.
+    int homeStartSubmissions = 0;
+    QObject submissionScope;
+    QObject::connect(started.gw, &SimulatedPlcGateway::submissionCompleted, &submissionScope,
+                     [&homeStartSubmissions](const SubmissionCompletion &completion) {
+                         if (completion.address == kM50)
+                             ++homeStartSubmissions;
+                     });
+
+    started.app->lifecycle()->onLogoutClearRequested();
+    for (int i = 0; i < kConfirmedClearTicks; ++i) {
+        started.gw->tick();
+        QApplication::processEvents();
+    }
+
+    const QVector<OperatorCommandStatus> produced = sink.statuses;
+
+    // Non-vacuity: the clear must produce a visible command state.
+    int clearStatuses = 0;
+    for (const OperatorCommandStatus &status : produced) {
+        if (isLogoutClear(status))
+            ++clearStatuses;
+    }
+    QVERIFY2(clearStatuses >= 1,
+             qPrintable(QStringLiteral("non-vacuity: the clear must produce a visible "
+                                       "command state; observed sequence: %1")
+                            .arg(describeSequence(produced))));
+
+    // Exactly one success terminal for the confirmed clear, with a detail.
+    int successCount = 0;
+    for (const OperatorCommandStatus &status : produced) {
+        if (isClearSuccess(status))
+            ++successCount;
+    }
+    QVERIFY2(successCount == 1,
+             qPrintable(QStringLiteral("the confirmed clear reported %1 success "
+                                       "terminal(s) instead of exactly one; observed "
+                                       "sequence: %2")
+                            .arg(successCount)
+                            .arg(describeSequence(produced))));
+
+    // OB-9: the clear itself wrote the home-start bit to 0, together with the
+    // continuous outputs. A mere absence of M50 is not sufficient evidence.
+    QVERIFY2(homeStartSubmissions >= 1,
+             "the confirmed clear submitted no home-start write at all");
+    QVERIFY2(!started.gw->model().readCoil(kM50),
+             "the confirmed clear must leave the home-start bit (M50) off");
+    QVERIFY2(!started.gw->model().readCoil(kM42),
+             "the confirmed clear must leave M42 off");
+    for (int address = kFirstManualOutput; address <= kLastManualOutput; ++address) {
+        QVERIFY2(!started.gw->model().readCoil(address),
+                 qPrintable(QStringLiteral("the confirmed clear must leave M%1 off")
+                                .arg(address)));
+    }
+
+    // The clear still never touches the emergency-stop request or the
+    // passthrough mode bit, in either direction.
+    QVERIFY2(started.gw->model().readCoil(kM100),
+             "the clear must not clear the emergency-stop request M100");
+    QVERIFY2(!started.gw->model().readCoil(kM105),
+             "the clear must not energize M105");
 
     started.shutdown();
 }

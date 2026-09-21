@@ -39,6 +39,7 @@ using namespace hlm;
 
 namespace {
 
+constexpr quint16 kM50 = 50;   // home-start write
 constexpr quint16 kM103 = 103; // reset / home pulse
 constexpr quint16 kM106 = 106; // manual hold output
 
@@ -164,12 +165,15 @@ bool tickUntil(StartedApp &started, int maxTicks, Predicate &&predicate)
     return predicate();
 }
 
+// PLC-HMI-011 D6: the M103 pulse no longer starts homing; the single
+// sustained M50=1 home-start write does.
 void homeReady(StartedApp &started)
 {
     if (started.gw == nullptr)
         return;
     started.gw->model().writeCoil(kM103, true);
     started.gw->model().writeCoil(kM103, false);
+    started.gw->model().writeCoil(kM50, true);
     started.gw->tick();
     started.gw->tick();
 }

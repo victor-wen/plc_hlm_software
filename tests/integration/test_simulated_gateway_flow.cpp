@@ -48,6 +48,15 @@ void requirePulse(SimulatedPlcGateway &gw, quint16 address)
     QVERIFY2(r.accepted, qPrintable(r.immediate_rejection_reason));
 }
 
+// PLC-HMI-011 D6: the M103 pulse alone no longer starts homing; the HMI's
+// single sustained M50=1 home-start write does. Returns after the write is
+// applied so the caller's own tick can observe homing in progress.
+void requireHomeStart(SimulatedPlcGateway &gw)
+{
+    const SubmissionResult r = gw.submitWriteCoil(50, true);
+    QVERIFY2(r.accepted, qPrintable(r.immediate_rejection_reason));
+}
+
 } // namespace
 
 class SimulatedGatewayFlowTest : public QObject
@@ -152,11 +161,18 @@ void SimulatedGatewayFlowTest::fullFlowResetAdjustAutoStartStop()
 {
     m_gw->start();
 
-    // 复位 (M103 pulse) -> home return.
+    // 复位 (M103 pulse) then the single M50=1 home-start write (PLC-HMI-011
+    // D6: the pulse alone no longer starts homing) -> home return.
     requirePulse(*m_gw, 103);
+    requireHomeStart(*m_gw);
     m_gw->tick();
-    QVERIFY(m_completions.last().result);
-    QCOMPARE(m_completions.last().address, quint16(103));
+    // Both correlated completions arrive on this tick: the M103 pulse first,
+    // then the M50 home-start write.
+    QCOMPARE(m_completions.size(), 2);
+    QVERIFY(m_completions.at(0).result);
+    QCOMPARE(m_completions.at(0).address, quint16(103));
+    QVERIFY(m_completions.at(1).result);
+    QCOMPARE(m_completions.at(1).address, quint16(50));
     QVERIFY(m_gw->lastSnapshot().m50()); // homing in progress
     m_gw->tick();
     QVERIFY(!m_gw->lastSnapshot().m50()); // homed
@@ -211,8 +227,9 @@ void SimulatedGatewayFlowTest::adjustPreconditionFailure()
 void SimulatedGatewayFlowTest::fixedTimeoutFault10()
 {
     m_gw->start();
-    // Home return.
+    // Home return: M103 pulse + the single M50=1 home-start write (D6).
     requirePulse(*m_gw, 103);
+    requireHomeStart(*m_gw);
     m_gw->tick();
     m_gw->tick();
     QVERIFY(!m_gw->lastSnapshot().m50());
@@ -241,8 +258,9 @@ void SimulatedGatewayFlowTest::fixedTimeoutFault10()
 void SimulatedGatewayFlowTest::estopLatchesFault()
 {
     m_gw->start();
-    // Home return.
+    // Home return: M103 pulse + the single M50=1 home-start write (D6).
     requirePulse(*m_gw, 103);
+    requireHomeStart(*m_gw);
     m_gw->tick();
     m_gw->tick();
 
@@ -480,8 +498,9 @@ void SimulatedGatewayFlowTest::illegalValueMarksFieldInvalid()
 void SimulatedGatewayFlowTest::snapshotIsAtomicAndComplete()
 {
     m_gw->start();
-    // Home return.
+    // Home return: M103 pulse + the single M50=1 home-start write (D6).
     requirePulse(*m_gw, 103);
+    requireHomeStart(*m_gw);
     m_gw->tick();
     m_gw->tick();
     // Width adjust in progress (D204 pinned to 1280: 7 s run, so M34 stays
@@ -595,7 +614,13 @@ void SimulatedGatewayFlowTest::startPulseWritesCoilPair()
     // The coil pair delivered the pulse: the bit is back to 0.
     QVERIFY(!m_gw->model().readCoil(103));
 
-    // The rising edge triggered the reset/home-return flow (spec §10.2).
+    // PLC-HMI-011 D6: the pulse alone does NOT start homing.
+    QVERIFY(!m_gw->lastSnapshot().m50());
+
+    // The single sustained M50=1 home-start write starts the home-return flow
+    // (spec §10.2).
+    requireHomeStart(*m_gw);
+    m_gw->tick();
     QVERIFY(m_gw->lastSnapshot().m50()); // homing in progress
     m_gw->tick();
     QVERIFY(!m_gw->lastSnapshot().m50()); // homed

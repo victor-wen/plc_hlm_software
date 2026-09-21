@@ -13,6 +13,7 @@ namespace {
 constexpr quint16 kM2 = 2;    // auto mode
 constexpr quint16 kM42 = 42;  // belt continuous
 constexpr quint16 kM43 = 43;  // width adjust command (pulse)
+constexpr quint16 kM50 = 50;  // home-start (sustained write, PLC-HMI-011)
 constexpr quint16 kM100 = 100; // HMI estop request
 constexpr quint16 kM101 = 101; // HMI start (pulse)
 constexpr quint16 kM102 = 102; // HMI stop (pulse)
@@ -130,7 +131,7 @@ PermissionResult ControlCoordinator::permission(Command cmd) const
 }
 
 InterlockResult ControlCoordinator::interlock(Command cmd, const DeviceSnapshot &s,
-                                              quint16 targetWidth) const
+                                              quint16 targetWidth, quint16 address) const
 {
     switch (cmd) {
     case Command::Reset: return InterlockRules::checkReset(s, m_online);
@@ -140,7 +141,8 @@ InterlockResult ControlCoordinator::interlock(Command cmd, const DeviceSnapshot 
     case Command::Stop: return InterlockRules::checkStop(s, m_online);
     case Command::EstopSet: return InterlockRules::checkEstopSet(s, m_online);
     case Command::EstopRelease: return InterlockRules::checkEstopRelease(s, m_online);
-    case Command::ManualCommand: return InterlockRules::checkManualCommand(s, m_online);
+    case Command::ManualCommand:
+        return InterlockRules::checkManualCommand(s, m_online, address);
     case Command::Bypass: return InterlockRules::checkBypass(s, m_online);
     case Command::LogoutClear:
     case Command::ParameterChange:
@@ -153,12 +155,13 @@ InterlockResult ControlCoordinator::interlock(Command cmd, const DeviceSnapshot 
 
 ControlCoordinator::CommandResult ControlCoordinator::gate(Command cmd,
                                                           const DeviceSnapshot &s,
-                                                          quint16 targetWidth)
+                                                          quint16 targetWidth,
+                                                          quint16 address)
 {
     const PermissionResult p = permission(cmd);
     if (!p.allowed)
         return {false, p.reason};
-    const InterlockResult il = interlock(cmd, s, targetWidth);
+    const InterlockResult il = interlock(cmd, s, targetWidth, address);
     if (!il.allowed)
         return {false, il.unmet.join(QStringLiteral("; "))};
     return {true, QString()};
@@ -188,13 +191,21 @@ ControlCoordinator::CommandResult ControlCoordinator::reset()
         return rejectCommand(Command::Reset,
                              QStringLiteral("复位已在进行中, 请等待当前复位结束"));
 
-    // Fire-and-confirm-by-fixed-delay (PLC-HMI-010 D1/D2/D3, user decisions
-    // U1-U4): the reset sends the M103 pulse directly — it never writes M104,
-    // never waits for M1=1, and its result never depends on M50/M61/M14/D110.
-    // The command converges to exactly one terminal 复位完成 once the fixed
-    // 200 ms from this pulse submission has elapsed.
+    // Reset (PLC-HMI-011 D2): the M103 pulse is submitted first; the single
+    // sustained M50=1 home-start write follows only from the pulse's successful
+    // correlated completion (or the next snapshot), never before it. The
+    // command converges to exactly one terminal 复位完成 once both correlated
+    // completions succeeded and the fixed 200 ms minimum from this pulse
+    // submission has elapsed; it never uses snapshot M50/M61/M14/D110.
     m_resetPending = true;
     m_resetCompletionDeadlineMs = m_nowMs() + kResetCompletionDelayMs;
+    m_resetPulseCompleted = false;
+    m_homeStartIssued = false;
+    m_homeStartCompleted = false;
+    // The defensive handshake deadline covers the whole reset: a pulse
+    // completion that never arrives converges here just like a home-start
+    // completion that never arrives (never pending indefinitely, D4).
+    m_homeStartDeadlineMs = m_nowMs() + kHomeStartConfirmTimeoutMs;
     emit commandAccepted(Command::Reset);
 
     if (submitPulse(Command::Reset, kM103)) {
@@ -415,7 +426,7 @@ ControlCoordinator::CommandResult ControlCoordinator::manualHold(quint16 address
             return rejectCommand(Command::ManualCommand, p.reason);
     } else {
         const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
-        CommandResult g = gate(Command::ManualCommand, s);
+        CommandResult g = gate(Command::ManualCommand, s, 0, address);
         if (!g.accepted)
             return rejectCommand(Command::ManualCommand, g.reason);
     }
@@ -442,7 +453,7 @@ ControlCoordinator::CommandResult ControlCoordinator::manualLatch(quint16 addres
         !blocked.isEmpty())
         return rejectCommand(Command::ManualCommand, blocked);
     const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
-    CommandResult g = gate(Command::ManualCommand, s);
+    CommandResult g = gate(Command::ManualCommand, s, 0, address);
     if (!g.accepted)
         return rejectCommand(Command::ManualCommand, g.reason);
     // The latched manual command is M109 (stop gate) only (spec §10.7).
@@ -489,12 +500,12 @@ ControlCoordinator::CommandResult ControlCoordinator::bypass(quint16 address, bo
 
 void ControlCoordinator::logoutClear()
 {
-    // 注销/会话超时: try to clear M42/M106-M111 (spec §11.5, §13). M100 is
-    // never touched; M105 模式选择保持不变 (spec §10.8).
+    // 注销/会话超时: try to clear M42/M106-M111 plus the M50 home-start request
+    // (spec §11.5, §13). M100 is never touched; M105 模式选择保持不变 (spec §10.8).
     //
     // REV-P0-1: enqueue acceptance is not machine confirmation. The clear is a
     // tracked command generation: it first becomes visibly Accepted/Pending,
-    // its seven writes are registered for correlated completion through the
+    // its eight writes are registered for correlated completion through the
     // existing submission bookkeeping, and success may only be reported once
     // every registered completion reports result==true. Any rejected write, any
     // failed completion, link loss or the defensive deadline converges the
@@ -511,15 +522,17 @@ void ControlCoordinator::logoutClear()
     failAllManualConfirms(QStringLiteral("注销清零: 保持命令已取消"));
 
     // Immediate visible request-start (before any terminal result), mirroring
-    // the other command flows. `total` is the fixed seven-write expectation so
+    // the other command flows. `total` is the fixed eight-write expectation so
     // a synchronously delivered completion can never complete the clear before
-    // all seven submissions were accepted.
-    m_pendingClear = PendingClear{7, 0, m_nowMs() + kLogoutClearTimeoutMs};
+    // all eight submissions were accepted.
+    m_pendingClear = PendingClear{8, 0, m_nowMs() + kLogoutClearTimeoutMs};
     emit commandAccepted(Command::LogoutClear);
     emitPending(Command::LogoutClear);
 
-    // Register each accepted write for correlated completion. The seven
-    // addresses are M42 and M106-M111, all written false.
+    // Register each accepted write for correlated completion. The addresses are
+    // M42 and M106-M111, all written false, plus the M50=0 home-start clear
+    // appended last (PLC-HMI-011 D7: the existing index expectations for
+    // M42/M106-M111 keep their positions).
     int acceptedCount = 0;
     auto submitClearWrite = [this, &acceptedCount](quint16 address) {
         if (!m_transport.writeCoil)
@@ -538,9 +551,10 @@ void ControlCoordinator::logoutClear()
     submitClearWrite(kM42);
     for (quint16 a = kM106; a <= kM111; ++a)
         submitClearWrite(a);
+    submitClearWrite(kM50); // appended last (PLC-HMI-011 D7)
 
     if (m_pendingClear.has_value()) {
-        if (acceptedCount != 7) {
+        if (acceptedCount != m_pendingClear->total) {
             // A missing or rejecting transport can never confirm: visible
             // communications-lost failure immediately.
             finishLogoutClear(
@@ -660,12 +674,13 @@ void ControlCoordinator::onSnapshot(const DeviceSnapshot &s)
         }
     }
 
-    // Fire-and-confirm-by-fixed-delay reset (PLC-HMI-010 D3): exactly one
-    // terminal 复位完成 once the fixed 200 ms from the M103 pulse submission
-    // has elapsed. This is evaluated on the snapshot feed (the same clock/tick
-    // the other defensive deadlines use) and is independent of every readback
-    // bit/register (D2).
-    confirmResetByFixedDelay();
+    // Reset handshake (PLC-HMI-011 D2/D3): issue the single M50 write when the
+    // pulse completion arrived without it, converge the M50 confirmation
+    // deadline, and emit the single 复位完成 once both correlated completions
+    // succeeded and the fixed 200 ms minimum elapsed. Evaluated on the snapshot
+    // feed (the same clock/tick the other defensive deadlines use); no
+    // M50/M61/M14/D110 readback participates in the result (D2).
+    onResetSnapshot();
 
     if (m_adjustPhase != AdjustPhase::Idle)
         onAdjustSnapshot(s);
@@ -717,16 +732,35 @@ void ControlCoordinator::onSubmissionCompleted(const SubmissionCompletion &compl
     // A successful completion is not machine confirmation: the snapshot still
     // decides (spec §11.2 no optimistic success). Only a failed transfer
     // converges the correlated command here.
-    if (completion.result)
+    if (completion.result) {
+        // PLC-HMI-011 D2: the successful M103 pulse completion is the trigger
+        // for the single sustained M50=1 home-start write. The M50 write's own
+        // successful completion is only bookkeeping; the terminal success is
+        // decided on the snapshot feed once both outcomes are known.
+        if (pending.cmd == Command::Reset) {
+            if (pending.operation == PlcOperation::Pulse) {
+                m_resetPulseCompleted = true;
+                issueHomeStart();
+            } else {
+                m_homeStartCompleted = true;
+            }
+        }
         return;
+    }
 
     switch (pending.cmd) {
     case Command::Reset:
-        // The only reset submission is the M103 pulse (PLC-HMI-010 D1/D4): a
-        // failed completion surfaces as a visible failure. The fixed-delay
-        // success is decided by the clock, never by a submission completion.
-        if (m_resetPending)
+        if (!m_resetPending)
+            break;
+        if (pending.operation == PlcOperation::Pulse) {
+            // The M103 pulse failed: the home-start write is never attempted
+            // (PLC-HMI-011 D4) and the command converges visibly.
             finishCommand(Command::Reset, false, QStringLiteral("M103 脉冲发送失败"));
+        } else {
+            // The M50 write failed: one visible non-success terminal, never
+            // masked by the fixed delay (PLC-HMI-011 D4).
+            finishCommand(Command::Reset, false, QStringLiteral("M50 回原点启动写入失败"));
+        }
         break;
     case Command::AdjustWidth:
         if (pending.operation == PlcOperation::Pulse) {
@@ -779,6 +813,12 @@ void ControlCoordinator::onConnectionChanged(bool online)
     // Offline: abort active flows, never optimistic, never replay (spec §13).
     if (m_resetPending) {
         m_resetPending = false;
+        // The handshake state dies with the generation: a late M103/M50
+        // completion for the lost link can never advance a new reset.
+        m_resetPulseCompleted = false;
+        m_homeStartIssued = false;
+        m_homeStartCompleted = false;
+        m_homeStartDeadlineMs = 0;
         emit commandResult(Command::Reset, false, QStringLiteral("通讯中断"));
     }
     if (m_adjustPhase != AdjustPhase::Idle) {
@@ -830,13 +870,47 @@ void ControlCoordinator::onConnectionChanged(bool online)
 
 // --- flow snapshot handlers -------------------------------------------------
 
-void ControlCoordinator::confirmResetByFixedDelay()
+void ControlCoordinator::issueHomeStart()
+{
+    if (!m_resetPending || !m_resetPulseCompleted || m_homeStartIssued)
+        return;
+    // Exactly one sustained coil write, never a pulse (PLC-HMI-011 D2). The
+    // write is submitted at the current priority class of the other flows.
+    if (submitCoil(Command::Reset, kM50, true, CommandPriority::Normal)) {
+        m_homeStartIssued = true;
+    } else {
+        // Submission rejected: one visible non-success terminal with a
+        // non-empty detail, never masked by the fixed delay (D4).
+        finishCommand(Command::Reset, false, QStringLiteral("M50 回原点启动写入失败"));
+    }
+}
+
+void ControlCoordinator::onResetSnapshot()
 {
     if (!m_resetPending)
         return;
-    // Fixed completion delay from the M103 pulse submission (PLC-HMI-010 D3).
-    // No M50/M61/M14/D110 readback participates in the result (D2).
-    if (m_nowMs() >= m_resetCompletionDeadlineMs)
+    // A pulse completion may have been consumed before the write was issued
+    // (the frozen helper drives same-time snapshots): issue it here as well.
+    issueHomeStart();
+    if (!m_resetPending)
+        return; // a rejected M50 submission just converged the reset
+    if (!m_homeStartIssued) {
+        // The pulse completion is still outstanding: wait for it, but not
+        // indefinitely — a pulse whose correlated completion never arrives must
+        // still converge to one visible non-success terminal (D4).
+        if (m_nowMs() >= m_homeStartDeadlineMs)
+            finishCommand(Command::Reset, false,
+                          QStringLiteral("M103 脉冲确认超时, 请检查设备"));
+        return;
+    }
+    if (!m_homeStartCompleted && m_nowMs() >= m_homeStartDeadlineMs) {
+        finishCommand(Command::Reset, false,
+                      QStringLiteral("M50 回原点启动确认超时, 请检查设备"));
+        return;
+    }
+    // Both correlated transport outcomes succeeded and the fixed minimum delay
+    // from the M103 submission elapsed: exactly one 复位完成 (PLC-HMI-011 D3).
+    if (m_homeStartCompleted && m_nowMs() >= m_resetCompletionDeadlineMs)
         finishCommand(Command::Reset, true, QStringLiteral("复位完成"));
 }
 
@@ -941,6 +1015,12 @@ void ControlCoordinator::finishCommand(Command cmd, bool ok, const QString &deta
     switch (cmd) {
     case Command::Reset:
         m_resetPending = false;
+        // The handshake state belongs to the converged generation: a new reset
+        // starts clean, and a late completion can never advance it.
+        m_resetPulseCompleted = false;
+        m_homeStartIssued = false;
+        m_homeStartCompleted = false;
+        m_homeStartDeadlineMs = 0;
         break;
     case Command::AdjustWidth:
         m_adjustPhase = AdjustPhase::Idle;

@@ -267,8 +267,11 @@ void RtuSimulatorTest::statusWordTracksHomeReturnTick()
     FaultInjector faults;
     RtuRequestHandler handler(model, faults);
 
-    // M103 reset: homing (M50=1, M61=0) -> D100 bit9 clears.
+    // M103 reset + the HMI's single M50=1 home-start write (PLC-HMI-011 D6):
+    // homing (M50=1, M61=0) -> D100 bit9 clears.
     model.writeCoil(103, true);
+    model.writeCoil(103, false);
+    model.writeCoil(50, true);
     QVERIFY(model.readCoil(50));
     QVERIFY(!model.readCoil(61));
     QCOMPARE(model.readRegister(100) & quint16(1 << 9), quint16(0));
@@ -502,6 +505,7 @@ void RtuSimulatorTest::faultCodeInjectionSetsModelFault()
     // Reset + home return; the injected fault code surfaces on completion.
     model.writeCoil(103, true);
     model.writeCoil(103, false);
+    model.writeCoil(50, true); // PLC-HMI-011 D6: homing starts from the M50 write
     QVERIFY(model.readCoil(50)); // homing
     handler.tick();
     handler.tick(); // home return completes after 2 s

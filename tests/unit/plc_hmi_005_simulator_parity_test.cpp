@@ -29,6 +29,7 @@ constexpr quint16 kM44 = 44;   // adjust success
 constexpr quint16 kM45 = 45;   // adjust failure / timeout
 constexpr quint16 kM49 = 49;   // unoccupied bit: must be parity-neutral
 constexpr quint16 kM103 = 103; // reset / home pulse
+constexpr quint16 kM50 = 50;   // PLC-HMI-011: home-start coil
 constexpr quint16 kM112 = 112; // removed watchdog bit: must never be energized
 
 constexpr quint16 kD122 = 122; // belt speed
@@ -58,6 +59,7 @@ void homeReady(SimulatedPlcGateway &gw)
 {
     gw.model().writeCoil(kM103, true);
     gw.model().writeCoil(kM103, false);
+    gw.model().writeCoil(kM50, true); // PLC-HMI-011: homing starts on the home-start write
     gw.tick();
     gw.tick(); // home return takes 2 s
 }

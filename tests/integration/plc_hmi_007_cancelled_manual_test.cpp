@@ -63,6 +63,7 @@ namespace {
 
 // Protocol addresses (0-based, matching the centralized AddressTable).
 constexpr quint16 kM103 = 103; // reset / home pulse
+constexpr quint16 kM50 = 50;   // PLC-HMI-011: home-start coil
 constexpr quint16 kM106 = 106; // manual hold output
 
 constexpr int kMaxConvergenceTicks = 45;
@@ -259,6 +260,7 @@ void homeReady(StartedApp &started)
         return;
     started.gw->model().writeCoil(kM103, true);
     started.gw->model().writeCoil(kM103, false);
+    started.gw->model().writeCoil(kM50, true); // PLC-HMI-011: homing starts on the home-start write
     started.gw->tick();
     started.gw->tick(); // home return takes 2 s
 }

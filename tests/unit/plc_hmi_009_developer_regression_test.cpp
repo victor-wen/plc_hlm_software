@@ -199,20 +199,23 @@ void PlcHmi009DeveloperRegressionTest::logoutClearIsNotConfirmedBeforeAllComplet
 
     c.logoutClear();
 
-    // Visible request-start, all seven writes submitted, nothing confirmed.
-    QCOMPARE(ft.writes.size(), 7);
+    // Visible request-start, all eight writes submitted, nothing confirmed.
+    QCOMPARE(ft.writes.size(), 8);
     QCOMPARE(ft.writes[0].address, kM42);
     QCOMPARE(ft.writes[6].address, quint16(111));
+    // The M50=0 home-start clear is appended LAST (PLC-HMI-011 D7).
+    QCOMPARE(ft.writes[7].address, quint16(50));
+    QCOMPARE(ft.writes[7].value, false);
     QCOMPARE(starts, 2); // one commandAccepted + one commandPending
     QCOMPARE(log.total(), 0); // acceptance is not confirmation
 
-    // Six of seven completions: still no terminal.
-    for (int i = 0; i < 6; ++i)
+    // Seven of eight completions: still no terminal.
+    for (int i = 0; i < 7; ++i)
         c.onSubmissionCompleted(ft.completionFor(ft.writes[i], true));
     QCOMPARE(log.total(), 0);
 
-    // The seventh completes the clear: exactly one visible success terminal.
-    c.onSubmissionCompleted(ft.completionFor(ft.writes[6], true));
+    // The eighth completes the clear: exactly one visible success terminal.
+    c.onSubmissionCompleted(ft.completionFor(ft.writes[7], true));
     QCOMPARE(log.successes, 1);
     QCOMPARE(log.failures, 0);
     QVERIFY(!log.lastDetail.isEmpty());
@@ -232,7 +235,7 @@ void PlcHmi009DeveloperRegressionTest::logoutClearFailedCompletionConvergesToExa
     observeResults(c, Command::LogoutClear, log);
 
     c.logoutClear();
-    QCOMPARE(ft.writes.size(), 7);
+    QCOMPARE(ft.writes.size(), 8);
 
     // One failed completion converges the whole clear to failure.
     c.onSubmissionCompleted(ft.completionFor(ft.writes[0], false));
@@ -241,7 +244,7 @@ void PlcHmi009DeveloperRegressionTest::logoutClearFailedCompletionConvergesToExa
     QVERIFY(!log.lastDetail.isEmpty());
 
     // The remaining successful completions must not resurrect a success.
-    for (int i = 1; i < 7; ++i)
+    for (int i = 1; i < 8; ++i)
         c.onSubmissionCompleted(ft.completionFor(ft.writes[i], true));
     QCOMPARE(log.total(), 1);
     QCOMPARE(log.successes, 0);
@@ -302,13 +305,13 @@ void PlcHmi009DeveloperRegressionTest::logoutClearDuplicateWhilePendingIsAbsorbe
     observeStarts(c, Command::LogoutClear, starts);
 
     c.logoutClear();
-    QCOMPARE(ft.writes.size(), 7);
+    QCOMPARE(ft.writes.size(), 8);
     QCOMPARE(starts, 2);
     QCOMPARE(log.total(), 0);
 
     // Duplicate while pending: no second generation, writes or request-start.
     c.logoutClear();
-    QCOMPARE(ft.writes.size(), 7);
+    QCOMPARE(ft.writes.size(), 8);
     QCOMPARE(starts, 2);
     QCOMPARE(log.total(), 0);
     QVERIFY(c.logoutClearPending());

@@ -10,17 +10,28 @@
 // A compile failure of this target before implementation is the expected RED
 // for these behaviors (brief acceptance_criteria); it is deliberately isolated
 // in this file so the existing-API targets can still build and run.
+//
+// PLC-HMI-011 OB-7 extension (authored from the behavior-only brief
+// .ai/test-briefs/PLC-HMI-011.yaml and inspectable test sources only): the
+// manual-control surface must show the new split - belt jog and stop gate are
+// enabled once homing is complete, while the width jogs stay disabled with a
+// visible reason until it is. No production implementation source was read.
 
 #include <QtTest>
 
+#include <QAbstractButton>
 #include <QLabel>
 #include <QSet>
+#include <QStringList>
 #include <QVector>
 
 #include "domain/device_snapshot.h"
 #include "domain/operator_command_status.h"
+#include "ui/pages/manual_control_page.h"
 #include "ui/shell/action_bar.h"
 #include "ui/shell/shell_model.h"
+#include "ui/widgets/hold_button.h"
+#include "ui/widgets/permission_button.h"
 #include "ui/MainWindow.h"
 
 using namespace hlm;
@@ -57,6 +68,148 @@ OperatorCommandStatus makeStatus(OperatorCommandState state, const QString &deta
     return s;
 }
 
+// --- PLC-HMI-011 OB-7: manual-control surface fixture --------------------------
+//
+// A ready manual session: online (connected, all blocks Valid), administrator,
+// manual mode (M1), not running (M3 clear), no emergency stop (M0 clear), no
+// latched fault (M14 clear), no width-adjust bits (M34/M44/M45 clear). The two
+// homing flags are the only variable: home-complete (M9/M61) and the
+// home-in-progress/home-start bit (M50, carried by homeBits bit 0).
+DeviceSnapshotData manualSurfaceData(bool homeComplete, bool homeInProgress = false)
+{
+    DeviceSnapshotData d;
+    d.connected = true;
+    quint16 sw1 = 0;
+    sw1 |= quint16(1) << 1; // M1 manual
+    if (homeComplete)
+        sw1 |= quint16(1) << 9; // M9/M61 home complete
+    d.statusWord1 = sw1;
+    d.statusWord3 = 0;
+    d.homeBits = homeInProgress ? quint16(1) : quint16(0); // M50
+    d.faultCode = 0;
+    d.targetWidth = 200;
+    d.currentWidth = 150;
+    d.widthDelta = 50;
+    d.pulsePerMm = 128;
+    d.widthSpeed = 15;
+    d.beltSpeed = 5000;
+    d.heartbeat = 1;
+    d.fast_quality = DataQuality::Valid;
+    d.fast_age_ms = 0;
+    d.home_quality = DataQuality::Valid;
+    d.home_age_ms = 0;
+    d.command_quality = DataQuality::Valid;
+    d.command_age_ms = 0;
+    d.slow_quality = DataQuality::Valid;
+    d.slow_age_ms = 0;
+    d.overall_quality = aggregateQuality(d);
+    return d;
+}
+
+// The reason a disabled control declares, independent of any production API:
+// tooltip, status tip or accessible description (the PLC-HMI-008 pattern).
+QString declaredReason(const QWidget *control)
+{
+    const QStringList candidates{control->toolTip(), control->statusTip(),
+                                 control->accessibleDescription()};
+    for (const QString &candidate : candidates) {
+        if (!candidate.trimmed().isEmpty())
+            return candidate.trimmed();
+    }
+    return QString();
+}
+
+// Visible labels on the presented page that carry the control's declared
+// reason. A label whose whole text is contained in the declared reason (>= 4
+// characters) also counts, so the implementation may shorten the wording
+// without losing the semantics. In addition, a visible non-empty label inside
+// the control itself counts as an inline reason (the PLC-HMI-008
+// PermissionButton pattern draws its reason as a child label, and the brief
+// requires a visible reason, not a specific channel). Tooltip-only explanation
+// yields none of these.
+QVector<QLabel *> visibleReasonLabels(QWidget *root, QWidget *control)
+{
+    QVector<QLabel *> labels;
+    const QString reason = declaredReason(control);
+    if (!reason.isEmpty()) {
+        for (QLabel *label : root->findChildren<QLabel *>()) {
+            const QString text = label->text().trimmed();
+            if (text.isEmpty() || label->isHidden() || !label->isVisibleTo(root))
+                continue;
+            if (text.contains(reason) || (text.size() >= 4 && reason.contains(text)))
+                labels.append(label);
+        }
+    }
+    for (QLabel *label : control->findChildren<QLabel *>()) {
+        if (label->text().trimmed().isEmpty() || label->isHidden())
+            continue;
+        if (!label->isVisibleTo(root))
+            continue;
+        if (!labels.contains(label))
+            labels.append(label);
+    }
+    return labels;
+}
+
+QString visibleReasonText(QWidget *root, QWidget *control)
+{
+    QStringList texts;
+    for (QLabel *label : visibleReasonLabels(root, control)) {
+        const QString text = label->text().trimmed();
+        if (!texts.contains(text))
+            texts.append(text);
+    }
+    texts.sort();
+    return texts.join(QStringLiteral(" | "));
+}
+
+// Visible labels that carry the control's DECLARED disabled reason (the
+// tooltip/status tip/accessible description), i.e. evidence that the declared
+// reason itself is presented as visible text rather than only as a tooltip.
+QVector<QLabel *> visibleDeclaredReasonLabels(QWidget *root, QWidget *control)
+{
+    QVector<QLabel *> labels;
+    const QString reason = declaredReason(control);
+    if (reason.isEmpty())
+        return labels;
+    for (QLabel *label : root->findChildren<QLabel *>()) {
+        const QString text = label->text().trimmed();
+        if (text.isEmpty() || label->isHidden() || !label->isVisibleTo(root))
+            continue;
+        if (text.contains(reason) || (text.size() >= 4 && reason.contains(text)))
+            labels.append(label);
+    }
+    return labels;
+}
+
+// A disabled control must present a reason that is visible on the page, not
+// tooltip-only (brief OB-7). The reason may be declared in the tooltip/status
+// tip/accessible description and rendered as a page label, or rendered as a
+// non-empty label inside the control itself; either way a disabled control
+// must not be explained only by a tooltip.
+void requireVisibleDisabledReason(QWidget *root, QWidget *control, const char *name)
+{
+    QVERIFY2(!visibleReasonLabels(root, control).isEmpty(),
+             qPrintable(QStringLiteral("the disabled %1 control shows no visible reason "
+                                       "text (declared reason: '%2')")
+                            .arg(QString::fromLatin1(name), declaredReason(control))));
+}
+
+// An enabled control must not still carry a disabled reason: neither the
+// declared reason channel nor a visible label carrying that reason may remain.
+void requireNoStaleDisabledReason(QWidget *root, QWidget *control, const char *name)
+{
+    QVERIFY2(declaredReason(control).isEmpty(),
+             qPrintable(QStringLiteral("the enabled %1 control still declares a "
+                                       "disabled reason: '%2'")
+                            .arg(QString::fromLatin1(name), declaredReason(control))));
+    QVERIFY2(visibleDeclaredReasonLabels(root, control).isEmpty(),
+             qPrintable(QStringLiteral("the enabled %1 control still shows its old "
+                                       "disabled reason: '%2'")
+                            .arg(QString::fromLatin1(name),
+                                 visibleReasonText(root, control))));
+}
+
 } // namespace
 
 class CommandStatusProjectionTest : public QObject
@@ -82,6 +235,10 @@ private slots:
 
     // --- coordinator result is the sole adjust verdict (OB-9) -----------------
     void adjustVerdictRemainsCoordinatorFailureAfterSuccessLikeSnapshot();
+
+    // --- PLC-HMI-011 OB-7: the manual-control surface shows the split ----------
+    void manualSurfaceShowsBeltAndGateEnabledWhileWidthJogsStayDisabledWithReason();
+    void manualSurfaceEnablesAllFourOnceHomeCompleteIsSet();
 };
 
 void CommandStatusProjectionTest::lifecycleStatesClassifyTerminalAndPending()
@@ -359,6 +516,108 @@ void CommandStatusProjectionTest::adjustVerdictRemainsCoordinatorFailureAfterSuc
         failureDetail));
     QVERIFY2(!label->text().contains(QStringLiteral("调宽成功")),
              "success-like snapshot must not override the coordinator verdict");
+}
+
+// --- PLC-HMI-011 OB-7: the operator console shows the split --------------------
+
+void CommandStatusProjectionTest::manualSurfaceShowsBeltAndGateEnabledWhileWidthJogsStayDisabledWithReason()
+{
+    // Brief OB-7: with home-complete CLEAR and the other common conditions
+    // satisfied (administrator, online, manual mode, not running, no emergency
+    // stop, no latched fault), the belt-jog control and the stop-gate control
+    // are enabled, while the two width-jog controls are disabled and display a
+    // visible reason. No disabled control may rely on a tooltip alone.
+    ShellModel model;
+    model.setUser(QStringLiteral("admin"), Role::Admin);
+    ManualControlPage page(model);
+    model.updateSnapshot(
+        DeviceSnapshot(manualSurfaceData(/*homeComplete=*/false)));
+    page.resize(1280, 720);
+    page.show();
+    QApplication::processEvents();
+
+    QVERIFY2(page.jogButton() != nullptr, "the manual page must expose the belt-jog control");
+    QVERIFY2(page.widthFwdButton() != nullptr,
+             "the manual page must expose the width-forward control");
+    QVERIFY2(page.widthRevButton() != nullptr,
+             "the manual page must expose the width-reverse control");
+    QVERIFY2(page.stopGateButton() != nullptr,
+             "the manual page must expose the stop-gate control");
+
+    // The split: belt jog (108) and stop gate (109) do not need homing.
+    QVERIFY2(page.jogButton()->isEnabled(),
+             qPrintable(QStringLiteral("the belt-jog control must be enabled while "
+                                       "home-complete is clear (reason: '%1')")
+                            .arg(declaredReason(page.jogButton()))));
+    QVERIFY2(page.stopGateButton()->isEnabled(),
+             qPrintable(QStringLiteral("the stop-gate control must be enabled while "
+                                       "home-complete is clear (reason: '%1')")
+                            .arg(declaredReason(page.stopGateButton()))));
+
+    // The two width jogs (106/107) still require homing and stay disabled.
+    QVERIFY2(!page.widthFwdButton()->isEnabled(),
+             "the width-forward control must stay disabled while home-complete is clear");
+    QVERIFY2(!page.widthRevButton()->isEnabled(),
+             "the width-reverse control must stay disabled while home-complete is clear");
+
+    // Each disabled width jog must show its reason as visible text, never
+    // tooltip-only.
+    requireVisibleDisabledReason(&page, page.widthFwdButton(), "width-forward");
+    requireVisibleDisabledReason(&page, page.widthRevButton(), "width-reverse");
+
+    // The two enabled controls carry no stale disabled reason text.
+    requireNoStaleDisabledReason(&page, page.jogButton(), "belt-jog");
+    requireNoStaleDisabledReason(&page, page.stopGateButton(), "stop-gate");
+}
+
+void CommandStatusProjectionTest::manualSurfaceEnablesAllFourOnceHomeCompleteIsSet()
+{
+    // Brief OB-7: once home-complete is set (and the other common conditions
+    // still hold) all four manual controls are enabled and no disabled reason
+    // remains visible.
+    ShellModel model;
+    model.setUser(QStringLiteral("admin"), Role::Admin);
+    ManualControlPage page(model);
+    model.updateSnapshot(
+        DeviceSnapshot(manualSurfaceData(/*homeComplete=*/true)));
+    page.resize(1280, 720);
+    page.show();
+    QApplication::processEvents();
+
+    QVERIFY2(page.jogButton() != nullptr, "the manual page must expose the belt-jog control");
+    QVERIFY2(page.widthFwdButton() != nullptr,
+             "the manual page must expose the width-forward control");
+    QVERIFY2(page.widthRevButton() != nullptr,
+             "the manual page must expose the width-reverse control");
+    QVERIFY2(page.stopGateButton() != nullptr,
+             "the manual page must expose the stop-gate control");
+
+    QVERIFY2(page.jogButton()->isEnabled(),
+             qPrintable(QStringLiteral("the belt-jog control must be enabled once "
+                                       "home-complete is set (reason: '%1')")
+                            .arg(declaredReason(page.jogButton()))));
+    QVERIFY2(page.widthFwdButton()->isEnabled(),
+             qPrintable(QStringLiteral("the width-forward control must be enabled once "
+                                       "home-complete is set (reason: '%1')")
+                            .arg(declaredReason(page.widthFwdButton()))));
+    QVERIFY2(page.widthRevButton()->isEnabled(),
+             qPrintable(QStringLiteral("the width-reverse control must be enabled once "
+                                       "home-complete is set (reason: '%1')")
+                            .arg(declaredReason(page.widthRevButton()))));
+    QVERIFY2(page.stopGateButton()->isEnabled(),
+             qPrintable(QStringLiteral("the stop-gate control must be enabled once "
+                                       "home-complete is set (reason: '%1')")
+                            .arg(declaredReason(page.stopGateButton()))));
+
+    // No enabled control may still present a disabled reason.
+    QWidget *const enabledControls[] = {
+        page.jogButton(), page.widthFwdButton(), page.widthRevButton(),
+        page.stopGateButton()};
+    const char *const enabledNames[] = {"belt-jog", "width-forward",
+                                        "width-reverse", "stop-gate"};
+    for (int i = 0; i < 4; ++i) {
+        requireNoStaleDisabledReason(&page, enabledControls[i], enabledNames[i]);
+    }
 }
 
 QTEST_MAIN(CommandStatusProjectionTest)

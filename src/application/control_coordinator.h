@@ -95,8 +95,12 @@ public:
 
     // --- commands (all return a structured result; effects arrive via signals)
     PermissionResult permission(Command cmd) const;
+    // `targetWidth` is the AdjustWidth target; `address` is the manual coil for
+    // Command::ManualCommand (PLC-HMI-011 D5). Both default to 0 so every
+    // existing call site keeps compiling and the address-less verdict is
+    // unchanged.
     InterlockResult interlock(Command cmd, const DeviceSnapshot &s,
-                              quint16 targetWidth = 0) const;
+                              quint16 targetWidth = 0, quint16 address = 0) const;
 
     // 复位 (spec §10.2). Admin only.
     CommandResult reset();
@@ -153,8 +157,14 @@ public:
     std::optional<quint16> adjustTarget() const { return m_adjustTarget; }
 
     // The fixed reset completion delay from the M103 pulse submission
-    // (PLC-HMI-010 D3, user decision U1: 200 ms).
+    // (PLC-HMI-010 D3, user decision U1: 200 ms). The reset also requires the
+    // correlated M50 home-start write to complete before the success terminal.
     static constexpr qint64 kResetCompletionDelayMs = 200;
+    // Defensive wait for the correlated M50 home-start completion
+    // (PLC-HMI-011 D3): between the 2.1 s hold and the 120 s convergence bound
+    // required by the approved contract; the 3 s class matches the other
+    // transport-confirmation deadlines.
+    static constexpr qint64 kHomeStartConfirmTimeoutMs = 3'000;
 
 signals:
     // Command accepted and dispatched (waiting for PLC confirmation).
@@ -210,7 +220,8 @@ private:
         quint16 address = 0;
     };
 
-    CommandResult gate(Command cmd, const DeviceSnapshot &s, quint16 targetWidth = 0);
+    CommandResult gate(Command cmd, const DeviceSnapshot &s, quint16 targetWidth = 0,
+                       quint16 address = 0);
     // Emits commandRejected(cmd, reason) and returns the structured result.
     CommandResult rejectCommand(Command cmd, const QString &reason);
     // Non-empty when the installed restricted-mode gate blocks `cmd`.
@@ -241,9 +252,16 @@ private:
     void onAdjustSnapshot(const DeviceSnapshot &s);
     void onStartSnapshot(const DeviceSnapshot &s);
     void onStopSnapshot(const DeviceSnapshot &s);
-    // Converges an accepted fire-and-confirm reset once the fixed delay has
-    // elapsed. No-op when no reset is pending (exactly one terminal).
-    void confirmResetByFixedDelay();
+    // Issues the single sustained M50=1 home-start write once the M103 pulse
+    // completion succeeded (PLC-HMI-011 D2). No-op when no reset is pending, the
+    // pulse has not completed, or the write was already issued.
+    void issueHomeStart();
+    // Converges the accepted reset from the snapshot feed: issues the M50 write
+    // if the pulse completion arrived without it, enforces the M50 confirmation
+    // deadline, and emits the single 复位完成 only when both correlated
+    // completions succeeded and the fixed 200 ms minimum elapsed. No-op when no
+    // reset is pending (exactly one terminal).
+    void onResetSnapshot();
 
     PulseTransport m_transport;
     Config m_cfg;
@@ -256,16 +274,28 @@ private:
     std::optional<DeviceSnapshot> m_snapshot;
 
     // Command lifecycle state.
-    // Reset is a fire-and-confirm-by-fixed-delay request (PLC-HMI-010): the
-    // M103 pulse is its only submission and the flow converges on the fixed
-    // completion delay, so a single pending flag replaces the removed
-    // WaitManual/Homing phases and the homing-confirmation state.
+    // Reset is a two-operation handshake (PLC-HMI-011): the M103 pulse is
+    // submitted first, then one sustained M50=1 home-start write is issued only
+    // after the pulse's correlated completion succeeded. The single terminal
+    // 复位完成 requires both correlated completions to succeed and the fixed
+    // 200 ms minimum from the pulse submission to have elapsed; it never uses
+    // snapshot M50/M61/M14/D110 as evidence.
     bool m_resetPending = false;
     AdjustPhase m_adjustPhase = AdjustPhase::Idle;
     StartPhase m_startPhase = StartPhase::Idle;
     StopPhase m_stopPhase = StopPhase::Idle;
     std::optional<quint16> m_adjustTarget;
     qint64 m_resetCompletionDeadlineMs = 0; // clock time of the fixed 200 ms boundary
+    // M103 pulse correlated completion (PLC-HMI-011 D3). The M50 write may only
+    // be issued after this is true.
+    bool m_resetPulseCompleted = false;
+    // The single M50=1 home-start write was submitted (never repeated).
+    bool m_homeStartIssued = false;
+    // The M50 write's correlated completion reported result==true.
+    bool m_homeStartCompleted = false;
+    // Defensive M50 completion deadline (kHomeStartConfirmTimeoutMs from the
+    // pulse completion); 0 while the write has not been issued.
+    qint64 m_homeStartDeadlineMs = 0;
     qint64 m_adjustDeadlineMs = 0; // fixed PLC width timeout + 3 s (spec §10.3)
     qint64 m_startDeadlineMs = 0;
     qint64 m_stopDeadlineMs = 0;

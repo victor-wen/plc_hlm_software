@@ -52,6 +52,7 @@ public:
     QLabel *shieldBanner() const { return m_shieldBanner; }
     QString shieldBannerText() const;
     QLabel *statusLabel() const { return m_statusLabel; }
+    QLabel *widthReasonLabel() const { return m_widthReason; }
     QString statusText() const;
 
 public slots:
@@ -83,6 +84,13 @@ private:
     HoldButton *m_widthFwd = nullptr;   // M106 调宽正转
     HoldButton *m_widthRev = nullptr;   // M107 调宽反转
     PermissionButton *m_stopGate = nullptr; // M109 挡停
+    // Visible inline reason for the disabled width jogs (M106/M107). PLC-HMI-011
+    // D5: the width jogs are the only manual controls that still require homing
+    // completion, so their remaining reason must be readable on the page and not
+    // only in a tooltip (spec §11.4; the OB-7 surface requirement). Each width
+    // button owns its own label so the reason stays adjacent to its control.
+    QLabel *m_widthReason = nullptr;
+    QLabel *m_widthRevReason = nullptr;
     PermissionButton *m_passthrough = nullptr;   // M105 直通
     PermissionButton *m_beltContinuous = nullptr; // M42 皮带常转
     PermissionButton *m_curtainShield = nullptr; // M110 光栅屏蔽

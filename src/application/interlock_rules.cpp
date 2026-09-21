@@ -101,12 +101,21 @@ InterlockResult InterlockRules::checkModeSwitch(const DeviceSnapshot &s, bool on
     return r;
 }
 
-InterlockResult InterlockRules::checkManualCommand(const DeviceSnapshot &s, bool online)
+InterlockResult InterlockRules::checkManualCommand(const DeviceSnapshot &s, bool online,
+                                                   quint16 address)
 {
     InterlockResult r;
     add(r.unmet, online, QStringLiteral("通讯中断"));
     add(r.unmet, s.m1(), QStringLiteral("需要手动模式"));
-    add(r.unmet, homed(s), QStringLiteral("未回原点"));
+    // PLC-HMI-011 D5: only the width jogs (M106/M107) require a completed home
+    // return and no homing in progress. M108 (皮带点动) and M109 (挡停) keep
+    // the common gates only (SBR_MANUAL: M108 手动皮带点动 不需要复位完成).
+    // Address 0 is the address-less historical entry: it keeps the full
+    // four-command verdict so pre-split callers see no relaxation.
+    if (address == 0 || address == 106 || address == 107) {
+        add(r.unmet, homed(s), QStringLiteral("未回原点"));
+        add(r.unmet, !s.m50(), QStringLiteral("正在回原点"));
+    }
     add(r.unmet, !s.m3(), QStringLiteral("设备正在运行, 请先停止"));
     add(r.unmet, !s.m0(), QStringLiteral("急停有效"));
     add(r.unmet, !s.m14(), QStringLiteral("存在锁存故障"));

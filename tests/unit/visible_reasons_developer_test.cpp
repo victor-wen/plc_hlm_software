@@ -24,6 +24,7 @@
 #include "ui/pages/recipe_width_page.h"
 #include "ui/shell/action_bar.h"
 #include "ui/shell/shell_model.h"
+#include "ui/widgets/hold_button.h"
 #include "ui/widgets/permission_button.h"
 
 using namespace hlm;
@@ -90,6 +91,29 @@ void verifyInlineReason(QWidget *root, PermissionButton *button)
                             .arg(button->text())));
     QVERIFY(button->reasonLabel()->fontMetrics().height() >= kMinimumFontHeight);
     QVERIFY2(centerDistance(root, button, button->reasonLabel()) <= kAdjacencyPx,
+             qPrintable(QStringLiteral("'%1' reason is not adjacent").arg(button->text())));
+}
+
+// A disabled width jog (HoldButton, no PermissionButton reason API): its
+// interlock reason must still be presented as visible, adjacent, legible inline
+// text on the page (same surface requirement as verifyInlineReason).
+void verifyInlineHoldReason(QWidget *root, HoldButton *button, QLabel *label)
+{
+    QVERIFY2(!button->isEnabled(),
+             qPrintable(QStringLiteral("precondition: '%1' must be disabled")
+                            .arg(button->text())));
+    QVERIFY2(label != nullptr, "width jog has no reason label");
+    const QString reason = label->text();
+    QVERIFY2(!reason.isEmpty(),
+             qPrintable(QStringLiteral("'%1' declares no reason").arg(button->text())));
+    QCOMPARE(button->toolTip(), reason);
+    QVERIFY2(!label->isHidden(),
+             qPrintable(QStringLiteral("'%1' hides its reason label").arg(button->text())));
+    QVERIFY2(label->isVisibleTo(root),
+             qPrintable(QStringLiteral("'%1' reason label is not visible on the page")
+                            .arg(button->text())));
+    QVERIFY(label->fontMetrics().height() >= kMinimumFontHeight);
+    QVERIFY2(centerDistance(root, button, label) <= kAdjacencyPx,
              qPrintable(QStringLiteral("'%1' reason is not adjacent").arg(button->text())));
 }
 
@@ -188,6 +212,10 @@ void VisibleReasonsDeveloperTest::manualPageReasonFollowsGateAndDistinguishesCau
     QVERIFY(permissionText.contains(QStringLiteral("管理员")));
 
     // Interlock cause: administrator with connected data that is not homed.
+    // PLC-HMI-011 D5: the stop gate (M109) no longer requires homing, so in
+    // this otherwise-ready state it is enabled with no reason; the width jogs
+    // (M106/M107) still require homing and carry the visible 原点 reason
+    // inline beneath their controls.
     ShellModel interlockModel;
     ManualControlPage interlockPage(interlockModel);
     interlockModel.setUser(QStringLiteral("admin"), Role::Admin);
@@ -195,10 +223,11 @@ void VisibleReasonsDeveloperTest::manualPageReasonFollowsGateAndDistinguishesCau
     interlockPage.resize(1280, 720);
     interlockPage.show();
     QApplication::processEvents();
-    QVERIFY(!interlockPage.stopGateButton()->isEnabled());
-    verifyInlineReason(&interlockPage, interlockPage.stopGateButton());
-    const QString interlockText =
-        interlockPage.stopGateButton()->visibleReasonText();
+    QVERIFY(interlockPage.stopGateButton()->isEnabled());
+    QVERIFY(interlockPage.stopGateButton()->visibleReasonText().isEmpty());
+    verifyInlineHoldReason(&interlockPage, interlockPage.widthFwdButton(),
+                           interlockPage.widthReasonLabel());
+    const QString interlockText = interlockPage.widthReasonLabel()->text();
     QVERIFY(interlockText.contains(QStringLiteral("原点")));
     QVERIFY(interlockText != permissionText);
 

@@ -18,7 +18,9 @@
 #include <functional>
 #include <memory>
 
+#include "adapters/simulator/h3u_simulation_model.h"
 #include "adapters/simulator/simulated_plc_gateway.h"
+#include "adapters/simulator/simulation_clock.h"
 #include "application/control_coordinator.h"
 #include "domain/device_snapshot.h"
 #include "ports/iplc_gateway.h"
@@ -33,10 +35,27 @@ constexpr quint16 kM101 = 101;
 constexpr quint16 kM103 = 103;
 constexpr quint16 kM104 = 104;
 constexpr quint16 kM106 = 106;
+constexpr quint16 kM107 = 107;
+constexpr quint16 kM108 = 108;
 constexpr quint16 kM109 = 109;
 constexpr quint16 kM110 = 110;
 constexpr quint16 kD128 = 128;
 constexpr quint16 kD204 = 204; // pulse per mm (adjust-run timing fixture)
+
+// PLC-HMI-011: the home-start coil (M50), written once after the reset pulse,
+// and the home-complete mirror (M61 -> M9 in statusWord1).
+constexpr quint16 kM50 = 50;
+constexpr quint16 kM61 = 61;
+
+// PLC-HMI-011 simulator-handshake fixture addresses.
+constexpr quint16 kM0 = 0;   // physical/software estop state
+constexpr quint16 kM14 = 14; // latched fault
+constexpr quint16 kM34 = 34; // width adjustment in progress
+constexpr quint16 kM43 = 43; // width-adjust pulse
+constexpr quint16 kM44 = 44; // width-adjust success
+constexpr quint16 kM45 = 45; // width-adjust failure
+constexpr quint16 kD110 = 110; // fault code
+constexpr quint16 kD220 = 220; // width speed
 
 quint64 nextRequestId()
 {
@@ -67,6 +86,7 @@ void homeReady(SimulatedPlcGateway &gw)
 {
     gw.model().writeCoil(kM103, true);
     gw.model().writeCoil(kM103, false);
+    gw.model().writeCoil(kM50, true); // PLC-HMI-011: homing starts on the home-start write
     gw.tick();
     gw.tick(); // home return takes 2 s
 }
@@ -197,15 +217,36 @@ QString describeResetResults(const QVector<ResultRecord> &results)
 // accepted/rejected SubmissionResult. No PLC state is mutated: the machine
 // state is supplied as synthetic snapshots, which keeps OB-2 independent of the
 // simulator's own flag handling.
+//
+// PLC-HMI-011 extension: the recorder now also records the write kind and the
+// submission order, and can deliver the correlated terminal completion for a
+// chosen submission on demand, so a test can control whether and when the
+// home-start write (M50) completes. This is a transport reply, not production
+// logic: the test acts as the controller that answers a request identity.
 struct ResetTransportRecorder
 {
+    enum class WriteKind { Pulse, Hold, Coil, Register };
+
+    struct WriteRecord
+    {
+        WriteKind kind = WriteKind::Coil;
+        quint16 address = 0;
+        quint16 value = 0;
+        quint64 requestId = 0;
+    };
+
     QVector<quint16> pulses;
     QVector<QPair<quint16, bool>> coils;
     QVector<QPair<quint16, bool>> holds;
     QVector<QPair<quint16, quint16>> registers;
+    QVector<WriteRecord> writes; // every submission, in submission order
 
     bool rejectPulses = false;
     QString pulseRejectReason;
+
+    // --- PLC-HMI-011: per-submission outcome control --------------------------
+    bool rejectHomeStart = false;
+    QString homeStartRejectReason;
 
     ControlCoordinator::PulseTransport make()
     {
@@ -219,22 +260,96 @@ struct ResetTransportRecorder
                 return r;
             }
             pulses.append(address);
-            return accept();
+            const SubmissionResult r = accept();
+            writes.append({WriteKind::Pulse, address, true, r.request_id});
+            return r;
         };
         t.writeHold = [this](quint16 address, bool value) -> SubmissionResult {
             holds.append({address, value});
-            return accept();
+            const SubmissionResult r = accept();
+            writes.append({WriteKind::Hold, address, value, r.request_id});
+            return r;
         };
         t.writeCoil = [this](quint16 address, bool value, CommandPriority) -> SubmissionResult {
+            if (address == kM50 && rejectHomeStart) {
+                SubmissionResult r;
+                r.accepted = false;
+                r.gateway_generation = kGeneration;
+                r.immediate_rejection_reason = homeStartRejectReason;
+                return r;
+            }
             coils.append({address, value});
-            return accept();
+            const SubmissionResult r = accept();
+            writes.append({WriteKind::Coil, address, value, r.request_id});
+            return r;
         };
         t.writeRegister = [this](quint16 address, quint16 value, CommandPriority)
             -> SubmissionResult {
             registers.append({address, value});
-            return accept();
+            const SubmissionResult r = accept();
+            writes.append({WriteKind::Register, address, value, r.request_id});
+            return r;
         };
         return t;
+    }
+
+    // --- PLC-HMI-011: completion control --------------------------------------
+
+    // Every accepted submission whose address is `address` and whose coil value
+    // is `value`, oldest first.
+    QVector<WriteRecord> writesTo(quint16 address, bool value) const
+    {
+        QVector<WriteRecord> matches;
+        for (const WriteRecord &w : writes) {
+            if (w.address == address && w.value == value)
+                matches.append(w);
+        }
+        return matches;
+    }
+
+    int writeCount(quint16 address, bool value) const
+    {
+        return writesTo(address, value).size();
+    }
+
+    bool hasWriteTo(quint16 address, bool value) const
+    {
+        return writeCount(address, value) > 0;
+    }
+
+    // The first write of `value` to `address`, or a zero record when absent.
+    WriteRecord firstWriteTo(quint16 address, bool value) const
+    {
+        const QVector<WriteRecord> matches = writesTo(address, value);
+        return matches.isEmpty() ? WriteRecord{} : matches.first();
+    }
+
+    // Delivers the correlated terminal completion for a recorded submission, as
+    // the controller would. An unknown request id is a test error and returns
+    // false without delivering anything.
+    bool complete(ControlCoordinator &coordinator, quint64 requestId, bool result,
+                  const QString &error = QString())
+    {
+        WriteRecord record;
+        bool found = false;
+        for (const WriteRecord &w : writes) {
+            if (w.requestId == requestId) {
+                record = w;
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            return false;
+        SubmissionCompletion completion;
+        completion.request_id = requestId;
+        completion.gateway_generation = kGeneration;
+        completion.operation = operationOf(record);
+        completion.address = record.address;
+        completion.result = result;
+        completion.error = error;
+        coordinator.onSubmissionCompleted(completion);
+        return true;
     }
 
     static constexpr quint64 kGeneration = 1;
@@ -249,6 +364,20 @@ private:
         return r;
     }
 
+    static PlcOperation operationOf(const WriteRecord &record)
+    {
+        switch (record.kind) {
+        case WriteKind::Pulse:
+            return PlcOperation::Pulse;
+        case WriteKind::Register:
+            return PlcOperation::WriteRegister;
+        case WriteKind::Hold:
+        case WriteKind::Coil:
+            break;
+        }
+        return PlcOperation::WriteCoil;
+    }
+
     quint64 m_nextId = 0;
 };
 
@@ -256,12 +385,19 @@ private:
 // statusWord1 carries M1 (manual, bit 1), M3 (running, bit 3), M9 (home
 // complete, bit 9) and M14 (latched fault, bit 14); faultCode is D110. Per-block
 // quality is Valid so every field is usable evidence.
+// PLC-HMI-011 adds two defaulted conditions for the manual-command matrix:
+// estop (M0) and manualMode (M1). Every pre-existing call site is unchanged.
 DeviceSnapshot resetSnapshot(bool m50, bool m9, bool m14, quint16 faultCode,
-                             bool running = false, bool connected = true)
+                             bool running = false, bool connected = true,
+                             bool estop = false, bool manualMode = true)
 {
     DeviceSnapshotData d;
     d.connected = connected;
-    quint16 sw1 = quint16(1) << 1; // M1 manual: no mode-switch side path
+    quint16 sw1 = 0;
+    if (estop)
+        sw1 |= quint16(1) << 0; // M0
+    if (manualMode)
+        sw1 |= quint16(1) << 1; // M1 manual: no mode-switch side path
     if (running)
         sw1 |= quint16(1) << 3; // M3
     if (m9)
@@ -294,6 +430,63 @@ ControlCoordinator *syntheticCoordinator(ResetTransportRecorder &rec, qint64 &no
 {
     return new ControlCoordinator(rec.make(), ControlCoordinator::Config(),
                                   [&now]() { return now; });
+}
+
+// --- PLC-HMI-011 reset handshake helpers ---------------------------------------
+//
+// The reset is a two-operation request: the M103 reset pulse and, once the pulse
+// has completed, exactly one M50=1 home-start write. These helpers deliver the
+// controller's correlated transport replies (and give the coordinator
+// processing opportunities) without assuming when exactly it acts.
+
+void driveSnapshots(ControlCoordinator &c, const DeviceSnapshot &machine, qint64 &now,
+                    int steps, qint64 stepMs)
+{
+    for (int i = 0; i < steps; ++i) {
+        now += stepMs;
+        c.onSnapshot(machine);
+    }
+}
+
+// Delivers the terminal completion of the M103 reset pulse submission.
+bool completeResetPulse(ResetTransportRecorder &rec, ControlCoordinator &c,
+                        bool result = true, const QString &error = QString())
+{
+    const ResetTransportRecorder::WriteRecord pulse = rec.firstWriteTo(kM103, true);
+    if (pulse.requestId == 0)
+        return false;
+    return rec.complete(c, pulse.requestId, result, error);
+}
+
+// Delivers the terminal completion of the M50=1 home-start write. The
+// coordinator is first given same-time snapshots so the write can be issued on
+// either the completion callback or a following snapshot; the injected clock is
+// never advanced here, so a caller's delay boundary is preserved.
+bool completeHomeStart(ResetTransportRecorder &rec, ControlCoordinator &c,
+                       const DeviceSnapshot &machine, bool result = true,
+                       const QString &error = QString())
+{
+    for (int i = 0; i < 3 && !rec.hasWriteTo(kM50, true); ++i)
+        c.onSnapshot(machine);
+    const ResetTransportRecorder::WriteRecord start = rec.firstWriteTo(kM50, true);
+    if (start.requestId == 0)
+        return false;
+    return rec.complete(c, start.requestId, result, error);
+}
+
+// Drives the injected clock in bounded steps until the reset produces a
+// terminal result (or the window is exhausted). Returns the steps used.
+int advanceUntilResetTerminal(ControlCoordinator &c, ResetObservation &obs,
+                              const DeviceSnapshot &machine, qint64 &now,
+                              int maxSteps, qint64 stepMs)
+{
+    int steps = 0;
+    while (obs.terminalCount() == 0 && steps < maxSteps) {
+        now += stepMs;
+        c.onSnapshot(machine);
+        ++steps;
+    }
+    return steps;
 }
 
 } // namespace
@@ -374,7 +567,487 @@ private slots:
     void rejectedResetPulseSubmissionHasExactlyOneVisibleOutcome();
     void repeatedDuplicateResetClicksAreEachRejectedWithOneTerminalSuccess();
     void latchedFaultWithNonZeroCodeIsThePrimaryResetUseCase();
+
+    // --- PLC-HMI-011: reset home-start handshake ----------------------------
+    // --- OB-1 ---------------------------------------------------------------
+    void resetPulseCompletesBeforeExactlyOneHomeStartWrite();
+    void homeStartWriteIsNotPulsedAndNotRepeated();
+    // --- OB-2 ---------------------------------------------------------------
+    void resetDoesNotCompleteBeforeBothOperationsSucceed();
+    void homeStartCompletionArrivingBeforeTheDelayBoundaryDoesNotCompleteEarly();
+    // --- OB-3 ---------------------------------------------------------------
+    void rejectedHomeStartWriteConvergesToExactlyOneNonSuccessTerminal();
+    void failedHomeStartCompletionConvergesToExactlyOneNonSuccessTerminal();
+    void homeStartWriteWithoutAnyCompletionConvergesToAVisibleTerminal();
+    // --- OB-4 ---------------------------------------------------------------
+    void rejectedResetPulseNeverAttemptsTheHomeStartWrite();
+    void duplicateResetWhilePendingIsRejectedAndTheHomeStartWriteStillHappensOnce();
+    // --- OB-5 ---------------------------------------------------------------
+    void resetResultIgnoresTheControllerHomeStartBit();
+
+    // --- PLC-HMI-011 OB-6: manual commands without homing -------------------
+    void beltJogAndStopGateAcceptedWithHomeCompleteClear();
+    void widthJogsStillRejectedWithHomeCompleteClear();
+    void widthJogsStillRejectedWhileHomeStartBitReadsHigh();
+    void manualCommandCommonGatesStillRejectVisiblyWithReasons();
+
+    // --- PLC-HMI-011 OB-8: simulated controller handshake -------------------
+    void simulatorResetPulseAloneDoesNotStartHoming();
+    void simulatorHomeStartWriteStartsHomingAndReadsBack();
+    void simulatorHomingCompletionClearsTheStartBitAndSetsHomeComplete();
+    void simulatorResetPulseStillClearsHomeCompleteFaultAndWidthAdjustment();
+    void simulatorGatewayResetPulseAloneLeavesHomingIdle();
+    void simulatorGatewayReportsTheHandshakeThroughSnapshots();
 };
+
+// --- PLC-HMI-011 OB-1 ---------------------------------------------------------
+
+void OperatorCommandLifecycleTest::resetPulseCompletesBeforeExactlyOneHomeStartWrite()
+{
+    // Brief OB-1: an accepted administrator reset on a not-running machine sends
+    // the M103 reset pulse and then exactly one M50=1 write, strictly after the
+    // pulse has completed (1, hold, 0). It is never sent before or interleaved
+    // with the pulse.
+    ResetTransportRecorder rec;
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(syntheticCoordinator(rec, now));
+    c->setRole(Role::Admin);
+    c->onConnectionChanged(true);
+    const DeviceSnapshot machine = resetSnapshot(false, true, false, 0);
+    c->onSnapshot(machine);
+
+    ResetObservation obs;
+    observeReset(*c, obs, this);
+
+    QVERIFY2(c->reset().accepted, "the administrator reset was not accepted");
+    QVERIFY2(rec.hasWriteTo(kM103, true), "the reset did not send the M103 pulse");
+    QVERIFY2(!rec.hasWriteTo(kM50, true),
+             "the home-start write was sent before the reset pulse completed");
+    QVERIFY2(obs.results.isEmpty(), "the reset produced a result before its operations");
+
+    // The pulse completes; only then may the single home-start write appear.
+    QVERIFY2(completeResetPulse(rec, *c), "the M103 pulse completion was not delivered");
+
+    QVERIFY2(rec.writeCount(kM50, true) <= 1,
+             qPrintable(QStringLiteral("the home-start write was sent %1 times")
+                            .arg(rec.writeCount(kM50, true))));
+
+    // Bounded same-time snapshots: the write is due strictly after the pulse.
+    driveSnapshots(*c, machine, now, 3, 0);
+
+    QVERIFY2(rec.hasWriteTo(kM50, true),
+             "no home-start write was sent after the reset pulse completed");
+    QVERIFY2(rec.writeCount(kM50, true) == 1,
+             qPrintable(QStringLiteral("the home-start write was sent %1 times instead of "
+                                       "exactly once")
+                            .arg(rec.writeCount(kM50, true))));
+    QVERIFY2(rec.firstWriteTo(kM50, true).kind == ResetTransportRecorder::WriteKind::Coil,
+             "the home-start write was not a plain coil write");
+}
+
+void OperatorCommandLifecycleTest::homeStartWriteIsNotPulsedAndNotRepeated()
+{
+    // Brief OB-1: coil 50 is written with a plain value write, exactly once. It
+    // is not a pulse and no second write follows, even after the command has
+    // converged and further time passes.
+    ResetTransportRecorder rec;
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(syntheticCoordinator(rec, now));
+    c->setRole(Role::Admin);
+    c->onConnectionChanged(true);
+    const DeviceSnapshot machine = resetSnapshot(false, true, false, 0);
+    c->onSnapshot(machine);
+
+    ResetObservation obs;
+    observeReset(*c, obs, this);
+
+    QVERIFY(c->reset().accepted);
+    QVERIFY(completeResetPulse(rec, *c));
+    QVERIFY2(completeHomeStart(rec, *c, machine),
+             "the home-start write was never submitted");
+
+    // Reach the terminal, then observe a long quiet window.
+    advanceUntilResetTerminal(*c, obs, machine, now, 40, kResetFixedDelayMs);
+    QCOMPARE(obs.terminalCount(), 1);
+
+    driveSnapshots(*c, machine, now, 20, kResetFixedDelayMs);
+
+    QCOMPARE(rec.writeCount(kM50, true), 1);
+    QVERIFY2(!rec.hasWriteTo(kM50, false),
+             "the home-start bit was cleared by a second coil-50 write");
+    QVERIFY2(rec.pulses.count(kM50) == 0,
+             "the home-start bit was written as a pulse instead of a plain write");
+    QCOMPARE(obs.terminalCount(), 1);
+}
+
+// --- PLC-HMI-011 OB-2 ---------------------------------------------------------
+
+void OperatorCommandLifecycleTest::resetDoesNotCompleteBeforeBothOperationsSucceed()
+{
+    // Brief OB-2: the single terminal success (detail 复位完成) may not appear
+    // before 200 ms since the pulse was submitted, and may not appear at all if
+    // the home-start write never gets a successful completion. This case pins
+    // both halves together: the boundary passes without a success while the
+    // home-start completion is withheld, and the success appears once it is
+    // delivered.
+    ResetTransportRecorder rec;
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(syntheticCoordinator(rec, now));
+    c->setRole(Role::Admin);
+    c->onConnectionChanged(true);
+    const DeviceSnapshot machine = resetSnapshot(false, true, false, 0);
+    c->onSnapshot(machine);
+
+    ResetObservation obs;
+    observeReset(*c, obs, this);
+
+    QVERIFY(c->reset().accepted);
+    QVERIFY(completeResetPulse(rec, *c));
+    QVERIFY2(rec.hasWriteTo(kM50, true), "the home-start write was never submitted");
+    QVERIFY2(obs.results.isEmpty(), "a terminal result appeared before the delay boundary");
+
+    // Exactly at the boundary with the home-start completion still withheld:
+    // no success may appear.
+    now = kResetFixedDelayMs;
+    c->onSnapshot(machine);
+    QVERIFY2(obs.successCount() == 0,
+             qPrintable(QStringLiteral("the reset reported success at the %1 ms boundary "
+                                       "without a successful home-start completion: %2")
+                            .arg(kResetFixedDelayMs)
+                            .arg(describeResetResults(obs.results))));
+    QVERIFY2(obs.terminalCount() == 0,
+             qPrintable(QStringLiteral("the reset converged to a terminal before the "
+                                       "home-start completion was delivered: %1")
+                            .arg(describeResetResults(obs.results))));
+    QVERIFY2(c->resetInProgress(),
+             "the reset left resetInProgress() before the home-start completion");
+
+    // Well past the boundary: still no success while the completion is withheld.
+    driveSnapshots(*c, machine, now, 10, kResetFixedDelayMs);
+    QVERIFY2(obs.successCount() == 0,
+             qPrintable(QStringLiteral("the reset reported success although the home-start "
+                                       "write never completed: %1")
+                            .arg(describeResetResults(obs.results))));
+
+    // The successful completion arrives: exactly one success with the fixed
+    // detail, and no second terminal afterwards.
+    QVERIFY(completeHomeStart(rec, *c, machine));
+    driveSnapshots(*c, machine, now, 5, 10);
+    QCOMPARE(obs.terminalCount(), 1);
+    QVERIFY2(obs.results[0].ok,
+             qPrintable(QStringLiteral("the reset did not succeed after both operations "
+                                       "completed: %1")
+                            .arg(describeResetResults(obs.results))));
+    QCOMPARE(obs.results[0].detail, QStringLiteral("复位完成"));
+    QVERIFY(!c->resetInProgress());
+
+    driveSnapshots(*c, machine, now, 10, kResetFixedDelayMs);
+    QCOMPARE(obs.terminalCount(), 1);
+    QCOMPARE(obs.successCount(), 1);
+}
+
+void OperatorCommandLifecycleTest::homeStartCompletionArrivingBeforeTheDelayBoundaryDoesNotCompleteEarly()
+{
+    // Brief OB-2 boundary: both operations may complete before the 200 ms
+    // boundary, but the terminal success may not appear before it. The first
+    // snapshot at the boundary carries the single success.
+    ResetTransportRecorder rec;
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(syntheticCoordinator(rec, now));
+    c->setRole(Role::Admin);
+    c->onConnectionChanged(true);
+    const DeviceSnapshot machine = resetSnapshot(false, true, false, 0);
+    c->onSnapshot(machine);
+
+    ResetObservation obs;
+    observeReset(*c, obs, this);
+
+    QVERIFY(c->reset().accepted);
+    QVERIFY(completeResetPulse(rec, *c));
+    QVERIFY(completeHomeStart(rec, *c, machine));
+
+    // Both operations are terminally successful, but the boundary has not
+    // elapsed: no terminal may appear.
+    now = kResetFixedDelayMs - 1;
+    c->onSnapshot(machine);
+    QVERIFY2(obs.terminalCount() == 0,
+             qPrintable(QStringLiteral("the reset completed before the fixed %1 ms "
+                                       "boundary although both operations succeeded: %2")
+                            .arg(kResetFixedDelayMs)
+                            .arg(describeResetResults(obs.results))));
+    QVERIFY(c->resetInProgress());
+
+    // At the boundary: exactly one success with the fixed detail.
+    now = kResetFixedDelayMs;
+    c->onSnapshot(machine);
+    QCOMPARE(obs.terminalCount(), 1);
+    QVERIFY2(obs.results[0].ok,
+             qPrintable(QStringLiteral("the reset did not succeed at the fixed boundary "
+                                       "with both operations confirmed: %1")
+                            .arg(describeResetResults(obs.results))));
+    QCOMPARE(obs.results[0].detail, QStringLiteral("复位完成"));
+    QVERIFY(!c->resetInProgress());
+
+    driveSnapshots(*c, machine, now, 5, kResetFixedDelayMs);
+    QCOMPARE(obs.terminalCount(), 1);
+}
+
+// --- PLC-HMI-011 OB-3 ---------------------------------------------------------
+
+void OperatorCommandLifecycleTest::rejectedHomeStartWriteConvergesToExactlyOneNonSuccessTerminal()
+{
+    // Brief OB-3: a home-start write rejected at submission converges to exactly
+    // one visible non-success terminal with a non-empty detail; it never reports
+    // 复位完成.
+    ResetTransportRecorder rec;
+    rec.rejectHomeStart = true;
+    rec.homeStartRejectReason = QStringLiteral("home-start write rejected by the transport");
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(syntheticCoordinator(rec, now));
+    c->setRole(Role::Admin);
+    c->onConnectionChanged(true);
+    const DeviceSnapshot machine = resetSnapshot(false, true, false, 0);
+    c->onSnapshot(machine);
+
+    ResetObservation obs;
+    observeReset(*c, obs, this);
+
+    QVERIFY2(c->reset().accepted, "the administrator reset was not accepted");
+    QVERIFY(completeResetPulse(rec, *c));
+
+    // Bounded observation window with the injected clock.
+    advanceUntilResetTerminal(*c, obs, machine, now, 40, kResetFixedDelayMs);
+
+    QVERIFY2(obs.terminalCount() >= 1,
+             "a rejected home-start write never converged to a terminal");
+    QVERIFY2(obs.successCount() == 0,
+             qPrintable(QStringLiteral("a rejected home-start write reported success: %1")
+                            .arg(describeResetResults(obs.results))));
+    QVERIFY2(!obs.results.first().detail.trimmed().isEmpty(),
+             "the rejected home-start terminal had an empty detail");
+    QVERIFY2(!obs.results.first().detail.contains(QStringLiteral("复位完成")),
+             qPrintable(QStringLiteral("a rejected home-start write reported 复位完成: %1")
+                            .arg(obs.results.first().detail)));
+    QVERIFY2(!c->resetInProgress(),
+             "the rejected home-start write left resetInProgress() true");
+
+    // Exactly one terminal, and more time cannot turn it into a success.
+    driveSnapshots(*c, machine, now, 20, kResetFixedDelayMs);
+    QCOMPARE(obs.terminalCount(), 1);
+    QCOMPARE(obs.successCount(), 0);
+}
+
+void OperatorCommandLifecycleTest::failedHomeStartCompletionConvergesToExactlyOneNonSuccessTerminal()
+{
+    // Brief OB-3: a home-start write accepted at submission whose completion
+    // reports failure converges to exactly one visible non-success terminal with
+    // a non-empty detail.
+    ResetTransportRecorder rec;
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(syntheticCoordinator(rec, now));
+    c->setRole(Role::Admin);
+    c->onConnectionChanged(true);
+    const DeviceSnapshot machine = resetSnapshot(false, true, false, 0);
+    c->onSnapshot(machine);
+
+    ResetObservation obs;
+    observeReset(*c, obs, this);
+
+    QVERIFY(c->reset().accepted);
+    QVERIFY(completeResetPulse(rec, *c));
+    QVERIFY2(completeHomeStart(rec, *c, machine, /*result=*/false,
+                               QStringLiteral("modbus exception 0x02")),
+             "the home-start write was never submitted");
+
+    advanceUntilResetTerminal(*c, obs, machine, now, 40, kResetFixedDelayMs);
+
+    QVERIFY2(obs.terminalCount() >= 1,
+             "a failed home-start completion never converged to a terminal");
+    QVERIFY2(obs.successCount() == 0,
+             qPrintable(QStringLiteral("a failed home-start completion reported success: %1")
+                            .arg(describeResetResults(obs.results))));
+    QVERIFY2(!obs.results.first().detail.trimmed().isEmpty(),
+             "the failed home-start terminal had an empty detail");
+    QVERIFY(!c->resetInProgress());
+
+    driveSnapshots(*c, machine, now, 20, kResetFixedDelayMs);
+    QCOMPARE(obs.terminalCount(), 1);
+    QCOMPARE(obs.successCount(), 0);
+}
+
+void OperatorCommandLifecycleTest::homeStartWriteWithoutAnyCompletionConvergesToAVisibleTerminal()
+{
+    // Brief OB-3: if the home-start write is accepted but no completion ever
+    // arrives, the command must not report success and must not stay pending
+    // forever; it converges to a visible terminal outcome.
+    ResetTransportRecorder rec;
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(syntheticCoordinator(rec, now));
+    c->setRole(Role::Admin);
+    c->onConnectionChanged(true);
+    const DeviceSnapshot machine = resetSnapshot(false, true, false, 0);
+    c->onSnapshot(machine);
+
+    ResetObservation obs;
+    observeReset(*c, obs, this);
+
+    QVERIFY(c->reset().accepted);
+    QVERIFY(completeResetPulse(rec, *c));
+    QVERIFY2(rec.hasWriteTo(kM50, true), "the home-start write was never submitted");
+    // The home-start completion is deliberately never delivered.
+
+    advanceUntilResetTerminal(*c, obs, machine, now, 120, 1'000);
+
+    QVERIFY2(obs.terminalCount() >= 1,
+             "an unconfirmed home-start write stayed pending without any terminal");
+    QVERIFY2(obs.successCount() == 0,
+             qPrintable(QStringLiteral("an unconfirmed home-start write reported success: %1")
+                            .arg(describeResetResults(obs.results))));
+    QVERIFY2(!obs.results.first().detail.trimmed().isEmpty(),
+             "the unconfirmed home-start terminal had an empty detail");
+    QVERIFY2(!c->resetInProgress(),
+             "an unconfirmed home-start write left resetInProgress() true");
+
+    driveSnapshots(*c, machine, now, 10, 5'000);
+    QCOMPARE(obs.terminalCount(), 1);
+    QCOMPARE(obs.successCount(), 0);
+}
+
+// --- PLC-HMI-011 OB-4 ---------------------------------------------------------
+
+void OperatorCommandLifecycleTest::rejectedResetPulseNeverAttemptsTheHomeStartWrite()
+{
+    // Brief OB-4: if the reset pulse submission is rejected, the command
+    // converges to exactly one visible non-success terminal; no home-start write
+    // is attempted after the failure.
+    ResetTransportRecorder rec;
+    rec.rejectPulses = true;
+    rec.pulseRejectReason = QStringLiteral("M103 脉冲发送失败");
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(syntheticCoordinator(rec, now));
+    c->setRole(Role::Admin);
+    c->onConnectionChanged(true);
+    const DeviceSnapshot machine = resetSnapshot(false, true, false, 0);
+    c->onSnapshot(machine);
+
+    ResetObservation obs;
+    observeReset(*c, obs, this);
+
+    const ControlCoordinator::CommandResult r = c->reset();
+
+    // Exactly one visible outcome: a rejection with a reason, or one non-success
+    // terminal with a detail.
+    const bool visibleRejection = !r.accepted && !r.reason.isEmpty();
+    const bool visibleFailure = obs.terminalCount() == 1 && obs.successCount() == 0
+        && !obs.results[0].detail.trimmed().isEmpty();
+    QVERIFY2(visibleRejection || visibleFailure,
+             qPrintable(QStringLiteral("a rejected reset pulse was not exactly one visible "
+                                       "non-success outcome (accepted=%1 terminals=%2)")
+                            .arg(r.accepted ? QStringLiteral("true") : QStringLiteral("false"))
+                            .arg(describeResetResults(obs.results))));
+    QVERIFY2(obs.successCount() == 0, "a rejected reset pulse reported success");
+
+    // No home-start write may be attempted after the failure.
+    QVERIFY2(!rec.hasWriteTo(kM50, true),
+             "a home-start write was attempted after the reset pulse was rejected");
+    QVERIFY2(!rec.hasWriteTo(kM50, false),
+             "a home-start clear was attempted after the reset pulse was rejected");
+
+    driveSnapshots(*c, machine, now, 20, kResetFixedDelayMs);
+    QCOMPARE(rec.writeCount(kM50, true), 0);
+    QCOMPARE(obs.successCount(), 0);
+    QVERIFY(!c->resetInProgress());
+}
+
+void OperatorCommandLifecycleTest::duplicateResetWhilePendingIsRejectedAndTheHomeStartWriteStillHappensOnce()
+{
+    // Brief OB-4: a duplicate reset while one is pending is still visibly
+    // rejected with a non-empty reason; the accepted reset still performs the
+    // home-start handshake exactly once and converges to a single success.
+    ResetTransportRecorder rec;
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(syntheticCoordinator(rec, now));
+    c->setRole(Role::Admin);
+    c->onConnectionChanged(true);
+    const DeviceSnapshot machine = resetSnapshot(false, true, false, 0);
+    c->onSnapshot(machine);
+
+    ResetObservation obs;
+    observeReset(*c, obs, this);
+    QSignalSpy rejected(c.get(), &ControlCoordinator::commandRejected);
+
+    QVERIFY(c->reset().accepted);
+    const ControlCoordinator::CommandResult duplicate = c->reset();
+    QVERIFY2(!duplicate.accepted, "a duplicate reset while pending was accepted");
+    QVERIFY2(!duplicate.reason.isEmpty(), "the duplicate reset reason was empty");
+    QCOMPARE(rejected.count(), 1);
+    QCOMPARE(rejected[0][0].value<Command>(), Command::Reset);
+    QVERIFY(!rejected[0][1].toString().isEmpty());
+
+    QVERIFY(completeResetPulse(rec, *c));
+    QVERIFY2(completeHomeStart(rec, *c, machine),
+             "the accepted reset never submitted its home-start write");
+    advanceUntilResetTerminal(*c, obs, machine, now, 40, kResetFixedDelayMs);
+
+    QCOMPARE(rec.writeCount(kM50, true), 1);
+    QCOMPARE(obs.terminalCount(), 1);
+    QVERIFY(obs.results[0].ok);
+    QCOMPARE(obs.results[0].detail, QStringLiteral("复位完成"));
+
+    driveSnapshots(*c, machine, now, 10, kResetFixedDelayMs);
+    QCOMPARE(rec.writeCount(kM50, true), 1);
+    QCOMPARE(obs.terminalCount(), 1);
+}
+
+// --- PLC-HMI-011 OB-5 ---------------------------------------------------------
+
+void OperatorCommandLifecycleTest::resetResultIgnoresTheControllerHomeStartBit()
+{
+    // Brief OB-5: the terminal result is identical whether the controller's
+    // home-start bit reads low or high. A set home-in-progress bit must not turn
+    // the reset into a failure. This preserves the PLC-HMI-010 independence
+    // (snapshot M50/M61/M14/D110 are not homing-result evidence) while the
+    // command's own transport handshake still decides success.
+    const auto runReset = [this](bool controllerHomeStartBit, ResetObservation &obs) {
+        ResetTransportRecorder rec;
+        qint64 now = 0;
+        std::unique_ptr<ControlCoordinator> c(syntheticCoordinator(rec, now));
+        c->setRole(Role::Admin);
+        c->onConnectionChanged(true);
+        const DeviceSnapshot machine =
+            resetSnapshot(controllerHomeStartBit, true, false, 0);
+        c->onSnapshot(machine);
+        QCOMPARE(machine.m50(), controllerHomeStartBit);
+
+        observeReset(*c, obs, this);
+        QVERIFY2(c->reset().accepted, "the reset was not accepted");
+        QVERIFY(completeResetPulse(rec, *c));
+        QVERIFY2(completeHomeStart(rec, *c, machine),
+                 "the home-start write was never submitted");
+        advanceUntilResetTerminal(*c, obs, machine, now, 40, kResetFixedDelayMs);
+    };
+
+    ResetObservation m50Low;
+    runReset(false, m50Low);
+    ResetObservation m50High;
+    runReset(true, m50High);
+
+    QVERIFY2(m50Low.terminalCount() == 1,
+             qPrintable(QStringLiteral("M50 low produced %1 reset terminal(s): %2")
+                            .arg(m50Low.terminalCount())
+                            .arg(describeResetResults(m50Low.results))));
+    QVERIFY2(m50High.terminalCount() == 1,
+             qPrintable(QStringLiteral("M50 high produced %1 reset terminal(s): %2")
+                            .arg(m50High.terminalCount())
+                            .arg(describeResetResults(m50High.results))));
+    QVERIFY2(m50Low.successCount() == 1 && m50High.successCount() == 1,
+             qPrintable(QStringLiteral("the reset result depended on the controller's "
+                                       "home-start bit (M50 low: %1; M50 high: %2)")
+                            .arg(describeResetResults(m50Low.results))
+                            .arg(describeResetResults(m50High.results))));
+    QCOMPARE(m50Low.results[0].detail, QStringLiteral("复位完成"));
+    QCOMPARE(m50High.results[0].detail, QStringLiteral("复位完成"));
+}
 
 // --- OB-2 ---------------------------------------------------------------------
 
@@ -1455,6 +2128,15 @@ void OperatorCommandLifecycleTest::resetCompletesAfterFixedDelayAndNotBefore()
     QVERIFY2(rec.pulses.contains(kM103),
              "the accepted reset did not send the reset signal (M103 pulse)");
 
+    // PLC-HMI-011 OB-2 minimal adjustment: the terminal success now also
+    // requires the home-start write's successful completion. The completion is
+    // delivered here (after the pulse) so the case still pins the same 200 ms
+    // boundary and the same 复位完成 detail. No assertion was weakened.
+    QVERIFY2(completeResetPulse(rec, *c),
+             "the M103 pulse completion was not delivered");
+    QVERIFY2(completeHomeStart(rec, *c, machine),
+             "the home-start write was not submitted");
+
     // 1 ms before the fixed delay boundary: no terminal result yet.
     now += kResetFixedDelayMs - 1;
     c->onSnapshot(machine);
@@ -1502,6 +2184,9 @@ void OperatorCommandLifecycleTest::resetResultIgnoresHomeInProgressFlag()
         observeReset(*c, m50Low, this);
 
         QVERIFY2(c->reset().accepted, "the M50-low reset was not accepted");
+        QVERIFY2(completeResetPulse(rec, *c), "the M50-low pulse completion was not delivered");
+        QVERIFY2(completeHomeStart(rec, *c, machine),
+                 "the M50-low home-start write was not submitted");
         now += kResetFixedDelayMs;
         c->onSnapshot(machine);
     }
@@ -1519,6 +2204,10 @@ void OperatorCommandLifecycleTest::resetResultIgnoresHomeInProgressFlag()
         observeReset(*c, m50High, this);
 
         QVERIFY2(c->reset().accepted, "the M50-high reset was not accepted");
+        QVERIFY2(completeResetPulse(rec, *c),
+                 "the M50-high pulse completion was not delivered");
+        QVERIFY2(completeHomeStart(rec, *c, machine),
+                 "the M50-high home-start write was not submitted");
         now += kResetFixedDelayMs;
         c->onSnapshot(machine);
     }
@@ -1565,6 +2254,14 @@ void OperatorCommandLifecycleTest::resetSuccessesWithHomeCompleteClearAndLatched
     QVERIFY2(r.accepted, qPrintable(QStringLiteral("the reset was rejected: %1").arg(r.reason)));
     QVERIFY2(rec.pulses.contains(kM103), "the accepted reset did not send the reset signal");
 
+    // PLC-HMI-011 OB-2 minimal adjustment: both transport operations must reach
+    // a successful terminal before the fixed-delay success may appear. The
+    // snapshot flags (home-complete clear, latched fault, non-zero code) are
+    // deliberately unchanged: they still must not turn the reset into a failure.
+    QVERIFY2(completeResetPulse(rec, *c), "the pulse completion was not delivered");
+    QVERIFY2(completeHomeStart(rec, *c, machine),
+             "the home-start write was not submitted");
+
     now += kResetFixedDelayMs;
     c->onSnapshot(machine);
 
@@ -1596,6 +2293,9 @@ void OperatorCommandLifecycleTest::resetResultIgnoresFaultCodeRegister()
     observeReset(*c, obs, this);
 
     QVERIFY(c->reset().accepted);
+    QVERIFY2(completeResetPulse(rec, *c), "the pulse completion was not delivered");
+    QVERIFY2(completeHomeStart(rec, *c, machine),
+             "the home-start write was not submitted");
     now += kResetFixedDelayMs;
     c->onSnapshot(machine);
 
@@ -1760,6 +2460,13 @@ void OperatorCommandLifecycleTest::resetPendingVisibleBeforeTerminalWithNonEmpty
     QVERIFY2(c->resetInProgress(),
              "the reset was not in progress after its visible pending state");
 
+    // PLC-HMI-011 OB-2 minimal adjustment: the terminal success now also
+    // requires the home-start handshake. Both completions are delivered at the
+    // same instant, so the pending/terminal ordering assertions are unchanged.
+    QVERIFY2(completeResetPulse(rec, *c), "the pulse completion was not delivered");
+    QVERIFY2(completeHomeStart(rec, *c, machine),
+             "the home-start write was not submitted");
+
     now += kResetFixedDelayMs;
     c->onSnapshot(machine);
     QCOMPARE(obs.terminalCount(), 1);
@@ -1781,6 +2488,12 @@ void OperatorCommandLifecycleTest::resetNeverStaysPendingIndefinitely()
 
     QVERIFY(c->reset().accepted);
     QVERIFY(c->resetInProgress());
+
+    // PLC-HMI-011 OB-2 minimal adjustment: the terminal success also requires
+    // the home-start handshake; deliver both completions before driving time.
+    QVERIFY2(completeResetPulse(rec, *c), "the pulse completion was not delivered");
+    QVERIFY2(completeHomeStart(rec, *c, machine),
+             "the home-start write was not submitted");
 
     // A bounded observation window: the fixed 200 ms delay must converge the
     // command; it may never stay pending indefinitely.
@@ -1830,6 +2543,14 @@ void OperatorCommandLifecycleTest::resetNeverCompletesBeforeTheFixedDelayLadder(
     QVERIFY2(c->reset().accepted, "the administrator reset was not accepted");
     QVERIFY(rec.pulses.contains(kM103));
     QVERIFY(c->resetInProgress());
+
+    // PLC-HMI-011 OB-2 minimal adjustment: the home-start handshake must
+    // complete for the terminal success to be reachable. The ladder itself is
+    // unchanged: it still proves the terminal cannot appear before the fixed
+    // 200 ms boundary.
+    QVERIFY2(completeResetPulse(rec, *c), "the pulse completion was not delivered");
+    QVERIFY2(completeHomeStart(rec, *c, machine),
+             "the home-start write was not submitted");
 
     // Strictly before the boundary: never a terminal, still pending.
     const qint64 ladder[] = {1, 25, 50, 100, 150, 190, kResetFixedDelayMs - 1};
@@ -1902,6 +2623,13 @@ void OperatorCommandLifecycleTest::resetThenModeSwitchWhilePendingBothConvergeIn
     QVERIFY2(rejected.count() == 0,
              "the mode switch was visibly rejected although it is legitimate");
 
+    // PLC-HMI-011 OB-2 minimal adjustment: the reset's terminal success also
+    // requires the home-start handshake. The mode-switch overlap assertions
+    // above are unchanged.
+    QVERIFY2(completeResetPulse(rec, *c), "the pulse completion was not delivered");
+    QVERIFY2(completeHomeStart(rec, *c, machine),
+             "the home-start write was not submitted");
+
     // The reset still converges independently at its own boundary.
     now = kResetFixedDelayMs;
     c->onSnapshot(machine);
@@ -1952,6 +2680,12 @@ void OperatorCommandLifecycleTest::modeSwitchThenResetWhilePendingBothConvergeIn
                                        "pending: %1")
                             .arg(r.reason)));
     QVERIFY2(rec.pulses.contains(kM103), "the accepted reset did not send the M103 pulse");
+
+    // PLC-HMI-011 OB-2 minimal adjustment: the reset's terminal success also
+    // requires the home-start handshake.
+    QVERIFY2(completeResetPulse(rec, *c), "the pulse completion was not delivered");
+    QVERIFY2(completeHomeStart(rec, *c, machine),
+             "the home-start write was not submitted");
 
     now = kResetFixedDelayMs;
     c->onSnapshot(machine);
@@ -2174,6 +2908,13 @@ void OperatorCommandLifecycleTest::repeatedDuplicateResetClicksAreEachRejectedWi
     }
     QCOMPARE(obs.terminalCount(), 0); // still pending: no premature terminal
 
+    // PLC-HMI-011 OB-2 minimal adjustment: the home-start handshake must
+    // complete before the fixed-delay success may appear. The duplicate-click
+    // assertions above are unchanged.
+    QVERIFY2(completeResetPulse(rec, *c), "the pulse completion was not delivered");
+    QVERIFY2(completeHomeStart(rec, *c, machine),
+             "the home-start write was not submitted");
+
     now = kResetFixedDelayMs;
     c->onSnapshot(machine);
 
@@ -2220,6 +2961,16 @@ void OperatorCommandLifecycleTest::latchedFaultWithNonZeroCodeIsThePrimaryResetU
                  "the reset wrote the mode coil M104");
     }
 
+    // PLC-HMI-011 OB-2 minimal adjustment: the fixed-delay terminal success now
+    // also requires both transport operations to reach a successful completion
+    // (the M103 pulse and the single M50=1 home-start write). The completions
+    // are delivered here, before the delay boundary, so this case still pins the
+    // same latched-fault use case and the same 复位完成 detail. No assertion was
+    // weakened.
+    QVERIFY2(completeResetPulse(rec, *c), "the pulse completion was not delivered");
+    QVERIFY2(completeHomeStart(rec, *c, machine),
+             "the home-start write was not submitted");
+
     now = kResetFixedDelayMs;
     c->onSnapshot(machine);
 
@@ -2235,6 +2986,329 @@ void OperatorCommandLifecycleTest::latchedFaultWithNonZeroCodeIsThePrimaryResetU
     now += kResetFixedDelayMs;
     c->onSnapshot(machine);
     QCOMPARE(obs.terminalCount(), 1);
+}
+
+// --- PLC-HMI-011 OB-6 ---------------------------------------------------------
+
+void OperatorCommandLifecycleTest::beltJogAndStopGateAcceptedWithHomeCompleteClear()
+{
+    // Brief OB-6: with the controller online, manual mode, not running, no
+    // emergency stop, no latched fault and home-complete CLEAR, the belt-jog
+    // command (coil 108, hold) and the stop-gate command (coil 109, latched)
+    // are accepted.
+    ResetTransportRecorder rec;
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(syntheticCoordinator(rec, now));
+    c->setRole(Role::Admin);
+    c->onConnectionChanged(true);
+    const DeviceSnapshot machine = resetSnapshot(false, /*m9=*/false, false, 0);
+    c->onSnapshot(machine);
+    QVERIFY2(!machine.m9(), "test fixture: home-complete must be clear");
+
+    QSignalSpy rejected(c.get(), &ControlCoordinator::commandRejected);
+
+    const ControlCoordinator::CommandResult jog = c->manualHold(kM108, true);
+    QVERIFY2(jog.accepted,
+             qPrintable(QStringLiteral("the belt-jog command was rejected while "
+                                       "home-complete is clear: %1")
+                            .arg(jog.reason)));
+    QVERIFY2(rec.hasWriteTo(kM108, true),
+             "the accepted belt-jog command did not write coil 108");
+    c->manualHold(kM108, false); // release
+
+    const ControlCoordinator::CommandResult gate = c->manualLatch(kM109, true);
+    QVERIFY2(gate.accepted,
+             qPrintable(QStringLiteral("the stop-gate command was rejected while "
+                                       "home-complete is clear: %1")
+                            .arg(gate.reason)));
+    QVERIFY2(rec.hasWriteTo(kM109, true),
+             "the accepted stop-gate command did not write coil 109");
+
+    QCOMPARE(rejected.count(), 0);
+}
+
+void OperatorCommandLifecycleTest::widthJogsStillRejectedWithHomeCompleteClear()
+{
+    // Brief OB-6: under the same conditions the two width-jog commands (coils
+    // 106 and 107, hold) are still rejected while home-complete is clear, with a
+    // non-empty reason.
+    ResetTransportRecorder rec;
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(syntheticCoordinator(rec, now));
+    c->setRole(Role::Admin);
+    c->onConnectionChanged(true);
+    const DeviceSnapshot machine = resetSnapshot(false, /*m9=*/false, false, 0);
+    c->onSnapshot(machine);
+    QVERIFY2(!machine.m9(), "test fixture: home-complete must be clear");
+
+    QSignalSpy rejected(c.get(), &ControlCoordinator::commandRejected);
+
+    const ControlCoordinator::CommandResult fwd = c->manualHold(kM106, true);
+    QVERIFY2(!fwd.accepted, "the width-forward command was accepted while homing is incomplete");
+    QVERIFY2(!fwd.reason.isEmpty(), "the width-forward rejection reason was empty");
+
+    const ControlCoordinator::CommandResult rev = c->manualHold(kM107, true);
+    QVERIFY2(!rev.accepted, "the width-reverse command was accepted while homing is incomplete");
+    QVERIFY2(!rev.reason.isEmpty(), "the width-reverse rejection reason was empty");
+
+    QCOMPARE(rejected.count(), 2);
+    QVERIFY2(!rec.hasWriteTo(kM106, true), "a rejected width-forward command wrote coil 106");
+    QVERIFY2(!rec.hasWriteTo(kM107, true), "a rejected width-reverse command wrote coil 107");
+}
+
+void OperatorCommandLifecycleTest::widthJogsStillRejectedWhileHomeStartBitReadsHigh()
+{
+    // Brief OB-6: the two width-jog commands are also still rejected while the
+    // home-start bit (coil 50) reads high, even when home-complete is set.
+    ResetTransportRecorder rec;
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(syntheticCoordinator(rec, now));
+    c->setRole(Role::Admin);
+    c->onConnectionChanged(true);
+    const DeviceSnapshot machine = resetSnapshot(/*m50=*/true, /*m9=*/true, false, 0);
+    c->onSnapshot(machine);
+    QVERIFY2(machine.m50(), "test fixture: the home-start bit must read high");
+    QVERIFY2(machine.m9(), "test fixture: home-complete must be set");
+
+    QSignalSpy rejected(c.get(), &ControlCoordinator::commandRejected);
+
+    const ControlCoordinator::CommandResult fwd = c->manualHold(kM106, true);
+    QVERIFY2(!fwd.accepted, "the width-forward command was accepted while homing is in progress");
+    QVERIFY2(!fwd.reason.isEmpty(), "the width-forward rejection reason was empty");
+
+    const ControlCoordinator::CommandResult rev = c->manualHold(kM107, true);
+    QVERIFY2(!rev.accepted, "the width-reverse command was accepted while homing is in progress");
+    QVERIFY2(!rev.reason.isEmpty(), "the width-reverse rejection reason was empty");
+
+    QCOMPARE(rejected.count(), 2);
+    QVERIFY2(!rec.hasWriteTo(kM106, true), "a rejected width-forward command wrote coil 106");
+    QVERIFY2(!rec.hasWriteTo(kM107, true), "a rejected width-reverse command wrote coil 107");
+}
+
+void OperatorCommandLifecycleTest::manualCommandCommonGatesStillRejectVisiblyWithReasons()
+{
+    // Brief OB-6: every one of the four manual commands still requires
+    // administrator role, manual mode, machine not running, no emergency stop,
+    // no latched fault and an online fresh snapshot. Each unmet condition must
+    // remain visible in the operator-facing reason.
+    struct Scenario
+    {
+        const char *name;
+        Role role;
+        bool online;
+        bool haveSnapshot;
+        bool manualMode;
+        bool running;
+        bool estop;
+        bool latchedFault;
+    };
+    const Scenario scenarios[] = {
+        {"anonymous role", Role::Anonymous, true, true, true, false, false, false},
+        {"operator role", Role::Operator, true, true, true, false, false, false},
+        {"offline", Role::Admin, false, true, true, false, false, false},
+        {"no fresh snapshot", Role::Admin, true, false, true, false, false, false},
+        {"automatic mode", Role::Admin, true, true, false, false, false, false},
+        {"machine running", Role::Admin, true, true, true, true, false, false},
+        {"emergency stop", Role::Admin, true, true, true, false, true, false},
+        {"latched fault", Role::Admin, true, true, true, false, false, true},
+    };
+
+    const quint16 addresses[] = {kM106, kM107, kM108, kM109};
+
+    for (const Scenario &s : scenarios) {
+        for (const quint16 address : addresses) {
+            ResetTransportRecorder rec;
+            qint64 now = 0;
+            std::unique_ptr<ControlCoordinator> c(syntheticCoordinator(rec, now));
+            c->setRole(s.role);
+            c->onConnectionChanged(s.online);
+            if (s.haveSnapshot) {
+                // M9 is set so that only the scenario's own condition blocks the
+                // command; the width jogs are additionally blocked by M9 alone
+                // only in the home-complete-clear cases above.
+                c->onSnapshot(resetSnapshot(false, /*m9=*/true, s.latchedFault, 0,
+                                            s.running, s.online, s.estop, s.manualMode));
+            }
+
+            QSignalSpy rejected(c.get(), &ControlCoordinator::commandRejected);
+
+            const ControlCoordinator::CommandResult r = (address == kM109)
+                ? c->manualLatch(address, true)
+                : c->manualHold(address, true);
+
+            QVERIFY2(!r.accepted,
+                     qPrintable(QStringLiteral("%1: manual command %2 was accepted")
+                                    .arg(QString::fromLatin1(s.name))
+                                    .arg(address)));
+            QVERIFY2(!r.reason.isEmpty(),
+                     qPrintable(QStringLiteral("%1: manual command %2 rejection reason was "
+                                               "empty")
+                                    .arg(QString::fromLatin1(s.name))
+                                    .arg(address)));
+            QVERIFY2(rejected.count() >= 1,
+                     qPrintable(QStringLiteral("%1: manual command %2 rejection was not "
+                                               "visible on the signal surface")
+                                    .arg(QString::fromLatin1(s.name))
+                                    .arg(address)));
+            QVERIFY2(!rec.hasWriteTo(address, true),
+                     qPrintable(QStringLiteral("%1: rejected manual command %2 wrote its coil")
+                                    .arg(QString::fromLatin1(s.name))
+                                    .arg(address)));
+        }
+    }
+}
+
+// --- PLC-HMI-011 OB-8 ---------------------------------------------------------
+
+void OperatorCommandLifecycleTest::simulatorResetPulseAloneDoesNotStartHoming()
+{
+    // Brief OB-8: the simulator must NOT treat the reset pulse alone as starting
+    // homing. After the pulse alone it reports homing not in progress and
+    // home-complete clear.
+    SimulationClock clock;
+    H3uSimulationModel m(clock);
+
+    m.writeCoil(kM103, true);
+    m.writeCoil(kM103, false);
+
+    QVERIFY2(!m.readCoil(kM50),
+             "the reset pulse alone started homing (M50 reads back 1)");
+    QVERIFY2(!m.readCoil(kM61),
+             "the reset pulse alone reported home-complete (M61 set)");
+
+    m.advance(5);
+    QVERIFY2(!m.readCoil(kM50), "homing started without a home-start write");
+    QVERIFY2(!m.readCoil(kM61), "home-complete appeared without a home-start write");
+}
+
+void OperatorCommandLifecycleTest::simulatorHomeStartWriteStartsHomingAndReadsBack()
+{
+    // Brief OB-8: after one home-start write of 1 the simulated controller
+    // reports homing in progress; while homing is in progress the home-start bit
+    // reads back 1.
+    SimulationClock clock;
+    H3uSimulationModel m(clock);
+
+    m.writeCoil(kM50, true);
+
+    QVERIFY2(m.readCoil(kM50),
+             "the home-start bit did not read back 1 while homing is in progress");
+    QVERIFY2(!m.readCoil(kM61), "home-complete was reported before homing finished");
+
+    m.advance(1);
+    QVERIFY2(m.readCoil(kM50),
+             "the home-start bit did not stay asserted while homing is in progress");
+    QVERIFY2(!m.readCoil(kM61), "home-complete was reported before homing finished");
+}
+
+void OperatorCommandLifecycleTest::simulatorHomingCompletionClearsTheStartBitAndSetsHomeComplete()
+{
+    // Brief OB-8: when the simulated homing finishes, the simulated controller
+    // clears the home-start bit by itself and sets home-complete.
+    SimulationClock clock;
+    H3uSimulationModel m(clock);
+
+    m.writeCoil(kM50, true);
+    m.advance(2); // the established home-return duration
+
+    QVERIFY2(!m.readCoil(kM50),
+             "the simulated controller did not clear the home-start bit itself");
+    QVERIFY2(m.readCoil(kM61),
+             "the simulated controller did not set home-complete after homing");
+}
+
+void OperatorCommandLifecycleTest::simulatorResetPulseStillClearsHomeCompleteFaultAndWidthAdjustment()
+{
+    // Brief OB-8: the reset pulse still clears the home-complete bit, the
+    // latched-fault bit, the fault-code register and any in-progress width
+    // adjustment.
+    SimulationClock clock;
+    H3uSimulationModel m(clock);
+
+    // Reach home-complete through the handshake (reset pulse + home-start).
+    m.writeCoil(kM103, true);
+    m.writeCoil(kM103, false);
+    m.writeCoil(kM50, true);
+    for (int i = 0; i < 10 && !m.readCoil(kM61); ++i)
+        m.advance(1);
+    QVERIFY2(m.readCoil(kM61), "precondition: home-complete must be reachable");
+
+    // A width adjustment is in progress and a fault is latched (software estop
+    // sets M14 and D110=1; the request is then released so the fault stays
+    // latched until a reset).
+    m.writeRegister(220, 15);
+    m.writeRegister(128, 300);
+    m.writeCoil(43, true);
+    m.writeCoil(43, false);
+    QVERIFY2(m.readCoil(34), "precondition: the width adjustment must be in progress");
+    m.writeCoil(100, true);
+    QVERIFY2(m.readCoil(14), "precondition: the fault must be latched");
+    QCOMPARE(m.readRegister(110), quint16(1));
+    m.writeCoil(100, false);
+    QVERIFY2(!m.readCoil(0), "precondition: the estop request must be released");
+
+    // The reset pulse clears all of it and does not itself start homing.
+    m.writeCoil(kM103, true);
+    m.writeCoil(kM103, false);
+
+    QVERIFY2(!m.readCoil(kM61), "the reset pulse must clear the home-complete bit");
+    QVERIFY2(!m.readCoil(kM14), "the reset pulse must clear the latched fault");
+    QCOMPARE(m.readRegister(110), quint16(0));
+    QVERIFY2(!m.readCoil(34),
+             "the reset pulse must clear an in-progress width adjustment");
+    QVERIFY2(!m.readCoil(44), "the reset pulse must clear a width-adjust success");
+    QVERIFY2(!m.readCoil(45), "the reset pulse must clear a width-adjust failure");
+    QVERIFY2(!m.readCoil(kM50), "the reset pulse alone must not start homing");
+}
+
+void OperatorCommandLifecycleTest::simulatorGatewayResetPulseAloneLeavesHomingIdle()
+{
+    // Brief OB-8 through the composed simulated gateway: the reset pulse alone
+    // does not start homing, and it still clears home-complete.
+    SimulatedPlcGateway gw;
+    gw.start();
+    QVERIFY(gw.isOnline());
+
+    // Reach home-complete through the handshake.
+    QVERIFY(gw.submitPulse(kM103).accepted);
+    gw.tick();
+    QVERIFY(gw.submitWriteCoil(kM50, true).accepted);
+    for (int i = 0; i < 10 && !gw.lastSnapshot().m9(); ++i)
+        gw.tick();
+    QVERIFY2(gw.lastSnapshot().m9(),
+             "precondition: home-complete must be reachable through the handshake");
+
+    // The reset pulse alone: home-complete clears, homing stays idle.
+    QVERIFY(gw.submitPulse(kM103).accepted);
+    gw.tick();
+
+    QVERIFY2(!gw.lastSnapshot().m9(), "the reset pulse must clear home-complete");
+    QVERIFY2(!gw.lastSnapshot().m50(), "the reset pulse alone started homing");
+}
+
+void OperatorCommandLifecycleTest::simulatorGatewayReportsTheHandshakeThroughSnapshots()
+{
+    // Brief OB-8: one home-start write of 1 makes the simulated controller
+    // report homing in progress with the home-start bit reading back 1, and
+    // completion clears the bit and reports home-complete.
+    SimulatedPlcGateway gw;
+    gw.start();
+    QVERIFY(gw.isOnline());
+    QVERIFY2(!gw.lastSnapshot().m50(), "precondition: homing must start idle");
+    QVERIFY2(!gw.lastSnapshot().m9(), "precondition: home-complete must start clear");
+
+    const SubmissionResult start = gw.submitWriteCoil(kM50, true);
+    QVERIFY2(start.accepted, qPrintable(start.immediate_rejection_reason));
+
+    gw.tick();
+    QVERIFY2(gw.lastSnapshot().m50(), "the home-start write did not start homing");
+    QVERIFY2(!gw.lastSnapshot().m9(), "home-complete appeared before homing finished");
+
+    gw.tick();
+    QVERIFY2(!gw.lastSnapshot().m50(),
+             "the simulated controller did not clear the home-start bit itself");
+    QVERIFY2(gw.lastSnapshot().m9(),
+             "the simulated controller did not report home-complete");
 }
 
 // --- OB-11 --------------------------------------------------------------------

@@ -8,10 +8,12 @@ namespace hlm {
 
 namespace {
 
-// Permission + interlock reasons for the manual commands (spec §10.7, §11.4).
+// Permission + interlock reasons for one manual command (spec §10.7, §11.4).
 // Mirrors the shell's ActionBar pattern: permission first, then the ordered
-// interlock preconditions.
-QStringList manualReasons(const ShellModel &model)
+// interlock preconditions. PLC-HMI-011 D5: the interlock is address-aware, so
+// the width jogs (M106/M107) additionally require homing completion while the
+// belt jog (M108) and the stop gate (M109) do not.
+QStringList manualReasons(const ShellModel &model, quint16 address)
 {
     QStringList reasons;
     const PermissionResult p =
@@ -23,7 +25,25 @@ QStringList manualReasons(const ShellModel &model)
         return reasons;
     }
     reasons.append(InterlockRules::checkManualCommand(
-                       model.snapshot(), model.online())
+                       model.snapshot(), model.online(), address)
+                       .unmet);
+    return reasons;
+}
+
+// The address-less verdict keeps the strict four-command gate: it is the
+// pre-split behavior every existing caller (and its reason text) expects.
+QStringList manualReasons(const ShellModel &model)
+{
+    QStringList reasons;
+    const PermissionResult p =
+        PermissionPolicy::check(model.role(), Command::ManualCommand);
+    if (!p.allowed && !p.reason.isEmpty())
+        reasons.append(p.reason);
+    if (!model.snapshotFresh()) {
+        reasons.append(QStringLiteral("通讯中断或数据过期"));
+        return reasons;
+    }
+    reasons.append(InterlockRules::checkManualCommand(model.snapshot(), model.online())
                        .unmet);
     return reasons;
 }
@@ -63,6 +83,36 @@ bool ManualControlModel::canManual() const
 QStringList ManualControlModel::manualUnmetReasons() const
 {
     return manualReasons(m_model);
+}
+
+bool ManualControlModel::canWidthJog() const
+{
+    return manualReasons(m_model, 106).isEmpty();
+}
+
+QStringList ManualControlModel::widthJogUnmetReasons() const
+{
+    return manualReasons(m_model, 106);
+}
+
+bool ManualControlModel::canBeltJog() const
+{
+    return manualReasons(m_model, 108).isEmpty();
+}
+
+QStringList ManualControlModel::beltJogUnmetReasons() const
+{
+    return manualReasons(m_model, 108);
+}
+
+bool ManualControlModel::canStopGate() const
+{
+    return manualReasons(m_model, 109).isEmpty();
+}
+
+QStringList ManualControlModel::stopGateUnmetReasons() const
+{
+    return manualReasons(m_model, 109);
 }
 
 bool ManualControlModel::canBypass() const

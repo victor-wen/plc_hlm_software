@@ -15,6 +15,13 @@ struct InterlockResult {
 
 // Pure per-command precondition rules (spec §10). No state, no I/O.
 // M60/M61 are read via their D100-mapped bits M8/M9 (spec §8.2).
+//
+// PLC-HMI-011 D5: the manual rule is address-aware. M106/M107 (手动调宽) also
+// require M61=1 (回原点完成) and M50=0 (未在回原点); M108 (皮带点动) and
+// M109 (挡停) keep the common gates only, because the ladder's SBR_MANUAL
+// comments state M108 手动皮带点动 不需要复位完成. The default address 0
+// preserves the historical four-command verdict for callers that have no
+// address context (e.g. the pre-split page gate).
 class InterlockRules
 {
 public:
@@ -26,7 +33,11 @@ public:
     static InterlockResult checkEstopSet(const DeviceSnapshot &s, bool online);
     static InterlockResult checkEstopRelease(const DeviceSnapshot &s, bool online);
     static InterlockResult checkModeSwitch(const DeviceSnapshot &s, bool online);
-    static InterlockResult checkManualCommand(const DeviceSnapshot &s, bool online);
+    // `address` is the manual coil (M106-M109). Addresses 0, M106 and M107
+    // require homing completion (M61=1) and no homing in progress (M50=0);
+    // M108/M109 do not. Every other gate applies to all four.
+    static InterlockResult checkManualCommand(const DeviceSnapshot &s, bool online,
+                                              quint16 address = 0);
     static InterlockResult checkBypass(const DeviceSnapshot &s, bool online);
 };
 

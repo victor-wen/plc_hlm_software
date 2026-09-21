@@ -89,6 +89,15 @@ void H3uSimulationModel::writeCoil(quint16 addr, bool value)
         if (rising)
             onM43RisingEdge();
         break;
+    case kM50:
+        if (rising) {
+            // HMI home-start request (PLC-HMI-011 D6): a single sustained M50=1
+            // write starts the home return and clears home-complete. M50 is
+            // cleared by tick() itself when homing finishes (PLC-owned clear).
+            m_coils[kM61] = false;
+            m_homeRemaining = kHomeReturnSeconds;
+        }
+        break;
     case kM103:
         if (rising)
             onM103RisingEdge();
@@ -307,10 +316,10 @@ void H3uSimulationModel::onM103RisingEdge()
     m_coils[kM14] = false;
     m_regs[kD110] = 0;
 
-    // Start home return.
-    m_coils[kM50] = true;
+    // PLC-HMI-011 D6: the reset pulse no longer starts homing. Homing starts
+    // only from the HMI's sustained M50=1 write; M103 still clears the
+    // home-complete bit (spec §10.2).
     m_coils[kM61] = false;
-    m_homeRemaining = kHomeReturnSeconds;
 }
 
 // --- M104: mode select (spec §10.1) -----------------------------------------

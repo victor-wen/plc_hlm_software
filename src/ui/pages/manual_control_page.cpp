@@ -70,14 +70,36 @@ void ManualControlPage::buildLayout()
 
     auto *manualRow = new QHBoxLayout();
     manualRow->setSpacing(8);
+    // PLC-HMI-011 D5: the width jogs (M106/M107) are the only manual controls
+    // that still require 回原点完成, so each width button carries its own
+    // visible inline reason directly beneath it (spec §11.4: the reason must be
+    // adjacent to the control, never tooltip-only).
+    auto *widthFwdColumn = new QVBoxLayout();
+    widthFwdColumn->setSpacing(4);
     m_widthFwd = new HoldButton(QStringLiteral("调宽正转"), manualBox);
     m_widthFwd->setObjectName(QStringLiteral("widthFwdButton"));
     m_widthFwd->setMinimumHeight(64);
-    manualRow->addWidget(m_widthFwd);
+    widthFwdColumn->addWidget(m_widthFwd);
+    m_widthReason = new QLabel(manualBox);
+    m_widthReason->setObjectName(QStringLiteral("widthJogReason"));
+    m_widthReason->setWordWrap(true);
+    m_widthReason->setMinimumHeight(20);
+    widthFwdColumn->addWidget(m_widthReason);
+    manualRow->addLayout(widthFwdColumn);
+
+    auto *widthRevColumn = new QVBoxLayout();
+    widthRevColumn->setSpacing(4);
     m_widthRev = new HoldButton(QStringLiteral("调宽反转"), manualBox);
     m_widthRev->setObjectName(QStringLiteral("widthRevButton"));
     m_widthRev->setMinimumHeight(64);
-    manualRow->addWidget(m_widthRev);
+    widthRevColumn->addWidget(m_widthRev);
+    m_widthRevReason = new QLabel(manualBox);
+    m_widthRevReason->setObjectName(QStringLiteral("widthJogReasonRev"));
+    m_widthRevReason->setWordWrap(true);
+    m_widthRevReason->setMinimumHeight(20);
+    widthRevColumn->addWidget(m_widthRevReason);
+    manualRow->addLayout(widthRevColumn);
+
     m_jog = new HoldButton(QStringLiteral("皮带点动"), manualBox);
     m_jog->setObjectName(QStringLiteral("beltJogButton"));
     m_jog->setMinimumHeight(64);
@@ -258,14 +280,31 @@ void ManualControlPage::refresh()
         m_shieldBanner->hide();
     }
 
-    // Manual gating: permission + interlock reasons (spec §11.4).
-    const QStringList manualReasons = m_pageModel.manualUnmetReasons();
-    const bool canManual = m_pageModel.canManual();
-    m_widthFwd->setEnabled(canManual);
-    m_widthRev->setEnabled(canManual);
-    m_jog->setEnabled(canManual);
-    m_stopGate->setEnabledWithReason(canManual,
-                                      manualReasons.join(QStringLiteral("；")));
+    // Manual gating: permission + interlock reasons (spec §11.4). PLC-HMI-011 D5
+    // splits the manual gate per command: the width jogs (M106/M107) still
+    // require homing completion (M61=1) and no homing in progress (M50=0), the
+    // belt jog (M108) and the stop gate (M109) keep the common gates only.
+    const bool canWidth = m_pageModel.canWidthJog();
+    const QString widthReason =
+        m_pageModel.widthJogUnmetReasons().join(QStringLiteral("；"));
+    m_widthFwd->setEnabled(canWidth);
+    m_widthRev->setEnabled(canWidth);
+    m_widthFwd->setToolTip(canWidth ? QString() : widthReason);
+    m_widthFwd->setStatusTip(canWidth ? QString() : widthReason);
+    m_widthRev->setToolTip(canWidth ? QString() : widthReason);
+    m_widthRev->setStatusTip(canWidth ? QString() : widthReason);
+    // The remaining width-jog reason is visible inline text directly beneath
+    // each width button, never tooltip-only (spec §11.4; the OB-7 surface
+    // requirement).
+    m_widthReason->setText(canWidth ? QString() : widthReason);
+    m_widthReason->setVisible(!canWidth && !widthReason.isEmpty());
+    m_widthRevReason->setText(canWidth ? QString() : widthReason);
+    m_widthRevReason->setVisible(!canWidth && !widthReason.isEmpty());
+
+    m_jog->setEnabled(m_pageModel.canBeltJog());
+    m_stopGate->setEnabledWithReason(
+        m_pageModel.canStopGate(),
+        m_pageModel.stopGateUnmetReasons().join(QStringLiteral("；")));
 
     // Bypass gating: permission + interlock reasons (spec §11.4).
     const QStringList bypassReasons = m_pageModel.bypassUnmetReasons();

@@ -23,14 +23,18 @@ using namespace hlm;
 namespace {
 
 // Protocol addresses (0-based, matching the centralized AddressTable).
+constexpr quint16 kM50 = 50;
 constexpr quint16 kM103 = 103;
 constexpr quint16 kM104 = 104;
 constexpr quint16 kD130 = 130;
 
+// PLC-HMI-011 D6: the M103 pulse no longer starts homing; the single
+// sustained M50=1 home-start write does.
 void homeReady(SimulatedPlcGateway &gw)
 {
     gw.model().writeCoil(kM103, true);
     gw.model().writeCoil(kM103, false);
+    gw.model().writeCoil(kM50, true);
     gw.tick();
     gw.tick(); // home return takes 2 s
 }

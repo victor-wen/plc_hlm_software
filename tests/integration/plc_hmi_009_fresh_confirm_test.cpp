@@ -48,6 +48,7 @@ namespace {
 
 // Protocol addresses (0-based, matching the centralized AddressTable).
 constexpr quint16 kM42 = 42;   // fast-block continuous output (logout clear also clears it)
+constexpr quint16 kM50 = 50;   // PLC-HMI-011: home-start coil
 constexpr quint16 kM103 = 103; // reset / home pulse
 constexpr quint16 kM106 = 106; // command-block manual hold output
 
@@ -87,6 +88,7 @@ void homeReady(SimulatedPlcGateway &gw)
 {
     gw.model().writeCoil(kM103, true);
     gw.model().writeCoil(kM103, false);
+    gw.model().writeCoil(kM50, true); // PLC-HMI-011: homing starts on the home-start write
     gw.tick();
     gw.tick(); // home return takes 2 s
 }

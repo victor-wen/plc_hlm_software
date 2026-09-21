@@ -19,6 +19,7 @@ namespace {
 
 // Protocol addresses (0-based, matching AddressTable).
 constexpr quint16 kM42 = 42;
+constexpr quint16 kM50 = 50;
 constexpr quint16 kM100 = 100;
 constexpr quint16 kM101 = 101;
 constexpr quint16 kM102 = 102;
@@ -59,26 +60,62 @@ SubmissionResult rejectedResult(const QString &reason)
     return r;
 }
 
-// PLC-HMI-010: records reset submissions and answers with correlated accepted
-// results without mutating any PLC state, so the reset result can be observed
-// against independently injected synthetic snapshots.
+// PLC-HMI-010/011: records reset submissions and answers with correlated
+// accepted results without mutating any PLC state, so the reset result can be
+// observed against independently injected synthetic snapshots. The test
+// delivers the recorded completions explicitly (the reset handshake needs both
+// the M103 pulse and the M50 home-start write correlated outcomes).
 struct ResetRecorder
 {
+    struct Recorded
+    {
+        PlcOperation operation = PlcOperation::Pulse;
+        quint16 address = 0;
+        bool value = false;
+        quint64 request_id = 0;
+        quint64 gateway_generation = 0;
+    };
+
     QVector<quint16> pulses;
+    QVector<Recorded> submissions;
 
     ControlCoordinator::PulseTransport make()
     {
         ControlCoordinator::PulseTransport t;
         t.startPulse = [this](quint16 address) -> SubmissionResult {
             pulses.append(address);
-            return acceptedResult();
+            return record(PlcOperation::Pulse, address, false);
         };
         t.writeHold = [](quint16, bool) { return acceptedResult(); };
-        t.writeCoil = [](quint16, bool, CommandPriority) { return acceptedResult(); };
+        t.writeCoil = [this](quint16 address, bool value, CommandPriority) {
+            return record(PlcOperation::WriteCoil, address, value);
+        };
         t.writeRegister = [](quint16, quint16, CommandPriority) {
             return acceptedResult();
         };
         return t;
+    }
+
+    SubmissionCompletion completionFor(const Recorded &r, bool ok) const
+    {
+        SubmissionCompletion c;
+        c.request_id = r.request_id;
+        c.gateway_generation = r.gateway_generation;
+        c.operation = r.operation;
+        c.address = r.address;
+        c.result = ok;
+        if (!ok)
+            c.error = QStringLiteral("submission failed");
+        return c;
+    }
+
+private:
+    SubmissionResult record(PlcOperation operation, quint16 address, bool value)
+    {
+        const SubmissionResult r = acceptedResult();
+        submissions.append({operation, address, value, r.request_id,
+                            r.gateway_generation});
+        return r;
     }
 };
 
@@ -199,10 +236,13 @@ void ControlCoordinatorTest::cleanup()
 namespace {
 
 // Drive a reset+home-return to a ready manual state via the raw gateway.
+// PLC-HMI-011 D6: the M103 pulse no longer starts homing; the HMI's single
+// sustained M50=1 home-start write does.
 void homeReady(SimulatedPlcGateway &gw)
 {
     gw.model().writeCoil(kM103, true);
     gw.model().writeCoil(kM103, false);
+    gw.model().writeCoil(kM50, true);
     gw.tick();
     gw.tick(); // home return takes 2 s
 }
@@ -220,22 +260,19 @@ ControlCoordinator *makeCoordinator(SimulatedPlcGateway &gw, qint64 &now,
                                     ControlCoordinator::Config cfg = {})
 {
     ControlCoordinator::PulseTransport t;
-    t.startPulse = [&gw](quint16 a) -> SubmissionResult {
-        gw.model().writeCoil(a, true);
-        gw.model().writeCoil(a, false);
-        return acceptedResult();
-    };
+    // Route every submission through the gateway's submit API so its
+    // submission bookkeeping runs and the correlated submissionCompleted is
+    // emitted on tick() (PLC-HMI-011: the reset only converges when both the
+    // M103 pulse and the M50 home-start write have correlated completions).
+    t.startPulse = [&gw](quint16 a) -> SubmissionResult { return gw.submitPulse(a); };
     t.writeHold = [&gw](quint16 a, bool v) -> SubmissionResult {
-        gw.model().writeCoil(a, v);
-        return acceptedResult();
+        return gw.submitWriteCoil(a, v);
     };
-    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) -> SubmissionResult {
-        gw.model().writeCoil(a, v);
-        return acceptedResult();
+    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority p) -> SubmissionResult {
+        return gw.submitWriteCoil(a, v, p);
     };
-    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) -> SubmissionResult {
-        gw.model().writeRegister(a, v);
-        return acceptedResult();
+    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority p) -> SubmissionResult {
+        return gw.submitWriteRegister(a, v, p);
     };
     return makeCoordinatorWithCoil(gw, now, t, cfg);
 }
@@ -264,6 +301,8 @@ ControlCoordinator *makeCoordinatorWithCoil(
 
 // Like makeCoordinator but the startPulse transport is a no-op: the pulse is
 // "sent" but the PLC never reacts (M3 never changes), for timeout tests.
+// The coil/register writes still route through the gateway's submit API so
+// their correlated completions arrive.
 ControlCoordinator *makeCoordinatorNoPulse(SimulatedPlcGateway &gw, qint64 &now,
                                            ControlCoordinator::Config cfg = {})
 {
@@ -272,16 +311,13 @@ ControlCoordinator *makeCoordinatorNoPulse(SimulatedPlcGateway &gw, qint64 &now,
         return acceptedResult(); // no-op: M3 stays put
     };
     t.writeHold = [&gw](quint16 a, bool v) -> SubmissionResult {
-        gw.model().writeCoil(a, v);
-        return acceptedResult();
+        return gw.submitWriteCoil(a, v);
     };
-    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) -> SubmissionResult {
-        gw.model().writeCoil(a, v);
-        return acceptedResult();
+    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority p) -> SubmissionResult {
+        return gw.submitWriteCoil(a, v, p);
     };
-    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) -> SubmissionResult {
-        gw.model().writeRegister(a, v);
-        return acceptedResult();
+    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority p) -> SubmissionResult {
+        return gw.submitWriteRegister(a, v, p);
     };
     return makeCoordinatorWithCoil(gw, now, t, cfg);
 }
@@ -349,7 +385,12 @@ void ControlCoordinatorTest::adminCanResetAndAdjust()
     QCOMPARE(accepted.count(), 1);
     QCOMPARE(accepted[0][0].value<Command>(), Command::ModeSwitch);
 
-    // Let the reset converge on its fixed 200 ms boundary (PLC-HMI-010 D3).
+    // PLC-HMI-011 D2: the M103 pulse completes on this tick, which issues the
+    // single M50=1 home-start write; the next tick delivers that write's
+    // correlated completion. Both outcomes are required before the reset can
+    // converge on its fixed 200 ms boundary (PLC-HMI-010 D3).
+    gw.tick();
+    gw.tick();
     now += ControlCoordinator::kResetCompletionDelayMs;
     gw.tick();
     QVERIFY(!c->resetInProgress());
@@ -390,10 +431,13 @@ void ControlCoordinatorTest::resetFromAutoModePulsesM103WithoutWritingM104()
     QVERIFY2(gw.model().readCoil(kM104), "the reset wrote M104");
     QVERIFY(c->resetInProgress());
 
-    // The M103 pulse was submitted on the same call; the simulator starts its
-    // homing, but that flag no longer participates in the HMI result (D2).
+    // PLC-HMI-011 D2: the M103 pulse completion triggers the single sustained
+    // M50=1 home-start write, which is what actually starts homing.
     gw.tick();
-    QVERIFY(gw.lastSnapshot().m50());
+    QVERIFY2(gw.model().readCoil(kM50), "the home-start write was never issued");
+    QVERIFY(c->resetInProgress());
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m50()); // homing in progress
 }
 
 void ControlCoordinatorTest::resetConvergesAfterFixedDelayNotBefore()
@@ -449,7 +493,8 @@ void ControlCoordinatorTest::resetConvergesWhenPulseAcceptedButHomeNeverStarts()
     gw.start();
     qint64 now = 0;
     // No-op startPulse: the M103 pulse is accepted but never delivered to the
-    // PLC, so M50 never rises (lost-pulse scenario).
+    // PLC, so its correlated completion never arrives and the M50 home-start
+    // write is never issued (lost-pulse scenario).
     std::unique_ptr<ControlCoordinator> c(makeCoordinatorNoPulse(gw, now));
     c->setRole(Role::Admin);
 
@@ -478,13 +523,15 @@ void ControlCoordinatorTest::resetConvergesWhenPulseAcceptedButHomeNeverStarts()
     QVERIFY(!gw.lastSnapshot().m50()); // the lost pulse never started homing
     QCOMPARE(terminals, 0);
 
-    // PLC-HMI-010 D2/D5: the result no longer depends on M50/M61/M14/D110, so
-    // the reset still converges to exactly one success at the fixed boundary.
-    now += ControlCoordinator::kResetCompletionDelayMs;
+    // PLC-HMI-011 D2/D3: a lost pulse means the reset can never converge to
+    // success. It converges to exactly one visible non-success inside the
+    // home-start confirmation deadline, and never reports 复位完成.
+    now += ControlCoordinator::kHomeStartConfirmTimeoutMs;
     gw.tick();
     QCOMPARE(terminals, 1);
-    QVERIFY(lastOk);
-    QCOMPARE(detail, QStringLiteral("复位完成"));
+    QVERIFY(!lastOk);
+    QVERIFY(!detail.isEmpty());
+    QVERIFY(detail != QStringLiteral("复位完成"));
     QVERIFY(!c->resetInProgress());
     QVERIFY(gw.lastSnapshot().m14()); // the HMI result never pretends a fault cleared
 
@@ -537,6 +584,29 @@ void ControlCoordinatorTest::resetResultIgnoresHomeBitsAndFaultCode()
                                             .arg(k.name, r.reason)));
         QVERIFY2(rec.pulses.contains(kM103),
                  qPrintable(QStringLiteral("%1: no M103 pulse was sent").arg(k.name)));
+
+        // PLC-HMI-011 D2/D3: deliver the correlated M103 pulse completion,
+        // which issues the single M50=1 home-start write, then deliver that
+        // write's own completion. Only then can the reset converge, so the
+        // case still isolates the snapshot bits as the only varying input.
+        const ResetRecorder::Recorded pulse = rec.submissions.at(0);
+        QCOMPARE(pulse.operation, PlcOperation::Pulse);
+        QCOMPARE(pulse.address, kM103);
+        c->onSubmissionCompleted(rec.completionFor(pulse, true));
+
+        int homeStart = -1;
+        for (int i = 0; i < rec.submissions.size(); ++i) {
+            const ResetRecorder::Recorded &w = rec.submissions.at(i);
+            if (w.operation == PlcOperation::WriteCoil && w.address == kM50) {
+                homeStart = i;
+                break;
+            }
+        }
+        QVERIFY2(homeStart >= 0,
+                 qPrintable(QStringLiteral("%1: no M50 home-start write was sent")
+                                .arg(k.name)));
+        QCOMPARE(rec.submissions.at(homeStart).value, true);
+        c->onSubmissionCompleted(rec.completionFor(rec.submissions.at(homeStart), true));
 
         now += ControlCoordinator::kResetCompletionDelayMs;
         c->onSnapshot(syntheticResetSnapshot(k.m50, k.m9, k.m14, k.faultCode));

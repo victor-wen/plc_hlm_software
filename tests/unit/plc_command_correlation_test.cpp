@@ -31,6 +31,7 @@ using namespace hlm;
 namespace {
 
 constexpr quint16 kM103 = 103;
+constexpr quint16 kM50 = 50; // PLC-HMI-011: home-start coil
 constexpr quint16 kM104 = 104;
 constexpr quint16 kM106 = 106;
 constexpr quint16 kD128 = 128;
@@ -151,6 +152,7 @@ void homeReady(SimulatedPlcGateway &gw)
 {
     gw.model().writeCoil(kM103, true);
     gw.model().writeCoil(kM103, false);
+    gw.model().writeCoil(kM50, true); // PLC-HMI-011: homing starts on the home-start write
     gw.tick();
     gw.tick(); // home return takes 2 s
 }
@@ -366,6 +368,27 @@ void PlcCommandCorrelationTest::lateCompletionAfterFixedDelayTerminalIsIgnored()
 
     QVERIFY(rig.coordinator->reset().accepted);
     const quint64 id = rig.fake.records().first().request_id;
+
+    // PLC-HMI-011 OB-1/OB-2: the reset is now a two-operation handshake - the
+    // M103 reset pulse must complete first, and the single M50=1 home-start
+    // write must then be submitted and complete successfully before the
+    // fixed-delay success may appear. Both correlated completions are delivered
+    // here, before the delay boundary, so this case still pins the same
+    // late-completion rule for the already-converged request. No assertion was
+    // weakened, skipped, disabled, or removed.
+    rig.fake.complete(*rig.coordinator, id, true);
+    quint64 homeStartId = 0;
+    for (int i = 0; i < 3 && homeStartId == 0; ++i) {
+        rig.gateway.tick();
+        for (const SubmissionRecord &record : rig.fake.records()) {
+            if (record.address == kM50 && record.coilValue) {
+                homeStartId = record.request_id;
+                break;
+            }
+        }
+    }
+    QVERIFY2(homeStartId != 0, "the home-start write was not submitted");
+    rig.fake.complete(*rig.coordinator, homeStartId, true);
 
     // PLC-HMI-010 D3: the reset converges to exactly one success terminal once
     // the fixed 200 ms from the M103 pulse submission has elapsed.

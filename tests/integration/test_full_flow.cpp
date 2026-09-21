@@ -53,6 +53,7 @@ namespace {
 
 // Protocol addresses (0-based, matching AddressTable).
 constexpr quint16 kM42 = 42;
+constexpr quint16 kM50 = 50;
 constexpr quint16 kM100 = 100;
 constexpr quint16 kM101 = 101;
 constexpr quint16 kM102 = 102;
@@ -61,26 +62,14 @@ constexpr quint16 kM104 = 104;
 constexpr quint16 kD128 = 128;
 constexpr quint16 kD204 = 204;
 
-quint64 nextRequestId()
-{
-    static quint64 next = 1;
-    return next++;
-}
-
-SubmissionResult acceptedResult()
-{
-    SubmissionResult r;
-    r.accepted = true;
-    r.request_id = nextRequestId();
-    r.gateway_generation = 1;
-    return r;
-}
-
 // Drive a reset+home-return to a ready manual state via the raw gateway.
 void homeReady(SimulatedPlcGateway &gw)
 {
+    // PLC-HMI-011 D6: the M103 pulse no longer starts homing; the HMI's single
+    // sustained M50=1 home-start write does.
     gw.model().writeCoil(kM103, true);
     gw.model().writeCoil(kM103, false);
+    gw.model().writeCoil(kM50, true);
     gw.tick();
     gw.tick(); // home return takes 2 s
 }
@@ -90,22 +79,19 @@ void homeReady(SimulatedPlcGateway &gw)
 ControlCoordinator *makeCoordinator(SimulatedPlcGateway &gw, qint64 &now)
 {
     ControlCoordinator::PulseTransport t;
-    t.startPulse = [&gw](quint16 a) -> SubmissionResult {
-        gw.model().writeCoil(a, true);
-        gw.model().writeCoil(a, false);
-        return acceptedResult();
-    };
+    // Route every submission through the gateway's submit API so its
+    // submission bookkeeping runs and the correlated submissionCompleted is
+    // emitted on tick() (PLC-HMI-011: the reset only converges when both the
+    // M103 pulse and the M50 home-start write have correlated completions).
+    t.startPulse = [&gw](quint16 a) -> SubmissionResult { return gw.submitPulse(a); };
     t.writeHold = [&gw](quint16 a, bool v) -> SubmissionResult {
-        gw.model().writeCoil(a, v);
-        return acceptedResult();
+        return gw.submitWriteCoil(a, v);
     };
-    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority) -> SubmissionResult {
-        gw.model().writeCoil(a, v);
-        return acceptedResult();
+    t.writeCoil = [&gw](quint16 a, bool v, CommandPriority p) -> SubmissionResult {
+        return gw.submitWriteCoil(a, v, p);
     };
-    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority) -> SubmissionResult {
-        gw.model().writeRegister(a, v);
-        return acceptedResult();
+    t.writeRegister = [&gw](quint16 a, quint16 v, CommandPriority p) -> SubmissionResult {
+        return gw.submitWriteRegister(a, v, p);
     };
     auto *c = new ControlCoordinator(std::move(t), ControlCoordinator::Config(),
                                      [&now]() { return now; });
@@ -337,12 +323,15 @@ void FullFlowTest::fullFlowResetAdjustAutoStartStop()
                 results.append({cmd, ok});
             });
 
-    // 复位 (M103 pulse only) -> converges on the fixed 200 ms boundary
-    // (PLC-HMI-010 D1/D3); no M50/M61 readback participates in the result.
+    // 复位 (M103 pulse + the single M50=1 home-start write, PLC-HMI-011 D2) ->
+    // converges on the fixed 200 ms boundary (PLC-HMI-010 D1/D3); no M50/M61
+    // readback participates in the result.
     QVERIFY(c->reset().accepted);
-    gw.tick();
-    QVERIFY(gw.lastSnapshot().m50()); // the PLC still starts its own homing
+    gw.tick(); // M103 pulse completion -> the M50=1 home-start write is issued
+    QVERIFY(gw.model().readCoil(kM50));
     QVERIFY(c->resetInProgress());
+    gw.tick(); // M50 write completion
+    QVERIFY(gw.lastSnapshot().m50()); // homing in progress
     now += ControlCoordinator::kResetCompletionDelayMs;
     gw.tick();
     QVERIFY(accepted.contains(Command::Reset));
@@ -453,10 +442,13 @@ void FullFlowTest::estopSetReleaseLatchesFault()
     QVERIFY(gw.lastSnapshot().m14());
     QCOMPARE(gw.lastSnapshot().faultCode(), quint16(1));
 
-    // Reset (M103 pulse): the PLC clears the latched fault and converges on the
-    // HMI's fixed 200 ms boundary (PLC-HMI-010 D3).
+    // Reset (M103 pulse + the single M50=1 home-start write): the PLC clears the
+    // latched fault and the reset converges on the HMI's fixed 200 ms boundary
+    // once both correlated completions arrived (PLC-HMI-010 D3, PLC-HMI-011 D2).
     QVERIFY(c->reset().accepted);
-    gw.tick();
+    gw.tick(); // M103 pulse completion -> the M50=1 home-start write is issued
+    QVERIFY(gw.model().readCoil(kM50));
+    gw.tick(); // M50 write completion
     now += ControlCoordinator::kResetCompletionDelayMs;
     gw.tick();
     QVERIFY(!c->resetInProgress());
@@ -890,9 +882,12 @@ void FullFlowTest::applicationAdjustWidthConverges()
     QCOMPARE(userAddedSpy[0][0].toBool(), true);
     QTRY_COMPARE_WITH_TIMEOUT(usersPage->userList()->count(), 2, 5000);
 
-    // Home the machine via the raw gateway (M103 pulse + 2 s home return).
+    // Home the machine via the raw gateway (M103 pulse + one M50=1 home-start
+    // write + 2 s home return; PLC-HMI-011 D6: the pulse alone no longer
+    // starts homing).
     gw->model().writeCoil(kM103, true);
     gw->model().writeCoil(kM103, false);
+    gw->model().writeCoil(kM50, true);
     gw->tick();
     gw->tick();
     QVERIFY(gw->lastSnapshot().m9());

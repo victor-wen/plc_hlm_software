@@ -32,8 +32,20 @@ public:
     explicit ManualControlModel(const ShellModel &model, QObject *parent = nullptr);
 
     // --- gating (permission + interlock, spec §11.4) -------------------------
+    // canManual()/manualUnmetReasons() are the address-less verdict: they keep
+    // the strict four-command gate (including M61=1 回原点完成 and M50=0) for
+    // callers that have no per-command context. The page uses the per-command
+    // accessors below, because PLC-HMI-011 D5 splits the manual interlock:
+    // M106/M107 (调宽) require homing completion, M108 (皮带点动) and M109
+    // (挡停) do not.
     bool canManual() const;
     QStringList manualUnmetReasons() const;
+    bool canWidthJog() const;
+    QStringList widthJogUnmetReasons() const;
+    bool canBeltJog() const;
+    QStringList beltJogUnmetReasons() const;
+    bool canStopGate() const;
+    QStringList stopGateUnmetReasons() const;
     bool canBypass() const;
     QStringList bypassUnmetReasons() const;
 

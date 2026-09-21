@@ -27,12 +27,14 @@ using namespace hlm;
 
 namespace {
 
-// Reset + home return to a ready state (M61=1, M60=1). Home return takes
-// 2 simulated seconds.
+// Reset + home return to a ready state (M61=1, M60=1). PLC-HMI-011 D6: the
+// M103 pulse clears state but no longer starts homing; the single sustained
+// M50=1 home-start write starts it. Home return takes 2 simulated seconds.
 void homeReady(H3uSimulationModel &m)
 {
     m.writeCoil(103, true);
     m.writeCoil(103, false);
+    m.writeCoil(50, true);
     m.advance(2);
 }
 
@@ -272,6 +274,7 @@ void H3uSimulationModelTest::homeReturnFault8()
     m.setHomeReturnFault(8);
     m.writeCoil(103, true);
     m.writeCoil(103, false);
+    m.writeCoil(50, true); // PLC-HMI-011 D6: homing starts from the M50 write
     QVERIFY(m.readCoil(50)); // homing
     m.advance(2);
     QVERIFY(!m.readCoil(50));
@@ -287,6 +290,7 @@ void H3uSimulationModelTest::homeReturnFault9()
     m.setHomeReturnFault(9);
     m.writeCoil(103, true);
     m.writeCoil(103, false);
+    m.writeCoil(50, true); // PLC-HMI-011 D6: homing starts from the M50 write
     m.advance(2);
     QVERIFY(!m.readCoil(61));
     QVERIFY(m.readCoil(14));
@@ -513,7 +517,10 @@ void H3uSimulationModelTest::m103ClearsWidthResults()
     QVERIFY(!m.readCoil(44));
     QVERIFY(!m.readCoil(45));
     QVERIFY(!m.readCoil(34));
-    QVERIFY(m.readCoil(50)); // home return restarted
+    // PLC-HMI-011 D6: the reset pulse alone does not restart homing; M103 still
+    // clears the home-complete bit.
+    QVERIFY(!m.readCoil(50));
+    QVERIFY(!m.readCoil(61));
 }
 
 void H3uSimulationModelTest::d126IsSpeedTimesFixedK1280()

@@ -81,7 +81,7 @@ AddressTable::AddressTable()
     m_defs.push_back(def(QStringLiteral("M"), 42, QStringLiteral("M42"),
         QStringLiteral("皮带自动常转命令"), AccessType::ReadWrite, ValueType::U16));
     m_defs.push_back(def(QStringLiteral("M"), 50, QStringLiteral("M50"),
-        QStringLiteral("回原点启动标志"), AccessType::Read, ValueType::U16));
+        QStringLiteral("回原点启动标志"), AccessType::ReadWrite, ValueType::U16));
     m_defs.push_back(def(QStringLiteral("M"), 51, QStringLiteral("M51"),
         QStringLiteral("回原点阶段1反转"), AccessType::Read, ValueType::U16));
     m_defs.push_back(def(QStringLiteral("M"), 52, QStringLiteral("M52"),
