@@ -369,26 +369,12 @@ void PlcCommandCorrelationTest::lateCompletionAfterFixedDelayTerminalIsIgnored()
     QVERIFY(rig.coordinator->reset().accepted);
     const quint64 id = rig.fake.records().first().request_id;
 
-    // PLC-HMI-011 OB-1/OB-2: the reset is now a two-operation handshake - the
-    // M103 reset pulse must complete first, and the single M50=1 home-start
-    // write must then be submitted and complete successfully before the
-    // fixed-delay success may appear. Both correlated completions are delivered
-    // here, before the delay boundary, so this case still pins the same
-    // late-completion rule for the already-converged request. No assertion was
-    // weakened, skipped, disabled, or removed.
+    // User decision 2026-09-21: the reset sends the M103 pulse only, so its
+    // correlated completion is all the fixed-delay success needs (回原点 is a
+    // separate command). The completion is delivered before the delay boundary,
+    // so this case still pins the same late-completion rule for the
+    // already-converged request. No assertion was weakened or removed.
     rig.fake.complete(*rig.coordinator, id, true);
-    quint64 homeStartId = 0;
-    for (int i = 0; i < 3 && homeStartId == 0; ++i) {
-        rig.gateway.tick();
-        for (const SubmissionRecord &record : rig.fake.records()) {
-            if (record.address == kM50 && record.coilValue) {
-                homeStartId = record.request_id;
-                break;
-            }
-        }
-    }
-    QVERIFY2(homeStartId != 0, "the home-start write was not submitted");
-    rig.fake.complete(*rig.coordinator, homeStartId, true);
 
     // PLC-HMI-010 D3: the reset converges to exactly one success terminal once
     // the fixed 200 ms from the M103 pulse submission has elapsed.

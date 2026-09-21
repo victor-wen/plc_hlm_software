@@ -33,6 +33,7 @@ public:
     PermissionButton *startButton() const { return m_start; }
     PermissionButton *stopButton() const { return m_stop; }
     PermissionButton *resetButton() const { return m_reset; }
+    PermissionButton *homeStartButton() const { return m_homeStart; }
     PermissionButton *manualButton() const { return m_manual; }
     PermissionButton *autoButton() const { return m_auto; }
     PermissionButton *loginButton() const { return m_login; }
@@ -70,6 +71,7 @@ private:
     PermissionButton *m_manual = nullptr;
     PermissionButton *m_auto = nullptr;
     PermissionButton *m_start = nullptr;
+    PermissionButton *m_homeStart = nullptr;
     PermissionButton *m_stop = nullptr;
     PermissionButton *m_reset = nullptr;
     PermissionButton *m_login = nullptr;

@@ -121,7 +121,7 @@ QVector<EnvelopeSize> compactSizes()
 
 // Machine data matching the existing page-test fixtures: M1 manual / M2
 // automatic, M9 homed (M61 per COMMMAP), valid quality blocks.
-DeviceSnapshotData snapshotData(bool homed, bool automatic)
+DeviceSnapshotData snapshotData(bool homed, bool automatic, bool latchedFault = false)
 {
     DeviceSnapshotData d;
     d.connected = true;
@@ -132,6 +132,8 @@ DeviceSnapshotData snapshotData(bool homed, bool automatic)
         d.statusWord1 |= quint16(1) << 1; // M1 manual
     if (homed)
         d.statusWord1 |= quint16(1) << 9; // M9/M61 homed
+    if (latchedFault)
+        d.statusWord1 |= quint16(1) << 14; // M14 latched fault
     d.statusWord3 = 0;
     d.targetWidth = 200;
     d.currentWidth = 150;
@@ -870,8 +872,11 @@ void PlcHmi006ResponsiveEnvelopeTest::disabledReasonsStayVisibleLegibleAndRetrie
             }
         }
 
-        // Configuration 2: administrator with connected but not-homed data --
-        // the recipe surface is blocked by an interlock. Every page is visited
+        // Configuration 2: administrator with connected but latched-fault data
+        // -- the recipe and manual surfaces are blocked by an interlock. User
+        // decision 2026-09-21: an un-homed machine (M61 clear) is no longer an
+        // interlock cause, so the blocking cause is a latched fault (M14).
+        // Every page is visited
         // in turn and only controls that the current page actually presents are
         // checked: a control on a hidden page cannot show its reason in the
         // window, and is not required to.
@@ -882,7 +887,8 @@ void PlcHmi006ResponsiveEnvelopeTest::disabledReasonsStayVisibleLegibleAndRetrie
             QApplication::processEvents();
             window.shellModel()->setUser(QStringLiteral("admin"), Role::Admin);
             window.shellModel()->updateSnapshot(
-                DeviceSnapshot(snapshotData(/*homed=*/false, /*automatic=*/false)));
+                DeviceSnapshot(snapshotData(/*homed=*/true, /*automatic=*/false,
+                                            /*latchedFault=*/true)));
             QApplication::processEvents();
             if (window.width() != size.width || window.height() != size.height)
                 continue;
@@ -918,8 +924,13 @@ void PlcHmi006ResponsiveEnvelopeTest::disabledReasonsStayVisibleLegibleAndRetrie
 
                 for (QAbstractButton *control : visibleBlockedControls) {
                     const QString reason = declaredReason(control);
+                    // Only labels presented by THIS page count: the window-wide
+                    // scan also matched unrelated chrome (the alarm banner shows
+                    // the active alarm text, which can coincidentally equal the
+                    // control's declared reason), and isNear() then mapped
+                    // between two widgets without a common ancestor.
                     const QVector<QLabel *> labels =
-                        matchingReasonLabels(&window, &window, control);
+                        matchingReasonLabels(pageRoot, &window, control);
                     if (labels.isEmpty()) {
                         violations.append(
                             QStringLiteral("%1: disabled control %2 declares '%3' but no "

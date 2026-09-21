@@ -189,11 +189,14 @@ void SnapshotDecodeTest::d140WrapActivity()
 void SnapshotDecodeTest::outOfRangeMarksFieldInvalid()
 {
     // Out-of-range values mark the field invalid (spec §9, requirement table).
+    // D130 (current width) is deliberately NOT range-checked: the PLC reports
+    // 0 before the first homing/adjustment (user decision 2026-09-21), so any
+    // u16 value stays valid and never degrades the overall quality.
     quint16 raw[41] = {};
     raw[20] = 99;  // D120 current step: range 0-5
     raw[22] = 50;  // D122 belt speed: range 100-20000
     raw[28] = 10;  // D128 target width: range 50-400
-    raw[30] = 500; // D130 current width: range 50-400
+    raw[30] = 500; // D130 current width: no range (any u16 is valid)
     raw[40] = 1;   // D140 heartbeat: no range
 
     DeviceSnapshotData d = decodeFastBlock(raw, 1, true, 0,
@@ -202,10 +205,26 @@ void SnapshotDecodeTest::outOfRangeMarksFieldInvalid()
     QVERIFY(!s.fieldValid(SnapshotField::CurrentStep));
     QVERIFY(!s.fieldValid(SnapshotField::BeltSpeed));
     QVERIFY(!s.fieldValid(SnapshotField::TargetWidth));
-    QVERIFY(!s.fieldValid(SnapshotField::CurrentWidth));
+    QVERIFY(s.fieldValid(SnapshotField::CurrentWidth));
+    QCOMPARE(s.currentWidth(), quint16(500));
     QVERIFY(s.fieldValid(SnapshotField::Heartbeat));
     QVERIFY(s.fieldValid(SnapshotField::FaultCode));
     QVERIFY(s.overallQuality() == DataQuality::OutOfRange);
+
+    // D130 = 0 (the un-homed PLC state) must not degrade the quality either:
+    // it is the normal value before the first homing/adjustment.
+    quint16 zeroWidth[41] = {};
+    zeroWidth[20] = 3;
+    zeroWidth[22] = 1000;
+    zeroWidth[28] = 200;
+    zeroWidth[30] = 0;
+    zeroWidth[40] = 5;
+    DeviceSnapshotData dz = decodeFastBlock(zeroWidth, 3, true, 0,
+        QDateTime::currentDateTime(), QDateTime::currentDateTime(), DataQuality::Valid);
+    DeviceSnapshot sz(dz);
+    QVERIFY(sz.fieldValid(SnapshotField::CurrentWidth));
+    QCOMPARE(sz.currentWidth(), quint16(0));
+    QVERIFY(sz.overallQuality() == DataQuality::Valid);
 
     // In-range values stay valid.
     quint16 ok[41] = {};

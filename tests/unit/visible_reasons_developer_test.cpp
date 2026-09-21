@@ -60,6 +60,17 @@ DeviceSnapshotData notHomedData()
     return d;
 }
 
+// User decision 2026-09-21: homing completion is no longer a manual gate, so
+// the interlock cause used by the reason-surface case below is a latched fault
+// (M14), which still blocks every manual command.
+DeviceSnapshotData latchedFaultData()
+{
+    DeviceSnapshotData d = readyManualData();
+    d.statusWord1 |= quint16(1) << 14; // M14 latched fault
+    d.overall_quality = aggregateQuality(d);
+    return d;
+}
+
 // Frozen developer tolerances mirroring the independent test assumptions: the
 // reason label must sit close to its control and stay legible at touch sizes.
 constexpr int kAdjacencyPx = 300;
@@ -212,23 +223,22 @@ void VisibleReasonsDeveloperTest::manualPageReasonFollowsGateAndDistinguishesCau
     QVERIFY(permissionText.contains(QStringLiteral("管理员")));
 
     // Interlock cause: administrator with connected data that is not homed.
-    // PLC-HMI-011 D5: the stop gate (M109) no longer requires homing, so in
-    // this otherwise-ready state it is enabled with no reason; the width jogs
-    // (M106/M107) still require homing and carry the visible 原点 reason
-    // inline beneath their controls.
+    // User decision 2026-09-21: the width jogs no longer require homing, so the
+    // interlock cause is a latched fault (M14). The width jogs stay disabled and
+    // carry their visible reason inline beneath their controls; the belt jog and
+    // stop gate share the same common gates and are disabled too.
     ShellModel interlockModel;
     ManualControlPage interlockPage(interlockModel);
     interlockModel.setUser(QStringLiteral("admin"), Role::Admin);
-    interlockModel.updateSnapshot(DeviceSnapshot(notHomedData()));
+    interlockModel.updateSnapshot(DeviceSnapshot(latchedFaultData()));
     interlockPage.resize(1280, 720);
     interlockPage.show();
     QApplication::processEvents();
-    QVERIFY(interlockPage.stopGateButton()->isEnabled());
-    QVERIFY(interlockPage.stopGateButton()->visibleReasonText().isEmpty());
+    QVERIFY(!interlockPage.stopGateButton()->isEnabled());
     verifyInlineHoldReason(&interlockPage, interlockPage.widthFwdButton(),
                            interlockPage.widthReasonLabel());
     const QString interlockText = interlockPage.widthReasonLabel()->text();
-    QVERIFY(interlockText.contains(QStringLiteral("原点")));
+    QVERIFY(interlockText.contains(QStringLiteral("锁存故障")));
     QVERIFY(interlockText != permissionText);
 
     // Communication cause: administrator without a snapshot.
@@ -256,6 +266,21 @@ void VisibleReasonsDeveloperTest::manualPageReasonFollowsGateAndDistinguishesCau
     QVERIFY(readyPage.stopGateButton()->isEnabled());
     QVERIFY(readyPage.stopGateButton()->visibleReasonText().isEmpty());
     QVERIFY(readyPage.stopGateButton()->reasonLabel()->isHidden());
+
+    // User decision 2026-09-21: an un-homed machine (M61/M9 clear) is NOT an
+    // interlock cause any more — the width jogs are enabled with no reason, so
+    // the gate change cannot leave a stale 未回原点 text behind.
+    ShellModel notHomedModel;
+    ManualControlPage notHomedPage(notHomedModel);
+    notHomedModel.setUser(QStringLiteral("admin"), Role::Admin);
+    notHomedModel.updateSnapshot(DeviceSnapshot(notHomedData()));
+    notHomedPage.resize(1280, 720);
+    notHomedPage.show();
+    QApplication::processEvents();
+    QVERIFY(notHomedPage.widthFwdButton()->isEnabled());
+    QVERIFY(notHomedPage.widthRevButton()->isEnabled());
+    QVERIFY(notHomedPage.widthReasonLabel()->text().isEmpty());
+    QVERIFY(notHomedPage.widthReasonLabel()->isHidden());
 }
 
 void VisibleReasonsDeveloperTest::recipeApplyReasonTracksRoleTransitions()

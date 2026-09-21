@@ -689,6 +689,12 @@ void PlcHmi006ReleaseAndEnvelopeTest::inEnvelopeAdjustTargetsConvergeVisibly()
     QObject submissionScope; // RAII: severs the connection before the log dies
     attachSubmissionLog(&submissionScope, started.gw, submittedAddresses);
 
+    // Homing is no longer an HMI gate for the width adjust (user decision
+    // 2026-09-21), so this case now reaches the accepted path and must exercise
+    // a machine that can actually complete the adjust: home it first, exactly
+    // like the sibling cases. Without homing the PLC's own M43 rung refuses the
+    // command and the case would only ever observe 调宽失败.
+    homeReady(started);
     started.gw->model().writeRegister(kD130, kDeterministicCurrentWidth);
 
     const int targets[] = {kMinTargetWidthMm, kMaxTargetWidthMm};
@@ -700,8 +706,12 @@ void PlcHmi006ReleaseAndEnvelopeTest::inEnvelopeAdjustTargetsConvergeVisibly()
                  qPrintable(QStringLiteral("the in-envelope target %1 produced no visible "
                                            "command state")
                                 .arg(target)));
+        // The lifecycle's request-start (Accepted/Pending) is a legitimate part
+        // of the projection; convergence means the LAST state of the lifecycle
+        // is terminal. allTerminal() would reject the request-start itself, so
+        // the file's convergence helper is the correct predicate here.
         tickUntil(started, kMaxConvergenceTicks,
-                  [&] { return allTerminal(sink.since(mark)); });
+                  [&] { return everyCommandLifecycleReachedTerminal(sink.since(mark)); });
 
         const QVector<OperatorCommandStatus> produced = sink.since(mark);
         const bool accepted = [&] {
@@ -712,7 +722,7 @@ void PlcHmi006ReleaseAndEnvelopeTest::inEnvelopeAdjustTargetsConvergeVisibly()
             return false;
         }();
         if (accepted) {
-            QVERIFY2(allTerminal(produced),
+            QVERIFY2(everyCommandLifecycleReachedTerminal(produced),
                      qPrintable(QStringLiteral("the accepted in-envelope target %1 must "
                                                "converge to a terminal state")
                                         .arg(target)));

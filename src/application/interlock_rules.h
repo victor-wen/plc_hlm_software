@@ -26,6 +26,9 @@ class InterlockRules
 {
 public:
     static InterlockResult checkReset(const DeviceSnapshot &s, bool online);
+    // 回原点 (M50=1 持续写). Gates: online + manual mode + M3=0 + M0=0 +
+    // M14=0 + M50=0. User decision (2026-09-21): homing is its own command.
+    static InterlockResult checkHomeStart(const DeviceSnapshot &s, bool online);
     static InterlockResult checkAdjustWidth(const DeviceSnapshot &s, bool online,
                                             quint16 targetWidth);
     static InterlockResult checkStart(const DeviceSnapshot &s, bool online);
@@ -33,9 +36,10 @@ public:
     static InterlockResult checkEstopSet(const DeviceSnapshot &s, bool online);
     static InterlockResult checkEstopRelease(const DeviceSnapshot &s, bool online);
     static InterlockResult checkModeSwitch(const DeviceSnapshot &s, bool online);
-    // `address` is the manual coil (M106-M109). Addresses 0, M106 and M107
-    // require homing completion (M61=1) and no homing in progress (M50=0);
-    // M108/M109 do not. Every other gate applies to all four.
+    // `address` is the manual coil (M106-M109) and only selects the command
+    // identity today. User decision (2026-09-21): no manual command requires
+    // homing completion (M61) or an idle homing bit (M50). The common gates
+    // apply to all four: online + manual mode + M3=0 + M0=0 + M14=0.
     static InterlockResult checkManualCommand(const DeviceSnapshot &s, bool online,
                                               quint16 address = 0);
     static InterlockResult checkBypass(const DeviceSnapshot &s, bool online);

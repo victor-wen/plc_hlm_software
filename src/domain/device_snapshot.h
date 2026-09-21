@@ -16,7 +16,7 @@ enum class SnapshotField : quint8 {
     CurrentStep,     // D120, 0-5
     BeltSpeed,       // D122, 100-20000
     TargetWidth,     // D128, 50-400
-    CurrentWidth,    // D130, 50-400
+    CurrentWidth,    // D130, no range (user decision 2026-09-21: any u16)
     PulsePerMm,      // D204, 1-32767
     WidthSpeed,      // D220, 1-15
     Heartbeat,       // D140, no range (always valid)

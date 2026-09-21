@@ -499,12 +499,17 @@ void PlcCorrelationDeveloperTest::widthDeltaValidityIsIndependentAndRangeBounded
         QCOMPARE(gw.lastSnapshot().width_delta_valid, c.expected);
     }
 
-    // In-range D210 with an out-of-range D130 must stay independently valid.
-    gw.model().writeRegister(kD128, 200);
-    gw.model().writeRegister(kD130, 0);
-    gw.model().writeRegister(kD210, 200);
+    // In-range D210 with another out-of-range fast field must stay independently
+    // valid: WidthDelta has its own metadata and never aliases another field's
+    // validity. D130 is no longer range-checked (the PLC reports 0 before the
+    // first homing/adjustment, user decision 2026-09-21), so the independent
+    // side is driven through D128 (target width, still 50-400).
+    gw.model().writeRegister(kD128, 401); // out of the 50-400 target range
+    gw.model().writeRegister(kD130, 0);   // un-homed current width: always valid
+    gw.model().writeRegister(kD210, 200); // in -350..350
     gw.tick();
-    QVERIFY(!gw.lastSnapshot().fieldValid(SnapshotField::CurrentWidth));
+    QVERIFY(!gw.lastSnapshot().fieldValid(SnapshotField::TargetWidth));
+    QVERIFY(gw.lastSnapshot().fieldValid(SnapshotField::CurrentWidth));
     QVERIFY(gw.lastSnapshot().width_delta_valid);
 }
 

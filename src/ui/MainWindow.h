@@ -55,6 +55,7 @@ public:
     QPushButton *startButton() const;
     QPushButton *stopButton() const;
     QPushButton *resetButton() const;
+    QPushButton *homeStartButton() const;
 
     // --- hold-intent registry (spec §10.7) ------------------------------------
     // Pages register their HoldButtons here; page switches, modal dialogs and

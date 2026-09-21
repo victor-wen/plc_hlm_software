@@ -1011,6 +1011,9 @@ void Application::onCommandRequested(Command cmd)
     case Command::Reset:
         m_coordinator->reset();
         break;
+    case Command::HomeStart:
+        m_coordinator->homeStart();
+        break;
     case Command::Start:
         m_coordinator->start();
         break;

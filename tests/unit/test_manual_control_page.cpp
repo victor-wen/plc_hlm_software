@@ -179,12 +179,13 @@ void ManualControlPageTest::manualRejectedOnInterlockReasons()
     QVERIFY(m.manualUnmetReasons().contains(
         QStringLiteral("设备正在运行, 请先停止")));
 
-    // Not homed (M9=0): 未回原点.
+    // Not homed (M9=0): ALLOWED (user decision 2026-09-21: 手动控制 no longer
+    // requires 回原点完成 M61). The remaining gates below still reject.
     DeviceSnapshotData notHomed = validSnapshotData();
     notHomed.statusWord1 &= ~(quint16(1) << 9); // M9 clear
     model.updateSnapshot(DeviceSnapshot(notHomed));
-    QVERIFY(!m.canManual());
-    QVERIFY(m.manualUnmetReasons().contains(QStringLiteral("未回原点")));
+    QVERIFY(m.canManual());
+    QVERIFY(m.manualUnmetReasons().isEmpty());
 
     // Auto mode (M1=0, M2=1): 需要手动模式.
     DeviceSnapshotData autoMode = validSnapshotData();

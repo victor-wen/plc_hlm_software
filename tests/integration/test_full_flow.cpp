@@ -54,6 +54,7 @@ namespace {
 // Protocol addresses (0-based, matching AddressTable).
 constexpr quint16 kM42 = 42;
 constexpr quint16 kM50 = 50;
+constexpr quint16 kM61 = 61; // 回原点完成 (mirrored to M9 in D100 bit9)
 constexpr quint16 kM100 = 100;
 constexpr quint16 kM101 = 101;
 constexpr quint16 kM102 = 102;
@@ -323,19 +324,31 @@ void FullFlowTest::fullFlowResetAdjustAutoStartStop()
                 results.append({cmd, ok});
             });
 
-    // 复位 (M103 pulse + the single M50=1 home-start write, PLC-HMI-011 D2) ->
-    // converges on the fixed 200 ms boundary (PLC-HMI-010 D1/D3); no M50/M61
-    // readback participates in the result.
+    // 复位 (M103 pulse only, user decision 2026-09-21) -> converges on the
+    // fixed 200 ms boundary (PLC-HMI-010 D1/D3); no M50/M61 readback
+    // participates in the result, and the reset must NOT write M50.
     QVERIFY(c->reset().accepted);
-    gw.tick(); // M103 pulse completion -> the M50=1 home-start write is issued
-    QVERIFY(gw.model().readCoil(kM50));
+    gw.tick(); // M103 pulse completion
+    QVERIFY(!gw.model().readCoil(kM50)); // the reset no longer starts homing
     QVERIFY(c->resetInProgress());
-    gw.tick(); // M50 write completion
-    QVERIFY(gw.lastSnapshot().m50()); // homing in progress
     now += ControlCoordinator::kResetCompletionDelayMs;
     gw.tick();
     QVERIFY(accepted.contains(Command::Reset));
     QVERIFY(results.contains({Command::Reset, true}));
+
+    // 回原点 (one sustained M50=1 write, user decision 2026-09-21): the PLC
+    // starts homing, clears M50 itself and raises M61/M9 when it completes.
+    // The width adjust below still needs a homed machine on the PLC side.
+    QVERIFY(c->homeStart().accepted);
+    QVERIFY(c->homeStartInProgress());
+    gw.tick();
+    QVERIFY(gw.model().readCoil(kM50)); // the home-start write reached the PLC
+    gw.tick(); // the M50 readback confirms the write (回原点已启动)
+    gw.tick(); // home return takes 2 s: the PLC clears M50 and sets M61
+    QVERIFY(!c->homeStartInProgress());
+    QVERIFY(!gw.model().readCoil(kM50));
+    QVERIFY(gw.model().readCoil(kM61));
+    QVERIFY(results.contains({Command::HomeStart, true}));
 
     // 配方调宽 300: D128 written, M43 pulse, converges on M44 + D130=300.
     // D204 is pinned to 1280 so the pulse-based run keeps the documented 7 s
@@ -383,7 +396,14 @@ void FullFlowTest::adjustPreconditionFailure()
     std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
     c->setRole(Role::Admin);
 
-    // Not homed: adjustWidth rejected by the interlock gate.
+    // User decision 2026-09-21: an un-homed machine is no longer an HMI adjust
+    // gate, so the remaining precondition exercised here is the automatic mode
+    // (M1 manual required). The command must still be rejected visibly and send
+    // no M43 pulse.
+    QVERIFY(c->setMode(true).accepted); // M104=1 -> M2=1, M1=0
+    gw.tick();
+    QVERIFY(gw.lastSnapshot().m2());
+
     QSignalSpy rejectedSpy(c.get(), &ControlCoordinator::commandRejected);
     const ControlCoordinator::CommandResult r = c->adjustWidth(300);
     QVERIFY(!r.accepted);
@@ -442,13 +462,13 @@ void FullFlowTest::estopSetReleaseLatchesFault()
     QVERIFY(gw.lastSnapshot().m14());
     QCOMPARE(gw.lastSnapshot().faultCode(), quint16(1));
 
-    // Reset (M103 pulse + the single M50=1 home-start write): the PLC clears the
+    // Reset (M103 pulse only, user decision 2026-09-21): the PLC clears the
     // latched fault and the reset converges on the HMI's fixed 200 ms boundary
-    // once both correlated completions arrived (PLC-HMI-010 D3, PLC-HMI-011 D2).
+    // once the pulse completion arrived (PLC-HMI-010 D3). Homing is the
+    // separate 回原点 command and is not part of the reset.
     QVERIFY(c->reset().accepted);
-    gw.tick(); // M103 pulse completion -> the M50=1 home-start write is issued
-    QVERIFY(gw.model().readCoil(kM50));
-    gw.tick(); // M50 write completion
+    gw.tick(); // M103 pulse completion
+    QVERIFY(!gw.model().readCoil(kM50)); // the reset no longer starts homing
     now += ControlCoordinator::kResetCompletionDelayMs;
     gw.tick();
     QVERIFY(!c->resetInProgress());

@@ -102,8 +102,13 @@ public:
     InterlockResult interlock(Command cmd, const DeviceSnapshot &s,
                               quint16 targetWidth = 0, quint16 address = 0) const;
 
-    // 复位 (spec §10.2). Admin only.
+    // 复位 (spec §10.2). Admin only. Sends the M103 pulse; it does NOT start
+    // homing (user decision 2026-09-21 — 回原点 is homeStart()).
     CommandResult reset();
+    // 回原点 (user decision 2026-09-21). Admin only. Writes one sustained
+    // M50=1 coil (never a pulse, never repeated); the PLC clears it and raises
+    // M61/M9 when homing ends.
+    CommandResult homeStart();
     // 配方调宽 (spec §10.3). Admin only. `targetWidth` 50-400.
     CommandResult adjustWidth(quint16 targetWidth);
     // 模式切换 (spec §10.1). Admin only.
@@ -143,6 +148,7 @@ public:
     bool hasSnapshot() const { return m_snapshot.has_value(); }
     DeviceSnapshot snapshot() const { return m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData())); }
     bool resetInProgress() const { return m_resetPending; }
+    bool homeStartInProgress() const { return m_homeStartCommandPending; }
     bool adjustInProgress() const { return m_adjustPhase != AdjustPhase::Idle; }
     bool startInProgress() const { return m_startPhase != StartPhase::Idle; }
     bool stopInProgress() const { return m_stopPhase != StopPhase::Idle; }
@@ -248,18 +254,16 @@ private:
     bool hasManualConfirm(Command cmd, quint16 address, bool value) const;
     void confirmManualFromSnapshot(const DeviceSnapshot &s);
     void failAllManualConfirms(const QString &detail);
+    // Converges exactly the pending confirmation for (cmd, address); a missing
+    // entry is a late/duplicate outcome and is ignored (exactly one terminal).
+    void failManualConfirm(Command cmd, quint16 address, const QString &detail);
 
     void onAdjustSnapshot(const DeviceSnapshot &s);
     void onStartSnapshot(const DeviceSnapshot &s);
     void onStopSnapshot(const DeviceSnapshot &s);
-    // Issues the single sustained M50=1 home-start write once the M103 pulse
-    // completion succeeded (PLC-HMI-011 D2). No-op when no reset is pending, the
-    // pulse has not completed, or the write was already issued.
-    void issueHomeStart();
-    // Converges the accepted reset from the snapshot feed: issues the M50 write
-    // if the pulse completion arrived without it, enforces the M50 confirmation
-    // deadline, and emits the single 复位完成 only when both correlated
-    // completions succeeded and the fixed 200 ms minimum elapsed. No-op when no
+    // Converges the accepted reset from the snapshot feed: enforces the M103
+    // pulse confirmation deadline and emits the single 复位完成 once the pulse
+    // completion succeeded and the fixed 200 ms minimum elapsed. No-op when no
     // reset is pending (exactly one terminal).
     void onResetSnapshot();
 
@@ -274,28 +278,25 @@ private:
     std::optional<DeviceSnapshot> m_snapshot;
 
     // Command lifecycle state.
-    // Reset is a two-operation handshake (PLC-HMI-011): the M103 pulse is
-    // submitted first, then one sustained M50=1 home-start write is issued only
-    // after the pulse's correlated completion succeeded. The single terminal
-    // 复位完成 requires both correlated completions to succeed and the fixed
-    // 200 ms minimum from the pulse submission to have elapsed; it never uses
-    // snapshot M50/M61/M14/D110 as evidence.
+    // Reset (user decision 2026-09-21): the M103 pulse is submitted and the
+    // single terminal 复位完成 requires its correlated completion to succeed
+    // and the fixed 200 ms minimum to have elapsed. Reset does not write M50 and
+    // never uses snapshot M50/M61/M14/D110 as evidence; 回原点 is the separate
+    // Command::HomeStart flow.
     bool m_resetPending = false;
     AdjustPhase m_adjustPhase = AdjustPhase::Idle;
     StartPhase m_startPhase = StartPhase::Idle;
     StopPhase m_stopPhase = StopPhase::Idle;
     std::optional<quint16> m_adjustTarget;
     qint64 m_resetCompletionDeadlineMs = 0; // clock time of the fixed 200 ms boundary
-    // M103 pulse correlated completion (PLC-HMI-011 D3). The M50 write may only
-    // be issued after this is true.
+    // M103 pulse correlated completion; the reset terminal may only follow it.
     bool m_resetPulseCompleted = false;
-    // The single M50=1 home-start write was submitted (never repeated).
-    bool m_homeStartIssued = false;
-    // The M50 write's correlated completion reported result==true.
-    bool m_homeStartCompleted = false;
-    // Defensive M50 completion deadline (kHomeStartConfirmTimeoutMs from the
-    // pulse completion); 0 while the write has not been issued.
+    // Defensive M103 pulse confirmation deadline (kHomeStartConfirmTimeoutMs
+    // from the pulse submission); 0 while no reset is pending.
     qint64 m_homeStartDeadlineMs = 0;
+    // Command::HomeStart is awaiting its M50 readback confirmation through
+    // m_manualPending (same lifecycle class as the hold/latch/bypass commands).
+    bool m_homeStartCommandPending = false;
     qint64 m_adjustDeadlineMs = 0; // fixed PLC width timeout + 3 s (spec §10.3)
     qint64 m_startDeadlineMs = 0;
     qint64 m_stopDeadlineMs = 0;

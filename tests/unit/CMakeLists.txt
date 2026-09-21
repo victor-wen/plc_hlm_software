@@ -536,7 +536,19 @@ target_link_libraries(test_plc_hmi_009_developer_regression PRIVATE
 add_test(NAME plc_hmi_009_developer_regression
     COMMAND test_plc_hmi_009_developer_regression)
 
-set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page control_panel operator_command_lifecycle command_status_projection command_feedback_pages operator_lifecycle_developer recipe_editor_state recipe_result_feedback recipe_editor_developer serial_settings_page visible_disabled_reasons visible_reasons_developer plc_hmi_006_responsive_envelope plc_hmi_006_layout plc_hmi_007_placeholder plc_hmi_007_settings_seed plc_hmi_007_diagnostics_surface plc_hmi_007_settings_edit_preserve_developer PROPERTIES
+# --- 回原点 (HomeStart) surface: developer-owned button/command regression ----
+# QTEST_MAIN widget target: user decision 2026-09-21 split homing out of 复位, so
+# the ActionBar's 回原点 control must exist, dispatch Command::HomeStart (never
+# Reset), stay admin-only and expose its remaining gate as visible inline text.
+
+add_executable(test_home_start_button_developer home_start_button_developer_test.cpp)
+target_link_libraries(test_home_start_button_developer PRIVATE
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME home_start_button_developer COMMAND test_home_start_button_developer)
+
+set_tests_properties(widgets shell overview_page recipe_width_page manual_control_page alarm_page audit_log_page diagnostics_page users_settings_page control_panel operator_command_lifecycle command_status_projection command_feedback_pages operator_lifecycle_developer recipe_editor_state recipe_result_feedback recipe_editor_developer serial_settings_page visible_disabled_reasons visible_reasons_developer plc_hmi_006_responsive_envelope plc_hmi_006_layout plc_hmi_007_placeholder plc_hmi_007_settings_seed plc_hmi_007_diagnostics_surface plc_hmi_007_settings_edit_preserve_developer home_start_button_developer PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
 )
 

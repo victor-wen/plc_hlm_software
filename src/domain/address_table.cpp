@@ -145,7 +145,7 @@ AddressTable::AddressTable()
         QStringLiteral("目标宽度"), AccessType::ReadWrite, ValueType::U16, 0, 50, 400,
         1.0, QStringLiteral("mm")));
     m_defs.push_back(def(QStringLiteral("D"), 130, QStringLiteral("D130"),
-        QStringLiteral("当前宽度"), AccessType::Read, ValueType::U16, 0, 50, 400,
+        QStringLiteral("当前宽度"), AccessType::Read, ValueType::U16, 0, 0, 0,
         1.0, QStringLiteral("mm")));
     m_defs.push_back(def(QStringLiteral("D"), 136, QStringLiteral("D136"),
         QStringLiteral("调宽脉冲数(低字)"), AccessType::Read, ValueType::I32, 137));

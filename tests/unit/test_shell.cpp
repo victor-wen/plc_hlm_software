@@ -59,15 +59,21 @@ DeviceSnapshotData validSnapshotData()
 // (which pushes overallQuality to OutOfRange) and never lowers fastQuality,
 // which keeps the passed-in transport/age quality. Locks the assumption that
 // "field out of range" and "fast block stale/errored" are independent.
-DeviceSnapshot decodedFastSnapshot(quint16 statusWord1, quint16 currentWidth)
+//
+// `currentWidth` is carried verbatim (D130 is no longer range-checked: the PLC
+// legitimately reports 0 before the first homing/adjustment, user decision
+// 2026-09-21). `beltSpeed` is the knob for an unrelated out-of-range field,
+// because D122 (100-20000) is still range-checked.
+DeviceSnapshot decodedFastSnapshot(quint16 statusWord1, quint16 currentWidth,
+                                   quint16 beltSpeed = 1500)
 {
     quint16 raw[41] = {0};
     raw[0] = statusWord1;   // D100 -> M0-M14
     raw[10] = 0;            // D110 fault code (0-10)
     raw[20] = 0;            // D120 step (0-5)
-    raw[22] = 1500;         // D122 belt speed (100-20000)
+    raw[22] = beltSpeed;    // D122 belt speed (100-20000)
     raw[28] = 100;          // D128 target width (50-400)
-    raw[30] = currentWidth; // D130 current width (50-400)
+    raw[30] = currentWidth; // D130 current width (no range)
     raw[40] = 1;            // D140 heartbeat
     const QDateTime now = QDateTime::currentDateTime();
     return DeviceSnapshot(
@@ -228,10 +234,12 @@ void ShellTest::modelFlagsUseOwningBlockOnly()
     // bits/fields, not the whole snapshot (spec §9, §11.2).
     ShellModel model;
 
-    // Fast block valid + an unrelated out-of-range field (D130=0): the fast
-    // state bits M1/M2/M3/M9/M14 are still confirmed.
-    model.updateSnapshot(decodedFastSnapshot((1 << 2) | (1 << 9), 0));
+    // Fast block valid + an unrelated out-of-range field (D122 belt speed 50 is
+    // below its 100-20000 range): the fast state bits M1/M2/M3/M9/M14 are still
+    // confirmed.
+    model.updateSnapshot(decodedFastSnapshot((1 << 2) | (1 << 9), 0, 50));
     QVERIFY(!model.snapshotFresh()); // whole snapshot is OutOfRange
+    QVERIFY(!model.snapshot().fieldValid(SnapshotField::BeltSpeed));
     QVERIFY(model.modeKnown());
     QVERIFY(model.isAutoMode());     // M2
     QVERIFY(!model.isRunning());     // M3=0
@@ -428,9 +436,9 @@ void ShellTest::actionButtonsEnabledForAdminOnline()
 void ShellTest::unrelatedOutOfRangeFieldDoesNotDisableActions()
 {
     // Regression (root cause): a single out-of-range decoded field such as an
-    // un-homed D130 current width = 0 makes the aggregate snapshot quality
+    // out-of-range D122 belt speed makes the aggregate snapshot quality
     // OutOfRange, so ShellModel::snapshotFresh() is false. None of the bar's
-    // actions reads D130, so stop/estop (online only, spec §10.5/§10.6),
+    // actions reads D122, so stop/estop (online only, spec §10.5/§10.6),
     // mode switch (online && M3=0, spec §10.2) and start (fast-block M bits,
     // spec §10.4) must remain available. Only the dependent field may disable
     // an action (spec §9, §11.2).
@@ -439,15 +447,17 @@ void ShellTest::unrelatedOutOfRangeFieldDoesNotDisableActions()
     ShellModel *model = w.shellModel();
     model->setUser(QStringLiteral("admin"), Role::Admin);
 
-    // D130 current width = 0 decoded through the production path. It only sets
-    // invalidFields/overallQuality; fastQuality stays Valid.
+    // D122 belt speed = 50 decoded through the production path. It only sets
+    // invalidFields/overallQuality; fastQuality stays Valid. D130=0 (the
+    // un-homed current width) no longer marks anything invalid.
     model->updateSnapshot(
-        decodedFastSnapshot((1 << 2) | (1 << 8), 0)); // M2 auto, M8 ready, M3=0
+        decodedFastSnapshot((1 << 2) | (1 << 8), 0, 50)); // M2 auto, M8 ready, M3=0
 
     // Sanity: the bug's trigger (snapshot-wide freshness) is genuinely false,
     // yet the fast block the actions depend on is still usable.
     QVERIFY(!model->snapshotFresh());
-    QVERIFY(!model->snapshot().fieldValid(SnapshotField::CurrentWidth));
+    QVERIFY(!model->snapshot().fieldValid(SnapshotField::BeltSpeed));
+    QVERIFY(model->snapshot().fieldValid(SnapshotField::CurrentWidth));
     QVERIFY(model->snapshot().fastQuality() == DataQuality::Valid);
 
     auto *manual = w.findChild<QPushButton *>(QStringLiteral("manualModeButton"));
@@ -640,17 +650,18 @@ void ShellTest::emptySnapshotOnlineKeepsAdvancedActionsDisabled()
 
 void ShellTest::unrelatedOutOfRangeFieldKeepsTopBarReal()
 {
-    // Regression (R1/R4): an unrelated out-of-range field (D130 current width
-    // 0) made modeKnown() -> snapshotFresh() false, blanking the whole top bar
+    // Regression (R1/R4): an unrelated out-of-range field (D122 belt speed 50)
+    // made modeKnown() -> snapshotFresh() false, blanking the whole top bar
     // to "—" although the fast block carrying M1/M2/M3/M8/M9 is valid.
     MainWindow w;
     w.show();
     ShellModel *model = w.shellModel();
     model->setUser(QStringLiteral("admin"), Role::Admin);
     model->updateSnapshot(
-        decodedFastSnapshot((1 << 2) | (1 << 8) | (1 << 9), 0)); // auto+ready+homed
+        decodedFastSnapshot((1 << 2) | (1 << 8) | (1 << 9), 0, 50)); // auto+ready+homed
 
     QVERIFY(!model->snapshotFresh()); // unrelated field still fails whole-fresh
+    QVERIFY(!model->snapshot().fieldValid(SnapshotField::BeltSpeed));
     QVERIFY(model->modeKnown());
     QVERIFY(model->isAutoMode());
     QVERIFY(model->isHomed());

@@ -18,13 +18,14 @@ PermissionResult PermissionPolicy::check(Role role, Command cmd)
             r.reason = QStringLiteral("需要操作员或管理员权限");
         return r;
     case Command::Reset:
+    case Command::HomeStart:
     case Command::AdjustWidth:
     case Command::ModeSwitch:
     case Command::EstopRelease:
     case Command::ManualCommand:
     case Command::Bypass:
     case Command::ParameterChange:
-        // 模式切换、复位、解除急停、配方调宽、手动、屏蔽、设置: 仅管理员
+        // 模式切换、复位、回原点、解除急停、配方调宽、手动、屏蔽、设置: 仅管理员
         // (spec §11.4).
         r.allowed = (role == Role::Admin);
         if (!r.allowed)

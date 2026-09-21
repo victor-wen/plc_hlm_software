@@ -58,6 +58,9 @@ bool commandCoilValue(const DeviceSnapshot &s, quint16 address)
 {
     switch (address) {
     case kM42: return s.m42();
+    // M50 lives in the HOME poll block (M50-M53), not the command block; its
+    // freshness is handled by confirmationEvidenceFresh below.
+    case kM50: return s.m50();
     case kM105: return s.m105();
     case kM106: return s.m106();
     case kM107: return s.m107();
@@ -71,28 +74,43 @@ bool commandCoilValue(const DeviceSnapshot &s, quint16 address)
 
 QString manualConfirmDetail(Command cmd)
 {
-    return cmd == Command::Bypass ? QStringLiteral("屏蔽命令已确认")
-                                  : QStringLiteral("手动命令已确认");
+    switch (cmd) {
+    case Command::Bypass:
+        return QStringLiteral("屏蔽命令已确认");
+    case Command::HomeStart:
+        return QStringLiteral("回原点已启动");
+    default:
+        return QStringLiteral("手动命令已确认");
+    }
 }
 
 QString manualTimeoutDetail(Command cmd)
 {
-    return cmd == Command::Bypass
-        ? QStringLiteral("屏蔽命令确认超时, 请检查设备")
-        : QStringLiteral("手动命令确认超时, 请检查设备");
+    switch (cmd) {
+    case Command::Bypass:
+        return QStringLiteral("屏蔽命令确认超时, 请检查设备");
+    case Command::HomeStart:
+        return QStringLiteral("回原点启动确认超时, 请检查设备");
+    default:
+        return QStringLiteral("手动命令确认超时, 请检查设备");
+    }
 }
 
 // REV-P1-2: a confirming bit may only be taken from the source block that
 // actually carries it and only while that block's evidence is fresh/valid for
 // the address. M42 is sourced from the fast block (quality encodes staleness,
-// the age guard is defensive); M105-M111 from the command block. A stale or
-// failed block therefore cannot confirm a just-issued command: the pending
-// entry is left to the existing defensive timeout.
+// the age guard is defensive); M50 from the home block (kHomeStaleMs = 1000);
+// M105-M111 from the command block. A stale or failed block therefore cannot
+// confirm a just-issued command: the pending entry is left to the existing
+// defensive timeout.
 bool confirmationEvidenceFresh(const DeviceSnapshot &s, quint16 address)
 {
     if (address == kM42)
         return s.fast_quality == DataQuality::Valid
             && s.fast_age_ms <= kFastStaleMs;
+    if (address == kM50)
+        return s.home_quality == DataQuality::Valid
+            && s.home_age_ms <= kHomeStaleMs;
     return s.command_quality == DataQuality::Valid
         && s.command_age_ms <= kCommandStaleMs;
 }
@@ -135,6 +153,7 @@ InterlockResult ControlCoordinator::interlock(Command cmd, const DeviceSnapshot 
 {
     switch (cmd) {
     case Command::Reset: return InterlockRules::checkReset(s, m_online);
+    case Command::HomeStart: return InterlockRules::checkHomeStart(s, m_online);
     case Command::AdjustWidth: return InterlockRules::checkAdjustWidth(s, m_online, targetWidth);
     case Command::ModeSwitch: return InterlockRules::checkModeSwitch(s, m_online);
     case Command::Start: return InterlockRules::checkStart(s, m_online);
@@ -191,20 +210,18 @@ ControlCoordinator::CommandResult ControlCoordinator::reset()
         return rejectCommand(Command::Reset,
                              QStringLiteral("复位已在进行中, 请等待当前复位结束"));
 
-    // Reset (PLC-HMI-011 D2): the M103 pulse is submitted first; the single
-    // sustained M50=1 home-start write follows only from the pulse's successful
-    // correlated completion (or the next snapshot), never before it. The
-    // command converges to exactly one terminal 复位完成 once both correlated
-    // completions succeeded and the fixed 200 ms minimum from this pulse
-    // submission has elapsed; it never uses snapshot M50/M61/M14/D110.
+    // Reset (PLC-HMI-010 fixed-delay result, user decision 2026-09-21): the
+    // M103 pulse is submitted and the command converges to exactly one 复位完成
+    // once its correlated completion succeeded and the fixed 200 ms minimum
+    // elapsed. The pulse no longer starts homing through the HMI: 回原点 is its
+    // own user-driven command (Command::HomeStart writes one sustained M50=1),
+    // so a reset and a home start are independent and the operator sees which
+    // one is in flight in the persistent shell status.
     m_resetPending = true;
     m_resetCompletionDeadlineMs = m_nowMs() + kResetCompletionDelayMs;
     m_resetPulseCompleted = false;
-    m_homeStartIssued = false;
-    m_homeStartCompleted = false;
-    // The defensive handshake deadline covers the whole reset: a pulse
-    // completion that never arrives converges here just like a home-start
-    // completion that never arrives (never pending indefinitely, D4).
+    // The defensive pulse deadline covers the whole reset: a pulse completion
+    // that never arrives converges here (never pending indefinitely).
     m_homeStartDeadlineMs = m_nowMs() + kHomeStartConfirmTimeoutMs;
     emit commandAccepted(Command::Reset);
 
@@ -213,6 +230,37 @@ ControlCoordinator::CommandResult ControlCoordinator::reset()
     } else {
         finishCommand(Command::Reset, false, QStringLiteral("M103 脉冲发送失败"));
     }
+    return {true, QString()};
+}
+
+ControlCoordinator::CommandResult ControlCoordinator::homeStart()
+{
+    if (const QString blocked = blockedByRestrictedMode(Command::HomeStart);
+        !blocked.isEmpty())
+        return rejectCommand(Command::HomeStart, blocked);
+    const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
+    CommandResult g = gate(Command::HomeStart, s);
+    if (!g.accepted)
+        return rejectCommand(Command::HomeStart, g.reason);
+    if (m_homeStartCommandPending)
+        return rejectCommand(Command::HomeStart,
+                             QStringLiteral("回原点已在进行中, 请等待完成"));
+
+    // 回原点 (user decision 2026-09-21): exactly one sustained M50=1 coil
+    // write. M50 is never pulsed and never repeated; the PLC clears it when
+    // homing ends and sets M61/M9. The command is confirmed when the M50
+    // readback (HOME poll block) reports the requested value, with the same
+    // defensive timeout class as the other manual confirmations.
+    m_homeStartCommandPending = true;
+    if (!submitCoil(Command::HomeStart, kM50, true, CommandPriority::Normal)) {
+        m_homeStartCommandPending = false;
+        return rejectCommand(Command::HomeStart, QStringLiteral("命令发送失败"));
+    }
+
+    m_manualPending.append(
+        {Command::HomeStart, kM50, true, m_nowMs() + kHomeStartConfirmTimeoutMs});
+    emit commandAccepted(Command::HomeStart);
+    emitPending(Command::HomeStart);
     return {true, QString()};
 }
 
@@ -733,18 +781,11 @@ void ControlCoordinator::onSubmissionCompleted(const SubmissionCompletion &compl
     // decides (spec §11.2 no optimistic success). Only a failed transfer
     // converges the correlated command here.
     if (completion.result) {
-        // PLC-HMI-011 D2: the successful M103 pulse completion is the trigger
-        // for the single sustained M50=1 home-start write. The M50 write's own
-        // successful completion is only bookkeeping; the terminal success is
-        // decided on the snapshot feed once both outcomes are known.
-        if (pending.cmd == Command::Reset) {
-            if (pending.operation == PlcOperation::Pulse) {
-                m_resetPulseCompleted = true;
-                issueHomeStart();
-            } else {
-                m_homeStartCompleted = true;
-            }
-        }
+        // The M103 pulse's successful correlated completion is the only
+        // transport evidence the reset needs: the terminal 复位完成 is decided
+        // on the snapshot feed once the fixed 200 ms minimum elapsed.
+        if (pending.cmd == Command::Reset && pending.operation == PlcOperation::Pulse)
+            m_resetPulseCompleted = true;
         return;
     }
 
@@ -752,16 +793,20 @@ void ControlCoordinator::onSubmissionCompleted(const SubmissionCompletion &compl
     case Command::Reset:
         if (!m_resetPending)
             break;
-        if (pending.operation == PlcOperation::Pulse) {
-            // The M103 pulse failed: the home-start write is never attempted
-            // (PLC-HMI-011 D4) and the command converges visibly.
-            finishCommand(Command::Reset, false, QStringLiteral("M103 脉冲发送失败"));
-        } else {
-            // The M50 write failed: one visible non-success terminal, never
-            // masked by the fixed delay (PLC-HMI-011 D4).
-            finishCommand(Command::Reset, false, QStringLiteral("M50 回原点启动写入失败"));
-        }
+        // A failed M103 pulse converges the reset visibly (never a silent
+        // success, never masked by the fixed delay).
+        finishCommand(Command::Reset, false, QStringLiteral("M103 脉冲发送失败"));
         break;
+    case Command::HomeStart: {
+        // The M50 write failed: the pending confirmation owns the single
+        // terminal, so it converges here exactly once.
+        if (!m_homeStartCommandPending)
+            break;
+        m_homeStartCommandPending = false;
+        failManualConfirm(Command::HomeStart, kM50,
+                          QStringLiteral("M50 回原点写入失败"));
+        break;
+    }
     case Command::AdjustWidth:
         if (pending.operation == PlcOperation::Pulse) {
             // A failed M43 pulse means the width adjustment never started.
@@ -813,13 +858,15 @@ void ControlCoordinator::onConnectionChanged(bool online)
     // Offline: abort active flows, never optimistic, never replay (spec §13).
     if (m_resetPending) {
         m_resetPending = false;
-        // The handshake state dies with the generation: a late M103/M50
+        // The pulse bookkeeping dies with the generation: a late M103
         // completion for the lost link can never advance a new reset.
         m_resetPulseCompleted = false;
-        m_homeStartIssued = false;
-        m_homeStartCompleted = false;
         m_homeStartDeadlineMs = 0;
         emit commandResult(Command::Reset, false, QStringLiteral("通讯中断"));
+    }
+    if (m_homeStartCommandPending) {
+        m_homeStartCommandPending = false;
+        failManualConfirm(Command::HomeStart, kM50, QStringLiteral("通讯中断"));
     }
     if (m_adjustPhase != AdjustPhase::Idle) {
         m_adjustPhase = AdjustPhase::Idle;
@@ -870,47 +917,23 @@ void ControlCoordinator::onConnectionChanged(bool online)
 
 // --- flow snapshot handlers -------------------------------------------------
 
-void ControlCoordinator::issueHomeStart()
-{
-    if (!m_resetPending || !m_resetPulseCompleted || m_homeStartIssued)
-        return;
-    // Exactly one sustained coil write, never a pulse (PLC-HMI-011 D2). The
-    // write is submitted at the current priority class of the other flows.
-    if (submitCoil(Command::Reset, kM50, true, CommandPriority::Normal)) {
-        m_homeStartIssued = true;
-    } else {
-        // Submission rejected: one visible non-success terminal with a
-        // non-empty detail, never masked by the fixed delay (D4).
-        finishCommand(Command::Reset, false, QStringLiteral("M50 回原点启动写入失败"));
-    }
-}
-
 void ControlCoordinator::onResetSnapshot()
 {
     if (!m_resetPending)
         return;
-    // A pulse completion may have been consumed before the write was issued
-    // (the frozen helper drives same-time snapshots): issue it here as well.
-    issueHomeStart();
-    if (!m_resetPending)
-        return; // a rejected M50 submission just converged the reset
-    if (!m_homeStartIssued) {
-        // The pulse completion is still outstanding: wait for it, but not
-        // indefinitely — a pulse whose correlated completion never arrives must
-        // still converge to one visible non-success terminal (D4).
+    // The M103 pulse's correlated completion is required transport evidence;
+    // a pulse whose completion never arrives must still converge to one visible
+    // non-success terminal (never pending indefinitely).
+    if (!m_resetPulseCompleted) {
         if (m_nowMs() >= m_homeStartDeadlineMs)
             finishCommand(Command::Reset, false,
                           QStringLiteral("M103 脉冲确认超时, 请检查设备"));
         return;
     }
-    if (!m_homeStartCompleted && m_nowMs() >= m_homeStartDeadlineMs) {
-        finishCommand(Command::Reset, false,
-                      QStringLiteral("M50 回原点启动确认超时, 请检查设备"));
-        return;
-    }
-    // Both correlated transport outcomes succeeded and the fixed minimum delay
-    // from the M103 submission elapsed: exactly one 复位完成 (PLC-HMI-011 D3).
-    if (m_homeStartCompleted && m_nowMs() >= m_resetCompletionDeadlineMs)
+    // The pulse outcome is known and the fixed minimum delay from its
+    // submission elapsed: exactly one 复位完成. The result never uses ordinary
+    // snapshot M50/M61/M14/D110 (the reset does not start homing any more).
+    if (m_nowMs() >= m_resetCompletionDeadlineMs)
         finishCommand(Command::Reset, true, QStringLiteral("复位完成"));
 }
 
@@ -1015,12 +1038,13 @@ void ControlCoordinator::finishCommand(Command cmd, bool ok, const QString &deta
     switch (cmd) {
     case Command::Reset:
         m_resetPending = false;
-        // The handshake state belongs to the converged generation: a new reset
-        // starts clean, and a late completion can never advance it.
+        // The pulse bookkeeping belongs to the converged generation: a new
+        // reset starts clean, and a late completion can never advance it.
         m_resetPulseCompleted = false;
-        m_homeStartIssued = false;
-        m_homeStartCompleted = false;
         m_homeStartDeadlineMs = 0;
+        break;
+    case Command::HomeStart:
+        m_homeStartCommandPending = false;
         break;
     case Command::AdjustWidth:
         m_adjustPhase = AdjustPhase::Idle;
@@ -1065,8 +1089,10 @@ QString ControlCoordinator::pendingDetail(Command cmd) const
     case Command::Reset:
         // Fire-and-confirm-by-fixed-delay (PLC-HMI-010 D1/D5): a single honest
         // pending detail — no manual-switch and no homing step, neither of
-        // which the request performs.
+        // which the request performs. 回原点 is its own command now.
         return QStringLiteral("复位中: 正在发送复位信号");
+    case Command::HomeStart:
+        return QStringLiteral("回原点中: 等待 PLC 确认 M50");
     case Command::AdjustWidth:
         return m_adjustPhase == AdjustPhase::WaitTargetWrite
             ? QStringLiteral("调宽: 正在写入目标宽度")
@@ -1103,6 +1129,13 @@ bool ControlCoordinator::hasManualConfirm(Command cmd, quint16 address, bool val
 
 void ControlCoordinator::confirmManualFromSnapshot(const DeviceSnapshot &s)
 {
+    // A converged HomeStart entry also releases the command's own pending flag,
+    // whichever way it converges (snapshot confirmation or defensive timeout):
+    // the flag drives the duplicate rejection and must never outlive the entry.
+    const auto releaseHomeStartFlag = [this](const ManualConfirm &c) {
+        if (c.cmd == Command::HomeStart)
+            m_homeStartCommandPending = false;
+    };
     for (int i = 0; i < m_manualPending.size();) {
         const ManualConfirm c = m_manualPending.at(i);
         // REV-P1-2: only fresh/valid evidence for the confirmed address may
@@ -1111,11 +1144,13 @@ void ControlCoordinator::confirmManualFromSnapshot(const DeviceSnapshot &s)
         if (confirmationEvidenceFresh(s, c.address)
             && commandCoilValue(s, c.address) == c.value) {
             m_manualPending.removeAt(i);
+            releaseHomeStartFlag(c);
             emit commandResult(c.cmd, true, manualConfirmDetail(c.cmd));
             continue;
         }
         if (m_nowMs() >= c.deadlineMs) {
             m_manualPending.removeAt(i);
+            releaseHomeStartFlag(c);
             emit commandResult(c.cmd, false, manualTimeoutDetail(c.cmd));
             continue;
         }
@@ -1127,6 +1162,7 @@ void ControlCoordinator::failAllManualConfirms(const QString &detail)
 {
     const QVector<ManualConfirm> pending = m_manualPending;
     m_manualPending.clear();
+    m_homeStartCommandPending = false;
     // A cancelled confirmation must not leave dangling submission bookkeeping:
     // drop every submission identity owned by the cancelled command so a late
     // completion can never converge it a second time (OB-7: exactly one
@@ -1135,6 +1171,23 @@ void ControlCoordinator::failAllManualConfirms(const QString &detail)
         clearPendingSubmissions(c.cmd);
     for (const ManualConfirm &c : pending)
         emit commandResult(c.cmd, false, detail);
+}
+
+void ControlCoordinator::failManualConfirm(Command cmd, quint16 address,
+                                           const QString &detail)
+{
+    // Converges exactly the pending confirmation for (cmd, address); a missing
+    // entry is a late/duplicate outcome and is ignored.
+    for (int i = 0; i < m_manualPending.size(); ++i) {
+        if (m_manualPending.at(i).cmd == cmd && m_manualPending.at(i).address == address) {
+            m_manualPending.removeAt(i);
+            if (cmd == Command::HomeStart)
+                m_homeStartCommandPending = false;
+            clearPendingSubmissions(cmd);
+            emit commandResult(cmd, false, detail);
+            return;
+        }
+    }
 }
 
 void ControlCoordinator::failPendingLogoutClear(const QString &detail)

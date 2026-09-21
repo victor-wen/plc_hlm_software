@@ -128,7 +128,14 @@ DeviceSnapshotData decodeFastBlock(const quint16 raw[41], quint64 sequence,
     checkRange(d, SnapshotField::CurrentStep, d.currentStep, 0, 5);
     checkRange(d, SnapshotField::BeltSpeed, d.beltSpeed, 100, 20000);
     checkRange(d, SnapshotField::TargetWidth, d.targetWidth, 50, 400);
-    checkRange(d, SnapshotField::CurrentWidth, d.currentWidth, 50, 400);
+    // D130 (当前宽度) is NOT range-checked: user decision (2026-09-21) accepts
+    // any unsigned value, because the PLC legitimately reports 0 before the
+    // first homing/adjustment (MAIN first-scan init and SBR_HOME's
+    // DMOV K0 D130). The former 50-400 check turned that normal state into
+    // OutOfRange and disabled every snapshotFresh()-gated control, including
+    // manual commands that have nothing to do with the width. The
+    // SnapshotField::CurrentWidth bit stays defined so fieldValid() callers and
+    // the stored bit layout are unchanged; it is simply never set here.
     checkRange(d, SnapshotField::Heartbeat, d.heartbeat, 0, 0xFFFF);
 
     d.overall_quality = aggregateQuality(d);

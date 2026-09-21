@@ -237,7 +237,7 @@ private slots:
     void adjustVerdictRemainsCoordinatorFailureAfterSuccessLikeSnapshot();
 
     // --- PLC-HMI-011 OB-7: the manual-control surface shows the split ----------
-    void manualSurfaceShowsBeltAndGateEnabledWhileWidthJogsStayDisabledWithReason();
+    void manualSurfaceEnablesAllFourWhileHomeCompleteIsClear();
     void manualSurfaceEnablesAllFourOnceHomeCompleteIsSet();
 };
 
@@ -520,13 +520,14 @@ void CommandStatusProjectionTest::adjustVerdictRemainsCoordinatorFailureAfterSuc
 
 // --- PLC-HMI-011 OB-7: the operator console shows the split --------------------
 
-void CommandStatusProjectionTest::manualSurfaceShowsBeltAndGateEnabledWhileWidthJogsStayDisabledWithReason()
+void CommandStatusProjectionTest::manualSurfaceEnablesAllFourWhileHomeCompleteIsClear()
 {
-    // Brief OB-7: with home-complete CLEAR and the other common conditions
-    // satisfied (administrator, online, manual mode, not running, no emergency
-    // stop, no latched fault), the belt-jog control and the stop-gate control
-    // are enabled, while the two width-jog controls are disabled and display a
-    // visible reason. No disabled control may rely on a tooltip alone.
+    // Brief OB-7 / user decision 2026-09-21: with home-complete CLEAR and the
+    // other common conditions satisfied (administrator, online, manual mode,
+    // not running, no emergency stop, no latched fault), ALL FOUR manual
+    // controls are enabled — homing completion is no longer an HMI manual gate
+    // — and no control shows a stale disabled reason. The 回原点 control is
+    // what the operator uses to home the machine.
     ShellModel model;
     model.setUser(QStringLiteral("admin"), Role::Admin);
     ManualControlPage page(model);
@@ -544,7 +545,7 @@ void CommandStatusProjectionTest::manualSurfaceShowsBeltAndGateEnabledWhileWidth
     QVERIFY2(page.stopGateButton() != nullptr,
              "the manual page must expose the stop-gate control");
 
-    // The split: belt jog (108) and stop gate (109) do not need homing.
+    // Every manual control is enabled while home-complete is clear.
     QVERIFY2(page.jogButton()->isEnabled(),
              qPrintable(QStringLiteral("the belt-jog control must be enabled while "
                                        "home-complete is clear (reason: '%1')")
@@ -553,21 +554,20 @@ void CommandStatusProjectionTest::manualSurfaceShowsBeltAndGateEnabledWhileWidth
              qPrintable(QStringLiteral("the stop-gate control must be enabled while "
                                        "home-complete is clear (reason: '%1')")
                             .arg(declaredReason(page.stopGateButton()))));
+    QVERIFY2(page.widthFwdButton()->isEnabled(),
+             qPrintable(QStringLiteral("the width-forward control must be enabled while "
+                                       "home-complete is clear (reason: '%1')")
+                            .arg(declaredReason(page.widthFwdButton()))));
+    QVERIFY2(page.widthRevButton()->isEnabled(),
+             qPrintable(QStringLiteral("the width-reverse control must be enabled while "
+                                       "home-complete is clear (reason: '%1')")
+                            .arg(declaredReason(page.widthRevButton()))));
 
-    // The two width jogs (106/107) still require homing and stay disabled.
-    QVERIFY2(!page.widthFwdButton()->isEnabled(),
-             "the width-forward control must stay disabled while home-complete is clear");
-    QVERIFY2(!page.widthRevButton()->isEnabled(),
-             "the width-reverse control must stay disabled while home-complete is clear");
-
-    // Each disabled width jog must show its reason as visible text, never
-    // tooltip-only.
-    requireVisibleDisabledReason(&page, page.widthFwdButton(), "width-forward");
-    requireVisibleDisabledReason(&page, page.widthRevButton(), "width-reverse");
-
-    // The two enabled controls carry no stale disabled reason text.
+    // No enabled control may keep a stale disabled reason visible.
     requireNoStaleDisabledReason(&page, page.jogButton(), "belt-jog");
     requireNoStaleDisabledReason(&page, page.stopGateButton(), "stop-gate");
+    requireNoStaleDisabledReason(&page, page.widthFwdButton(), "width-forward");
+    requireNoStaleDisabledReason(&page, page.widthRevButton(), "width-reverse");
 }
 
 void CommandStatusProjectionTest::manualSurfaceEnablesAllFourOnceHomeCompleteIsSet()

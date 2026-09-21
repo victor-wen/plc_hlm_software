@@ -8,7 +8,8 @@ namespace hlm {
 // application permission policy includes and re-exports it, so existing
 // includers of application/permission_policy.h keep compiling unchanged.
 enum class Command {
-    Reset,          // 复位/回原点
+    Reset,          // 复位 (M103 pulse: clears fault/home-complete/width state)
+    HomeStart,      // 回原点 (M50=1: starts PLC homing; user decision 2026-09-21)
     AdjustWidth,    // 配方应用调宽
     ModeSwitch,     // 模式切换 (M104)
     Start,          // 自动启动

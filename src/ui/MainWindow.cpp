@@ -196,6 +196,11 @@ QPushButton *MainWindow::resetButton() const
     return static_cast<QPushButton *>(m_actions->resetButton());
 }
 
+QPushButton *MainWindow::homeStartButton() const
+{
+    return static_cast<QPushButton *>(m_actions->homeStartButton());
+}
+
 void MainWindow::registerHoldWidget(HoldButton *button)
 {
     if (button && !m_holdWidgets.contains(button))

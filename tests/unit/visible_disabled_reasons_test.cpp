@@ -51,7 +51,7 @@ constexpr int kMinimumLegibleFontHeight = 12;
 
 // Machine data matching the existing page-test fixtures: M1 manual / M2
 // automatic, M9 homed (M61 per COMMMAP), valid quality blocks.
-DeviceSnapshotData snapshotData(bool homed, bool automatic)
+DeviceSnapshotData snapshotData(bool homed, bool automatic, bool latchedFault = false)
 {
     DeviceSnapshotData d;
     d.connected = true;
@@ -62,6 +62,8 @@ DeviceSnapshotData snapshotData(bool homed, bool automatic)
         d.statusWord1 |= quint16(1) << 1; // M1 manual
     if (homed)
         d.statusWord1 |= quint16(1) << 9; // M9/M61 homed
+    if (latchedFault)
+        d.statusWord1 |= quint16(1) << 14; // M14 latched fault
     d.statusWord3 = 0;
     d.targetWidth = 200;
     d.currentWidth = 150;
@@ -386,8 +388,11 @@ void VisibleDisabledReasonsTest::distinctBlockingCausesProduceDistinctVisibleRea
     ShellModel recipeInterlockModel;
     RecipeWidthPage recipeInterlock(recipeInterlockModel);
     recipeInterlockModel.setUser(QStringLiteral("admin"), Role::Admin);
+    // User decision 2026-09-21: an un-homed machine is no longer an interlock
+    // cause; a latched fault (M14) still blocks both surfaces.
     recipeInterlockModel.updateSnapshot(
-        DeviceSnapshot(snapshotData(/*homed=*/false, /*automatic=*/false)));
+        DeviceSnapshot(snapshotData(/*homed=*/true, /*automatic=*/false,
+                                    /*latchedFault=*/true)));
     recipeInterlock.show();
 
     ShellModel manualPermissionModel;
@@ -406,7 +411,8 @@ void VisibleDisabledReasonsTest::distinctBlockingCausesProduceDistinctVisibleRea
     ManualControlPage manualInterlock(manualInterlockModel);
     manualInterlockModel.setUser(QStringLiteral("admin"), Role::Admin);
     manualInterlockModel.updateSnapshot(
-        DeviceSnapshot(snapshotData(/*homed=*/false, /*automatic=*/false)));
+        DeviceSnapshot(snapshotData(/*homed=*/true, /*automatic=*/false,
+                                    /*latchedFault=*/true)));
     manualInterlock.show();
 
     QApplication::processEvents();
@@ -567,9 +573,11 @@ void VisibleDisabledReasonsTest::sameSurfaceReasonTransitionsDistinguishCommunic
                                 .arg(commReason)));
     }
 
-    // allowed -> disabled with a different cause: interlock (not homed).
+    // allowed -> disabled with a different cause: interlock (latched fault,
+    // user decision 2026-09-21: homing is no longer an HMI adjust gate).
     model.updateSnapshot(
-        DeviceSnapshot(snapshotData(/*homed=*/false, /*automatic=*/false)));
+        DeviceSnapshot(snapshotData(/*homed=*/true, /*automatic=*/false,
+                                    /*latchedFault=*/true)));
     QTRY_VERIFY_WITH_TIMEOUT(!page.applyButton()->isEnabled(), 2000);
     const QVector<QLabel *> interlockLabels =
         matchingReasonLabels(&page, page.applyButton());

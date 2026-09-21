@@ -46,6 +46,7 @@ class InterlockRulesTest : public QObject
 
 private slots:
     void resetPreconditions();
+    void homeStartPreconditions();
     void adjustWidthPreconditions();
     void adjustWidthRangeChecks();
     void startPreconditions();
@@ -84,9 +85,12 @@ void InterlockRulesTest::adjustWidthPreconditions()
     quint16 w1 = bit(0, 9); // homed but not manual
     QVERIFY(!InterlockRules::checkAdjustWidth(makeSnapshot(w1, 0), true, 300).allowed);
 
-    // Not homed (M9=0): denied.
+    // Not homed (M9=0): ALLOWED (user decision 2026-09-21: 调宽 no longer
+    // requires 回原点完成 M61; the operator starts homing with the 回原点
+    // control, and the PLC ladder's own M61 precondition is what actually
+    // refuses an un-homed M43 run).
     quint16 w1b = bit(0, 1);
-    QVERIFY(!InterlockRules::checkAdjustWidth(makeSnapshot(w1b, 0), true, 300).allowed);
+    QVERIFY(InterlockRules::checkAdjustWidth(makeSnapshot(w1b, 0), true, 300).allowed);
 
     // Running M3=1: denied.
     quint16 w1c = bit(bit(bit(0,1),9),3);
@@ -100,7 +104,8 @@ void InterlockRulesTest::adjustWidthPreconditions()
     quint16 w1e = bit(bit(bit(0,1),9),14);
     QVERIFY(!InterlockRules::checkAdjustWidth(makeSnapshot(w1e, 0), true, 300).allowed);
 
-    // Homing M50=1: denied.
+    // Homing M50=1: ALLOWED (user decision 2026-09-21: the homing-in-progress
+    // bit is no longer an HMI 调宽 gate either).
     DeviceSnapshotData d;
     d.statusWord1 = bit(bit(0,1),9);
     d.homeBits = 0x01; // M50
@@ -108,7 +113,7 @@ void InterlockRulesTest::adjustWidthPreconditions()
     d.currentWidth = 200;
     d.pulsePerMm = 1280;
     d.widthSpeed = 15;
-    QVERIFY(!InterlockRules::checkAdjustWidth(DeviceSnapshot(d), true, 300).allowed);
+    QVERIFY(InterlockRules::checkAdjustWidth(DeviceSnapshot(d), true, 300).allowed);
 
     // Offline: denied.
     QVERIFY(!InterlockRules::checkAdjustWidth(s, false, 300).allowed);
@@ -203,7 +208,10 @@ void InterlockRulesTest::modeSwitchPreconditions()
 
 void InterlockRulesTest::manualCommandPreconditions()
 {
-    // 要求手动模式、M61=1、M3=0、无急停无锁存故障 (permission gates admin).
+    // 要求手动模式、M3=0、无急停无锁存故障 (permission gates admin).
+    // User decision 2026-09-21: homing completion (M61/M9) and the
+    // homing-in-progress bit (M50) are NOT manual gates for any of the four
+    // manual commands.
     const DeviceSnapshot s = readyManual();
     QVERIFY(InterlockRules::checkManualCommand(s, true).allowed);
     QVERIFY(!InterlockRules::checkManualCommand(s, false).allowed);
@@ -223,6 +231,60 @@ void InterlockRulesTest::manualCommandPreconditions()
     // Latched fault.
     quint16 w1d = bit(bit(bit(0,1),9),14);
     QVERIFY(!InterlockRules::checkManualCommand(makeSnapshot(w1d, 0), true).allowed);
+
+    // Not homed (M9=0): ALLOWED for every manual address, including the width
+    // jogs M106/M107 and the address-less historical entry.
+    quint16 w1e = bit(0, 1); // manual, not homed
+    const DeviceSnapshot notHomed = makeSnapshot(w1e, 0);
+    QVERIFY(InterlockRules::checkManualCommand(notHomed, true, 106).allowed);
+    QVERIFY(InterlockRules::checkManualCommand(notHomed, true, 107).allowed);
+    QVERIFY(InterlockRules::checkManualCommand(notHomed, true, 108).allowed);
+    QVERIFY(InterlockRules::checkManualCommand(notHomed, true, 109).allowed);
+    QVERIFY(InterlockRules::checkManualCommand(notHomed, true).allowed);
+
+    // Homing in progress (M50=1): also allowed; only the dedicated 回原点
+    // command is refused while M50 reads high.
+    DeviceSnapshotData homing;
+    homing.statusWord1 = bit(0, 1); // manual
+    homing.homeBits = 0x01;         // M50
+    homing.targetWidth = 200;
+    homing.currentWidth = 200;
+    homing.pulsePerMm = 1280;
+    homing.widthSpeed = 15;
+    const DeviceSnapshot homingSnapshot(homing);
+    QVERIFY(InterlockRules::checkManualCommand(homingSnapshot, true, 106).allowed);
+    QVERIFY(InterlockRules::checkManualCommand(homingSnapshot, true, 108).allowed);
+}
+
+void InterlockRulesTest::homeStartPreconditions()
+{
+    // 回原点 (M50=1 持续写): 在线、手动模式、M3=0、无急停、无锁存故障、未在回原点
+    // (permission gates admin).
+    const DeviceSnapshot s = readyManual();
+    QVERIFY(InterlockRules::checkHomeStart(s, true).allowed);
+    QVERIFY(!InterlockRules::checkHomeStart(s, false).allowed);
+
+    // Not manual.
+    QVERIFY(!InterlockRules::checkHomeStart(makeSnapshot(bit(0, 9), 0), true).allowed);
+
+    // Running.
+    QVERIFY(!InterlockRules::checkHomeStart(makeSnapshot(bit(bit(bit(0,1),9),3), 0), true).allowed);
+
+    // Estop.
+    QVERIFY(!InterlockRules::checkHomeStart(makeSnapshot(bit(bit(bit(0,1),9),0), 0), true).allowed);
+
+    // Latched fault.
+    QVERIFY(!InterlockRules::checkHomeStart(makeSnapshot(bit(bit(bit(0,1),9),14), 0), true).allowed);
+
+    // Already homing (M50=1): denied.
+    DeviceSnapshotData homing;
+    homing.statusWord1 = bit(bit(0,1),9);
+    homing.homeBits = 0x01; // M50
+    homing.targetWidth = 200;
+    homing.currentWidth = 200;
+    homing.pulsePerMm = 1280;
+    homing.widthSpeed = 15;
+    QVERIFY(!InterlockRules::checkHomeStart(DeviceSnapshot(homing), true).allowed);
 }
 
 void InterlockRulesTest::bypassPreconditions()

@@ -134,6 +134,11 @@ ActionBar::ActionBar(ShellModel &model, QWidget *parent)
     addGroupLabel(QStringLiteral("流程控制"));
     m_start = make(QStringLiteral("启动"));
     m_start->setObjectName(QStringLiteral("startButton"));
+    // 回原点 (user decision 2026-09-21): homing is its own command. 复位 only
+    // sends the M103 pulse and no longer starts homing, so the operator needs a
+    // dedicated control that writes M50=1.
+    m_homeStart = make(QStringLiteral("回原点"));
+    m_homeStart->setObjectName(QStringLiteral("homeStartButton"));
     m_reset = make(QStringLiteral("复位"));
     m_reset->setObjectName(QStringLiteral("resetButton"));
 
@@ -179,6 +184,8 @@ ActionBar::ActionBar(ShellModel &model, QWidget *parent)
             [this] { emit modeSwitchRequested(true); });
     connect(m_start, &QPushButton::clicked, this,
             [this] { emit actionRequested(Command::Start); });
+    connect(m_homeStart, &QPushButton::clicked, this,
+            [this] { emit actionRequested(Command::HomeStart); });
     connect(m_stop, &QPushButton::clicked, this,
             [this] { emit actionRequested(Command::Stop); });
     connect(m_reset, &QPushButton::clicked, this,
@@ -262,6 +269,20 @@ void ActionBar::refresh()
             QStringLiteral("快速状态数据无效, 无法确认运行状态 (M3)"),
             s, online, &InterlockRules::checkReset);
         m_reset->setEnabledWithReason(p.allowed && i.allowed, combinedReason(p, i));
+    }
+
+    // 回原点: admin + interlock over the fast bits (M1/M3/M0/M14) and the home
+    // block's M50. M50 is optional evidence: without it the interlock reports
+    // the same data reason the other actions use. Gating it on the full
+    // freshness predicate made one unrelated stale block (e.g. the slow
+    // parameter poll) disable a control whose own bits are confirmed.
+    {
+        const PermissionResult p = PermissionPolicy::check(role, Command::HomeStart);
+        const InterlockResult i = gatedCheck(
+            m_model.modeKnown(),
+            QStringLiteral("快速状态数据无效, 无法确认运行状态 (M3)"),
+            s, online, &InterlockRules::checkHomeStart);
+        m_homeStart->setEnabledWithReason(p.allowed && i.allowed, combinedReason(p, i));
     }
 
     // Estop set: any user, online only; offline -> "请使用实体急停" (spec §10.6).

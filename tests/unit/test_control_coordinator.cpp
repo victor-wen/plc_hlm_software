@@ -63,8 +63,8 @@ SubmissionResult rejectedResult(const QString &reason)
 // PLC-HMI-010/011: records reset submissions and answers with correlated
 // accepted results without mutating any PLC state, so the reset result can be
 // observed against independently injected synthetic snapshots. The test
-// delivers the recorded completions explicitly (the reset handshake needs both
-// the M103 pulse and the M50 home-start write correlated outcomes).
+// delivers the recorded completion explicitly (the reset needs the M103 pulse's
+// correlated outcome; 回原点 is a separate command since 2026-09-21).
 struct ResetRecorder
 {
     struct Recorded
@@ -385,24 +385,29 @@ void ControlCoordinatorTest::adminCanResetAndAdjust()
     QCOMPARE(accepted.count(), 1);
     QCOMPARE(accepted[0][0].value<Command>(), Command::ModeSwitch);
 
-    // PLC-HMI-011 D2: the M103 pulse completes on this tick, which issues the
-    // single M50=1 home-start write; the next tick delivers that write's
-    // correlated completion. Both outcomes are required before the reset can
-    // converge on its fixed 200 ms boundary (PLC-HMI-010 D3).
-    gw.tick();
+    // User decision 2026-09-21: the reset no longer homes the machine. The M103
+    // pulse completion plus the fixed 200 ms boundary converge it, and the
+    // machine is deliberately left un-homed.
     gw.tick();
     now += ControlCoordinator::kResetCompletionDelayMs;
     gw.tick();
     QVERIFY(!c->resetInProgress());
+    QVERIFY2(!gw.lastSnapshot().m9(),
+             "the reset started homing although 回原点 is a separate command");
 
-    // The PLC still runs its own home return after M103; wait for it so the
-    // machine is ready again, then return to manual mode and confirm the admin
-    // can still issue the other commands.
-    gw.tick();
-    QVERIFY(gw.lastSnapshot().m9()); // M61 via M9: homed
+    // Return to manual mode, then home the machine with the dedicated 回原点
+    // command: exactly one sustained M50=1 write starts the PLC home return, and
+    // the PLC clears M50 itself and sets M61/M9 when it completes.
     QVERIFY(c->setMode(false).accepted);
     gw.tick();
     QVERIFY(gw.lastSnapshot().m1()); // manual mode
+
+    QVERIFY2(c->homeStart().accepted, "the 回原点 command was not accepted");
+    gw.tick();
+    QVERIFY2(gw.model().readCoil(kM50), "the 回原点 command did not write the home-start coil");
+    gw.tick();
+    gw.tick(); // home return takes 2 s
+    QVERIFY(gw.lastSnapshot().m9()); // M61 via M9: homed
 
     QVERIFY(c->manualHold(kM106, true).accepted);
     QVERIFY(c->bypass(kM110, true).accepted);
@@ -431,13 +436,17 @@ void ControlCoordinatorTest::resetFromAutoModePulsesM103WithoutWritingM104()
     QVERIFY2(gw.model().readCoil(kM104), "the reset wrote M104");
     QVERIFY(c->resetInProgress());
 
-    // PLC-HMI-011 D2: the M103 pulse completion triggers the single sustained
-    // M50=1 home-start write, which is what actually starts homing.
+    // User decision 2026-09-21: the reset also never writes the home-start coil
+    // (M50). Homing is started by the separate 回原点 command, so the reset
+    // leaves the machine un-homed and the coil untouched.
     gw.tick();
-    QVERIFY2(gw.model().readCoil(kM50), "the home-start write was never issued");
+    QVERIFY2(!gw.model().readCoil(kM50), "the reset wrote the home-start coil M50");
     QVERIFY(c->resetInProgress());
+
+    now += ControlCoordinator::kResetCompletionDelayMs;
     gw.tick();
-    QVERIFY(gw.lastSnapshot().m50()); // homing in progress
+    QVERIFY(!c->resetInProgress());
+    QVERIFY2(!gw.lastSnapshot().m50(), "the reset started homing");
 }
 
 void ControlCoordinatorTest::resetConvergesAfterFixedDelayNotBefore()
@@ -585,28 +594,19 @@ void ControlCoordinatorTest::resetResultIgnoresHomeBitsAndFaultCode()
         QVERIFY2(rec.pulses.contains(kM103),
                  qPrintable(QStringLiteral("%1: no M103 pulse was sent").arg(k.name)));
 
-        // PLC-HMI-011 D2/D3: deliver the correlated M103 pulse completion,
-        // which issues the single M50=1 home-start write, then deliver that
-        // write's own completion. Only then can the reset converge, so the
-        // case still isolates the snapshot bits as the only varying input.
+        // Deliver the correlated M103 pulse completion: the reset then converges
+        // on its fixed boundary, and (user decision 2026-09-21) it never writes
+        // the home-start coil, so the snapshot bits stay the only varying input.
         const ResetRecorder::Recorded pulse = rec.submissions.at(0);
         QCOMPARE(pulse.operation, PlcOperation::Pulse);
         QCOMPARE(pulse.address, kM103);
         c->onSubmissionCompleted(rec.completionFor(pulse, true));
 
-        int homeStart = -1;
-        for (int i = 0; i < rec.submissions.size(); ++i) {
-            const ResetRecorder::Recorded &w = rec.submissions.at(i);
-            if (w.operation == PlcOperation::WriteCoil && w.address == kM50) {
-                homeStart = i;
-                break;
-            }
+        for (const ResetRecorder::Recorded &w : rec.submissions) {
+            QVERIFY2(w.address != kM50,
+                     qPrintable(QStringLiteral("%1: the reset wrote the home-start coil")
+                                    .arg(k.name)));
         }
-        QVERIFY2(homeStart >= 0,
-                 qPrintable(QStringLiteral("%1: no M50 home-start write was sent")
-                                .arg(k.name)));
-        QCOMPARE(rec.submissions.at(homeStart).value, true);
-        c->onSubmissionCompleted(rec.completionFor(rec.submissions.at(homeStart), true));
 
         now += ControlCoordinator::kResetCompletionDelayMs;
         c->onSnapshot(syntheticResetSnapshot(k.m50, k.m9, k.m14, k.faultCode));

@@ -35,9 +35,12 @@
 
 #include <memory>
 
+#include <QThread>
+
 #include "adapters/simulator/simulated_plc_gateway.h"
 #include "app/application.h"
 #include "app/configuration.h"
+#include "app/lifecycle_controller.h"
 #include "domain/device_snapshot.h"
 #include "domain/operator_command_status.h"
 #include "ui/MainWindow.h"
@@ -770,6 +773,19 @@ void PlcHmi005AuthoritativeValuesTest::restrictedModeStillBlocksNonSafetyCommand
 
     app->coordinator()->setRole(Role::Admin);
     const quint16 d128Before = gw->model().readRegister(kD128);
+
+    // The database-restricted verdict is emitted on the database worker thread
+    // and delivered as a queued signal, so it must be pumped into the main
+    // thread before this case can observe restricted mode. Bounded, so a
+    // regression can never hang the case. (2026-09-21: the case previously
+    // passed without ever reaching restricted mode, because the adjust was
+    // already rejected by the then-required 未回原点 interlock.)
+    for (int i = 0; i < 400 && !app->lifecycle()->restricted(); ++i) {
+        QApplication::processEvents();
+        QThread::msleep(5);
+    }
+    QVERIFY2(app->lifecycle()->restricted(),
+             "precondition: the unusable database must put the application into restricted mode");
 
     const ControlCoordinator::CommandResult blocked = app->coordinator()->adjustWidth(300);
     QVERIFY2(!blocked.accepted,
