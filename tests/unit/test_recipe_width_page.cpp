@@ -42,9 +42,9 @@ DeviceSnapshotData validSnapshotData()
     d.connected = true;
     d.statusWord1 = (quint16(1) << 1) | (quint16(1) << 9); // M1 manual, M9 homed
     d.statusWord3 = 0;                                     // M34/M44/M45 clear
-    d.targetWidth = 200;   // D128
-    d.currentWidth = 150;  // D130
-    d.widthDelta = 50;     // D210 = D128 - D130
+    d.targetWidth = 200;   // D128 (raw 0.1 mm: 20.0 mm)
+    d.currentWidth = 150;  // D130 (raw 0.1 mm: 15.0 mm)
+    d.widthDelta = 50;     // D210 = D128 - D130 (raw 0.1 mm: 5.0 mm)
     d.pulsePerMm = 1280;   // D204
     d.widthSpeed = 15;     // D220
     d.heartbeat = 1;       // D140
@@ -69,12 +69,12 @@ void clickAt(QWidget *w)
     QApplication::sendEvent(w, &release);
 }
 
-RecipeRecord recipe(qint64 id, const QString &name, int widthMm)
+RecipeRecord recipe(qint64 id, const QString &name, int widthRaw)
 {
     RecipeRecord r;
     r.id = id;
     r.name = name;
-    r.targetWidthMm = widthMm;
+    r.targetWidthRaw = widthRaw;
     return r;
 }
 
@@ -158,23 +158,24 @@ void RecipeWidthPageTest::applyRejectedOutOfRangeBeforeAnyWrite()
     model.updateSnapshot(DeviceSnapshot(validSnapshotData()));
     RecipeWidthModel m(model);
 
-    // Out of range (below 50): rejected before any write intent exists.
-    m.setEditedWidth(10);
+    // The retired 50-400 mm envelope is replaced by "greater than zero"
+    // (user decision 2026-09-21): raw 0 is rejected before any write intent
+    // exists, and there is no upper bound.
+    m.setEditedWidth(0);
     QVERIFY(!m.canApply());
     QVERIFY(m.applyUnmetReasons().contains(
-        QStringLiteral("目标宽度需在 50-400 mm 之间")));
+        QStringLiteral("目标宽度需大于 0 mm")));
     QVERIFY(!m.adjustPending());
     QVERIFY(!m.adjustSucceeded());
 
-    // Boundaries: 50 and 400 are accepted, 401 is rejected.
-    m.setEditedWidth(50);
-    QVERIFY(m.canApply());
-    m.setEditedWidth(400);
+    // Boundaries: the smallest representable width (0.1 mm) is accepted, and
+    // so is a value the old envelope refused.
+    m.setEditedWidth(1);
     QVERIFY(m.canApply());
     m.setEditedWidth(401);
-    QVERIFY(!m.canApply());
-    QVERIFY(m.applyUnmetReasons().contains(
-        QStringLiteral("目标宽度需在 50-400 mm 之间")));
+    QVERIFY(m.canApply());
+    m.setEditedWidth(5000);
+    QVERIFY(m.canApply());
 }
 
 void RecipeWidthPageTest::applyRejectedForOperatorWithPermissionReason()
@@ -420,7 +421,7 @@ void RecipeWidthPageTest::applyRequiresSecondConfirmation()
     // Second click confirms and dispatches.
     clickAt(page.applyButton());
     QCOMPARE(spy.count(), 1);
-    QCOMPARE(spy.takeFirst().at(0).toUInt(), quint16(50)); // spin default 50
+    QCOMPARE(spy.takeFirst().at(0).toUInt(), quint16(100)); // neutral 10.0 mm
     QCOMPARE(page.applyButton()->text(), QStringLiteral("应用并调宽"));
 }
 
@@ -557,7 +558,7 @@ void RecipeWidthPageTest::setRecipesClearsStaleEditorState()
     page.setRecipes({recipe(2, QStringLiteral("宽幅"), 350)});
     QCOMPARE(page.recipeList()->currentRow(), -1);
     QVERIFY(page.nameEdit()->text().isEmpty());
-    QCOMPARE(page.widthSpin()->value(), 50);
+    QCOMPARE(page.widthSpin()->value(), 100); // neutral raw value (10.0 mm)
 }
 
 void RecipeWidthPageTest::saveRejectsEmptyName()
@@ -595,11 +596,11 @@ void RecipeWidthPageTest::pageShowsStatusAndDisplays()
     model.updateSnapshot(DeviceSnapshot(validSnapshotData()));
 
     QCOMPARE(page.fieldDisplay(QStringLiteral("targetWidth"))->text(),
-             QStringLiteral("200 mm"));   // D128
+             QStringLiteral("20.0 mm"));  // D128 (raw 200 in 0.1 mm units)
     QCOMPARE(page.fieldDisplay(QStringLiteral("currentWidth"))->text(),
-             QStringLiteral("150 mm"));   // D130
+             QStringLiteral("15.0 mm"));  // D130
     QCOMPARE(page.fieldDisplay(QStringLiteral("widthDelta"))->text(),
-             QStringLiteral("50 mm"));    // D210
+             QStringLiteral("5.0 mm"));   // D210
     QCOMPARE(page.fieldDisplay(QStringLiteral("pulsePerMm"))->text(),
              QStringLiteral("1280 脉冲/mm")); // D204
     QCOMPARE(page.fieldDisplay(QStringLiteral("widthSpeed"))->text(),
@@ -699,7 +700,7 @@ void RecipeWidthPageTest::mainWindowUsesRecipeWidthPage()
     QApplication::processEvents();
     QVERIFY(page->isVisible());
     QCOMPARE(page->fieldDisplay(QStringLiteral("targetWidth"))->text(),
-             QStringLiteral("200 mm"));
+             QStringLiteral("20.0 mm"));
 }
 
 QTEST_MAIN(RecipeWidthPageTest)

@@ -486,12 +486,21 @@ void SimulatedGatewayFlowTest::unconfirmedWriteReportsFailure()
 void SimulatedGatewayFlowTest::illegalValueMarksFieldInvalid()
 {
     m_gw->start();
-    // D128 outside 50-400: stored (the HMI validates before sending), but
-    // the snapshot must mark the field invalid (spec §9).
+    // Neither width register is range-checked any more (user decision
+    // 2026-09-21: 0.1 mm units, no operator envelope), so an illegal value is
+    // exercised through D122, which still has its decoded 100-20000 range:
+    // the value is stored, but the snapshot must mark the field invalid
+    // (spec §9).
+    requireRegister(*m_gw, 122, 50000);
+    m_gw->tick();
+    QVERIFY(!m_gw->lastSnapshot().fieldValid(SnapshotField::BeltSpeed));
+    QVERIFY(m_gw->lastSnapshot().fieldValid(SnapshotField::CurrentWidth));
+    QCOMPARE(m_gw->lastSnapshot().beltSpeed(), quint16(50000));
+
+    // A width value outside the retired envelope is simply a value now.
     requireRegister(*m_gw, 128, 500);
     m_gw->tick();
-    QVERIFY(!m_gw->lastSnapshot().fieldValid(SnapshotField::TargetWidth));
-    QVERIFY(m_gw->lastSnapshot().fieldValid(SnapshotField::CurrentWidth));
+    QVERIFY(m_gw->lastSnapshot().fieldValid(SnapshotField::TargetWidth));
     QCOMPARE(m_gw->lastSnapshot().targetWidth(), quint16(500));
 }
 

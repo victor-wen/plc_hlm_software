@@ -53,7 +53,7 @@ void RepositoryTest::recipeInsertAndFind()
 
         RecipeRecord r;
         r.name = QStringLiteral("A4");
-        r.targetWidthMm = 210;
+        r.targetWidthRaw = 210;
         r.createdBy = QStringLiteral("admin");
         r.updatedBy = QStringLiteral("admin");
         QString error;
@@ -61,7 +61,7 @@ void RepositoryTest::recipeInsertAndFind()
 
         const auto found = repo.findByName(QStringLiteral("A4"));
         QVERIFY(found.has_value());
-        QCOMPARE(found->targetWidthMm, 210);
+        QCOMPARE(found->targetWidthRaw, 210);
         QCOMPARE(found->createdBy, QStringLiteral("admin"));
         QVERIFY(found->createdAt.isValid());
 
@@ -81,7 +81,7 @@ void RepositoryTest::recipeUniqueNameConstraint()
 
         RecipeRecord a;
         a.name = QStringLiteral("A4");
-        a.targetWidthMm = 210;
+        a.targetWidthRaw = 210;
         a.createdBy = a.updatedBy = QStringLiteral("admin");
         QString error;
         QVERIFY(repo.saveRecipe(a, &error));
@@ -104,8 +104,10 @@ void RepositoryTest::recipeWidthCheckConstraint()
         SqliteRecipeRepository repo(db);
 
         RecipeRecord r;
-        r.name = QStringLiteral("too-wide");
-        r.targetWidthMm = 401; // outside 50-400 (spec §10.3, §12)
+        r.name = QStringLiteral("zero-width");
+        // The recipe CHECK is "greater than zero" (user decision 2026-09-21);
+        // the former 50-400 envelope was retired with the operator envelope.
+        r.targetWidthRaw = 0;
         r.createdBy = r.updatedBy = QStringLiteral("admin");
         QString error;
         QVERIFY(!repo.saveRecipe(r, &error));
@@ -125,17 +127,17 @@ void RepositoryTest::recipeUpdateAndDelete()
 
         RecipeRecord r;
         r.name = QStringLiteral("A4");
-        r.targetWidthMm = 210;
+        r.targetWidthRaw = 210;
         r.createdBy = r.updatedBy = QStringLiteral("admin");
         QString error;
         QVERIFY(repo.saveRecipe(r, &error));
 
         auto found = repo.findByName(QStringLiteral("A4"));
         QVERIFY(found.has_value());
-        found->targetWidthMm = 250;
+        found->targetWidthRaw = 250;
         found->updatedBy = QStringLiteral("admin");
         QVERIFY2(repo.saveRecipe(*found, &error), qPrintable(error));
-        QCOMPARE(repo.findByName(QStringLiteral("A4"))->targetWidthMm, 250);
+        QCOMPARE(repo.findByName(QStringLiteral("A4"))->targetWidthRaw, 250);
 
         QVERIFY(repo.deleteRecipe(found->id, &error));
         QVERIFY(!repo.findByName(QStringLiteral("A4")).has_value());

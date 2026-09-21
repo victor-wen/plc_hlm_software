@@ -7,6 +7,7 @@
 
 #include <optional>
 
+#include "domain/width_units.h" // kNeutralTargetRaw
 #include "ports/repositories.h" // RecipeRecord
 
 namespace hlm {
@@ -41,6 +42,8 @@ public:
 
     // --- editor state ---------------------------------------------------------
     QString editedName() const { return m_editedName; }
+    // Raw D128 units (0.1 mm), identical to the value written to the PLC
+    // and to RecipeRecord::targetWidthRaw (user decision 2026-09-21).
     int editedWidth() const { return m_editedWidth; }
     void setEditedName(const QString &name);
     void setEditedWidth(int width);
@@ -89,7 +92,8 @@ private:
     QVector<RecipeRecord> m_recipes;
     std::optional<RecipeRecord> m_selected;
     QString m_editedName;
-    int m_editedWidth = 50; // D128 range 50-400 (spec §10.3)
+    // Raw 0.1 mm units; the neutral value mirrors the PLC first-scan D128.
+    int m_editedWidth = width_units::kNeutralTargetRaw;
 
     std::optional<quint16> m_appliedTarget;
     bool m_adjustPending = false;

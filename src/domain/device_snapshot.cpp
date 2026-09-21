@@ -34,10 +34,11 @@ void recomputeDerivedQuality(DeviceSnapshotData &d)
     // published snapshot; it is never a hard-coded zero (contract D6).
     d.overall_age_ms = std::max(
         {d.fast_age_ms, d.home_age_ms, d.command_age_ms, d.slow_age_ms});
-    // WidthDelta validity requires a valid slow block and signed D210 in the
-    // authoritative -350..350 range; it never aliases CurrentWidth validity.
-    d.width_delta_valid = d.slow_quality == DataQuality::Valid
-        && d.widthDelta >= -350 && d.widthDelta <= 350;
+    // WidthDelta validity requires a valid slow block. The former signed
+    // -350..350 window came from the retired 50-400 mm operator envelope and
+    // was removed with it (user decision 2026-09-21); it still never aliases
+    // CurrentWidth validity.
+    d.width_delta_valid = d.slow_quality == DataQuality::Valid;
     d.overall_quality = aggregateQuality(d);
 }
 
@@ -127,15 +128,21 @@ DeviceSnapshotData decodeFastBlock(const quint16 raw[41], quint64 sequence,
     checkRange(d, SnapshotField::FaultCode, d.faultCode, 0, 10);
     checkRange(d, SnapshotField::CurrentStep, d.currentStep, 0, 5);
     checkRange(d, SnapshotField::BeltSpeed, d.beltSpeed, 100, 20000);
-    checkRange(d, SnapshotField::TargetWidth, d.targetWidth, 50, 400);
-    // D130 (当前宽度) is NOT range-checked: user decision (2026-09-21) accepts
-    // any unsigned value, because the PLC legitimately reports 0 before the
-    // first homing/adjustment (MAIN first-scan init and SBR_HOME's
-    // DMOV K0 D130). The former 50-400 check turned that normal state into
-    // OutOfRange and disabled every snapshotFresh()-gated control, including
-    // manual commands that have nothing to do with the width. The
-    // SnapshotField::CurrentWidth bit stays defined so fieldValid() callers and
-    // the stored bit layout are unchanged; it is simply never set here.
+    // D128 (目标宽度) is NOT range-checked (user decision 2026-09-21): the
+    // former 50-400 check assumed integer millimetres and an operator envelope
+    // the PLC does not implement. The registers now carry 0.1 mm units, the
+    // upper bound is retired, and the "must be greater than zero" rule lives
+    // at the operator entry gate (InterlockRules::checkAdjustWidth and the
+    // width editor), never in the decode path: an out-of-range decoded field
+    // would mark the whole snapshot OutOfRange and disable every
+    // snapshotFresh()-gated control, which is the failure mode the D130
+    // decision already removed. The SnapshotField::TargetWidth bit stays
+    // defined so fieldValid() callers and the stored bit layout are unchanged;
+    // it is simply never set here.
+    // D130 (当前宽度) is likewise NOT range-checked: the PLC legitimately
+    // reports 0 before the first homing/adjustment (MAIN first-scan init and
+    // SBR_HOME's DMOV K0 D130). The SnapshotField::CurrentWidth bit stays
+    // defined but is never set.
     checkRange(d, SnapshotField::Heartbeat, d.heartbeat, 0, 0xFFFF);
 
     d.overall_quality = aggregateQuality(d);
@@ -153,8 +160,7 @@ void checkSlowBlockRange(DeviceSnapshotData &d)
     checkRange(d, SnapshotField::PulsePerMm, d.pulsePerMm, 1, 32767);
     checkRange(d, SnapshotField::WidthSpeed, d.widthSpeed, 1, 15);
     // D210 has its own validity metadata (never aliases CurrentWidth).
-    d.width_delta_valid = d.slow_quality == DataQuality::Valid
-        && d.widthDelta >= -350 && d.widthDelta <= 350;
+    d.width_delta_valid = d.slow_quality == DataQuality::Valid;
     d.overall_quality = aggregateQuality(d);
 }
 
@@ -170,8 +176,7 @@ DeviceSnapshot::DeviceSnapshot(const DeviceSnapshotData &d)
     , overall_quality(aggregateQuality(d))
     , overall_age_ms(std::max(
           {d.fast_age_ms, d.home_age_ms, d.command_age_ms, d.slow_age_ms}))
-    , width_delta_valid(d.slow_quality == DataQuality::Valid
-                        && d.widthDelta >= -350 && d.widthDelta <= 350)
+    , width_delta_valid(d.slow_quality == DataQuality::Valid)
     , m_captureStarted(d.captureStarted)
     , m_captureCompleted(d.captureCompleted)
     , m_sequence(d.sequence)

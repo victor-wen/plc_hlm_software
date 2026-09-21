@@ -5,10 +5,10 @@
 #include <QVector>
 
 #include "ui/pages/recipe_width_model.h"
+#include "ui/widgets/width_spin_box.h"
 
 class QLabel;
 class QLineEdit;
-class QSpinBox;
 class QListWidget;
 class QVBoxLayout;
 class QHideEvent;
@@ -48,7 +48,9 @@ public:
     PermissionButton *saveButton() const { return m_save; }
     PermissionButton *deleteButton() const { return m_delete; }
     QLineEdit *nameEdit() const { return m_nameEdit; }
-    QSpinBox *widthSpin() const { return m_widthSpin; }
+    // Raw 0.1 mm units: value() is the register value, the text shows
+    // millimetres with one decimal (user decision 2026-09-21).
+    WidthSpinBox *widthSpin() const { return m_widthSpin; }
     QListWidget *recipeList() const { return m_recipeList; }
 
     // --- recipe data feed (wired by the app shell, Task 20) --------------------
@@ -72,7 +74,9 @@ public slots:
 signals:
     // Write intents for the app shell (Task 20). Never emitted optimistically.
     void applyAdjustRequested(quint16 targetWidth);
-    void saveRecipeRequested(const QString &name, int targetWidthMm);
+    // Raw D128 units (0.1 mm) in and out of the database; the editor shows
+    // millimetres with one decimal (user decision 2026-09-21).
+    void saveRecipeRequested(const QString &name, int targetWidthRaw);
     void deleteRecipeRequested(qint64 recipeId);
 
 protected:
@@ -98,7 +102,7 @@ private:
     QHash<QString, ValueDisplay *> m_displays;
     QListWidget *m_recipeList = nullptr;
     QLineEdit *m_nameEdit = nullptr;
-    QSpinBox *m_widthSpin = nullptr;
+    WidthSpinBox *m_widthSpin = nullptr;
     PermissionButton *m_apply = nullptr;
     PermissionButton *m_save = nullptr;
     PermissionButton *m_delete = nullptr;

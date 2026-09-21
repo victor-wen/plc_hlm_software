@@ -169,6 +169,7 @@ add_library(hlm_ui STATIC
     src/ui/widgets/hold_button.cpp
     src/ui/widgets/status_light.cpp
     src/ui/widgets/value_display.cpp
+    src/ui/widgets/width_spin_box.cpp
     src/ui/widgets/permission_button.cpp
     src/ui/theme.qrc
 )

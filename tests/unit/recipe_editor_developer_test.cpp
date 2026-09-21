@@ -43,12 +43,12 @@ void clickAt(QWidget *w)
     QApplication::sendEvent(w, &release);
 }
 
-RecipeRecord recipe(qint64 id, const QString &name, int widthMm)
+RecipeRecord recipe(qint64 id, const QString &name, int widthRaw)
 {
     RecipeRecord r;
     r.id = id;
     r.name = name;
-    r.targetWidthMm = widthMm;
+    r.targetWidthRaw = widthRaw;
     return r;
 }
 
@@ -131,7 +131,7 @@ void RecipeEditorDeveloperTest::reloadAfterConfirmedDeletionClearsSelectionAndEd
 
     QCOMPARE(page.recipeList()->currentRow(), -1);
     QVERIFY(page.nameEdit()->text().isEmpty());
-    QCOMPARE(page.widthSpin()->value(), 50);
+    QCOMPARE(page.widthSpin()->value(), 100);
 }
 
 // --- D2/D3 ---------------------------------------------------------------------
@@ -238,7 +238,7 @@ void RecipeEditorDeveloperTest::deleteSuccessShowsDeletedAndReloadClearsSelectio
 
     QCOMPARE(page.recipeList()->currentRow(), -1);
     QVERIFY(page.nameEdit()->text().isEmpty());
-    QCOMPARE(page.widthSpin()->value(), 50);
+    QCOMPARE(page.widthSpin()->value(), 100);
     QVERIFY2(page.statusText().contains(QStringLiteral("已删除")),
              "the reload discarded the delete result text");
 }

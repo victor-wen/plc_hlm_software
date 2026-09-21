@@ -691,7 +691,7 @@ void FullFlowTest::restartPersistsUserAndRecipe()
 
         RecipeRecord r;
         r.name = QStringLiteral("宽300");
-        r.targetWidthMm = 300;
+        r.targetWidthRaw = 300;
         r.createdBy = QStringLiteral("admin");
         r.updatedBy = QStringLiteral("admin");
         QSignalSpy recipeSpy(&db, &DatabaseService::recipeSaved);
@@ -720,7 +720,7 @@ void FullFlowTest::restartPersistsUserAndRecipe()
     const QVector<RecipeRecord> recipes = recipesSpy[0][0].value<QVector<RecipeRecord>>();
     QCOMPARE(recipes.size(), 1);
     QCOMPARE(recipes[0].name, QStringLiteral("宽300"));
-    QCOMPARE(recipes[0].targetWidthMm, 300);
+    QCOMPARE(recipes[0].targetWidthRaw, 300);
     db2.stop();
 }
 

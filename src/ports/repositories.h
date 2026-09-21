@@ -52,7 +52,11 @@ struct LoginResult {
 struct RecipeRecord {
     qint64 id = -1;
     QString name;
-    int targetWidthMm = 0; // 50-400 (CHECK constraint in schema)
+    // Raw D128 register value in 0.1 mm units (user decision 2026-09-21),
+    // identical to the value written to the PLC. The database CHECK is
+    // "greater than zero"; display formatting is the UI's business
+    // (domain/width_units.h).
+    int targetWidthRaw = 0;
     QString createdBy;
     QString updatedBy;
     QDateTime createdAt;

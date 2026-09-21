@@ -15,7 +15,7 @@ enum class SnapshotField : quint8 {
     FaultCode = 0,   // D110, 0-10
     CurrentStep,     // D120, 0-5
     BeltSpeed,       // D122, 100-20000
-    TargetWidth,     // D128, 50-400
+    TargetWidth,     // D128, no range (user decision 2026-09-21: any u16)
     CurrentWidth,    // D130, no range (user decision 2026-09-21: any u16)
     PulsePerMm,      // D204, 1-32767
     WidthSpeed,      // D220, 1-15
@@ -44,15 +44,17 @@ struct DeviceSnapshotData {
     quint16 currentStep = 0;    // D120
     quint16 beltSpeed = 0;      // D122
     quint32 widthFrequency = 0; // D126 low + D127 high
-    quint16 targetWidth = 0;    // D128
-    quint16 currentWidth = 0;   // D130
+    // Width registers are carried in 0.1 mm units (user decision 2026-09-21):
+    // raw 2000 is 200.0 mm. See domain/width_units.h for the conversion.
+    quint16 targetWidth = 0;    // D128 (0.1 mm)
+    quint16 currentWidth = 0;   // D130 (0.1 mm)
     qint32 pulseCount = 0;      // D136 low + D137 high (int32)
     quint32 productionCount = 0;// D138 low + D139 high (uint32)
     quint16 heartbeat = 0;      // D140
 
     // Slow-block fields.
     quint16 pulsePerMm = 0; // D204
-    qint16 widthDelta = 0;  // D210 (int16, target - current)
+    qint16 widthDelta = 0;  // D210 (int16, target - current, 0.1 mm)
     quint16 widthSpeed = 0; // D220
 
     // M50-M53 home-return bits (function code 01).
@@ -77,7 +79,9 @@ struct DeviceSnapshotData {
     DataQuality overall_quality = DataQuality::Valid;
     qint64 overall_age_ms = 0;
     // Independent D210 metadata (never aliases CurrentWidth validity):
-    // true only with a valid slow block and signed D210 in -350..350.
+    // true only with a valid slow block. The former signed -350..350 window
+    // was derived from the retired 50-400 mm operator envelope, so it was
+    // removed with it (user decision 2026-09-21).
     bool width_delta_valid = false;
 };
 
@@ -86,8 +90,8 @@ struct DeviceSnapshotData {
 DataQuality aggregateQuality(const DeviceSnapshotData &d);
 
 // Recomputes overall_age_ms (maximum of the required source blocks; never
-// hard-coded zero) and width_delta_valid (valid slow block + signed D210 in
-// -350..350) from the block fields.
+// hard-coded zero) and width_delta_valid (valid slow block) from the block
+// fields.
 void recomputeDerivedQuality(DeviceSnapshotData &d);
 
 // Centralized decode helpers (spec §8.2). All 32-bit values are low word

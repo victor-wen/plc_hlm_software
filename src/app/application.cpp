@@ -315,10 +315,10 @@ void Application::wireSignals()
     connect(m_recipePage, &RecipeWidthPage::applyAdjustRequested, m_coordinator,
             &ControlCoordinator::adjustWidth);
     connect(m_recipePage, &RecipeWidthPage::saveRecipeRequested, this,
-            [this](const QString &name, int targetWidthMm) {
+            [this](const QString &name, int targetWidthRaw) {
                 RecipeRecord r;
                 r.name = name;
-                r.targetWidthMm = targetWidthMm;
+                r.targetWidthRaw = targetWidthRaw;
                 r.createdBy = m_lifecycle ? m_lifecycle->currentUsername()
                                           : QStringLiteral("anonymous");
                 r.updatedBy = r.createdBy;

@@ -91,6 +91,29 @@ const QVector<Migration> &schemaMigrations()
              "CREATE INDEX idx_alarm_events_source_active ON alarm_events(source, ended_at);"
              "CREATE INDEX idx_alarm_events_started ON alarm_events(started_at);"
              "CREATE INDEX idx_audit_log_occurred ON audit_log(occurred_at);")},
+        {2, QStringLiteral("recipe_width_raw_units"),
+         QStringLiteral(
+             // D128/D130/D210 carry 0.1 mm units (user decision 2026-09-21),
+             // so a recipe stores the raw register value instead of whole
+             // millimetres, and the retired 50-400 operator envelope is
+             // replaced by "greater than zero". SQLite cannot alter a CHECK
+             // constraint in place, so the table is rebuilt. Existing rows were
+             // authored in millimetres and are scaled by 10 to keep their
+             // physical meaning (200 mm -> 2000 raw -> 200.0 mm).
+             "CREATE TABLE recipes_new ("
+             " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+             " name TEXT NOT NULL UNIQUE,"
+             " target_width_raw INTEGER NOT NULL CHECK (target_width_raw > 0),"
+             " created_by TEXT NOT NULL,"
+             " updated_by TEXT NOT NULL,"
+             " created_at TEXT NOT NULL,"
+             " updated_at TEXT NOT NULL);"
+             "INSERT INTO recipes_new (id, name, target_width_raw, created_by,"
+             " updated_by, created_at, updated_at)"
+             " SELECT id, name, target_width_mm * 10, created_by, updated_by,"
+             " created_at, updated_at FROM recipes;"
+             "DROP TABLE recipes;"
+             "ALTER TABLE recipes_new RENAME TO recipes;")},
     };
     return migrations;
 }

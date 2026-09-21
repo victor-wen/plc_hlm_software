@@ -98,9 +98,10 @@ void OverviewPageTest::modelMapsSnapshotFields()
 
     // Each field maps to the right snapshot register value.
     QCOMPARE(m.step().text, QStringLiteral("2"));            // D120
-    QCOMPARE(m.targetWidth().text, QStringLiteral("200"));   // D128
-    QCOMPARE(m.currentWidth().text, QStringLiteral("150"));  // D130
-    QCOMPARE(m.widthDelta().text, QStringLiteral("-50"));    // D210 (signed)
+    // Raw 0.1 mm registers render as millimetres with one decimal.
+    QCOMPARE(m.targetWidth().text, QStringLiteral("20.0"));   // D128
+    QCOMPARE(m.currentWidth().text, QStringLiteral("15.0"));  // D130
+    QCOMPARE(m.widthDelta().text, QStringLiteral("-5.0"));    // D210 (signed)
     QCOMPARE(m.beltSpeed().text, QStringLiteral("1500"));    // D122
     QCOMPARE(m.productionCount().text, QStringLiteral("999"));// D138
 
@@ -156,7 +157,7 @@ void OverviewPageTest::modelOutOfRangeFieldShowsInvalid()
 {
     ShellModel model;
     DeviceSnapshotData d = validSnapshotData();
-    d.targetWidth = 999; // D128 range is 50-400 -> out of range
+    d.targetWidth = 999; // D128 has no range; the invalid bit is set below
     d.invalidFields = (quint32(1) << quint8(SnapshotField::TargetWidth));
     d.overall_quality = aggregateQuality(d);
     model.updateSnapshot(DeviceSnapshot(d));
@@ -200,11 +201,11 @@ void OverviewPageTest::pageRendersFullSnapshot()
     QCOMPARE(page.fieldDisplay(QStringLiteral("step"))->text(),
              QStringLiteral("2"));
     QCOMPARE(page.fieldDisplay(QStringLiteral("targetWidth"))->text(),
-             QStringLiteral("200 mm"));
+             QStringLiteral("20.0 mm"));
     QCOMPARE(page.fieldDisplay(QStringLiteral("currentWidth"))->text(),
-             QStringLiteral("150 mm"));
+             QStringLiteral("15.0 mm"));
     QCOMPARE(page.fieldDisplay(QStringLiteral("widthDelta"))->text(),
-             QStringLiteral("-50 mm"));
+             QStringLiteral("-5.0 mm"));
     QCOMPARE(page.fieldDisplay(QStringLiteral("beltSpeed"))->text(),
              QStringLiteral("1500 Hz"));
     QCOMPARE(page.fieldDisplay(QStringLiteral("productionCount"))->text(),
@@ -275,11 +276,11 @@ void OverviewPageTest::pageFullSnapshotUpdateReplacesAllFields()
     QCOMPARE(page.fieldDisplay(QStringLiteral("step"))->text(),
              QStringLiteral("4"));
     QCOMPARE(page.fieldDisplay(QStringLiteral("targetWidth"))->text(),
-             QStringLiteral("300 mm"));
+             QStringLiteral("30.0 mm"));
     QCOMPARE(page.fieldDisplay(QStringLiteral("currentWidth"))->text(),
-             QStringLiteral("300 mm"));
+             QStringLiteral("30.0 mm"));
     QCOMPARE(page.fieldDisplay(QStringLiteral("widthDelta"))->text(),
-             QStringLiteral("0 mm"));
+             QStringLiteral("0.0 mm"));
     QCOMPARE(page.fieldDisplay(QStringLiteral("beltSpeed"))->text(),
              QStringLiteral("1200 Hz"));
     QCOMPARE(page.fieldDisplay(QStringLiteral("productionCount"))->text(),

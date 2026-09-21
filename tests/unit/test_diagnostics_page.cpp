@@ -479,12 +479,13 @@ void DiagnosticsPageTest::modelMapsRegisters()
     QCOMPARE(m.currentStep().text, QStringLiteral("2"));    // D120
     QCOMPARE(m.beltSpeed().text, QStringLiteral("1500"));   // D122
     QCOMPARE(m.widthFrequency().text, QStringLiteral("100"));// D126/127
-    QCOMPARE(m.targetWidth().text, QStringLiteral("200"));  // D128
-    QCOMPARE(m.currentWidth().text, QStringLiteral("150"));  // D130
+    // Raw 0.1 mm registers render as millimetres with one decimal.
+    QCOMPARE(m.targetWidth().text, QStringLiteral("20.0"));  // D128
+    QCOMPARE(m.currentWidth().text, QStringLiteral("15.0"));  // D130
     QCOMPARE(m.pulseCount().text, QStringLiteral("5000"));   // D136/137
     QCOMPARE(m.productionCount().text, QStringLiteral("999"));// D138/139
     QCOMPARE(m.pulsePerMm().text, QStringLiteral("1280"));   // D204
-    QCOMPARE(m.widthDelta().text, QStringLiteral("-50"));    // D210
+    QCOMPARE(m.widthDelta().text, QStringLiteral("-5.0"));   // D210
     QCOMPARE(m.widthSpeed().text, QStringLiteral("2"));      // D220
 
     QVERIFY(m.faultCode().valid);
@@ -570,7 +571,7 @@ void DiagnosticsPageTest::pageRendersSnapshot()
     QCOMPARE(page.registerDisplay(QStringLiteral("faultCode"))->text(),
              QStringLiteral("0"));
     QCOMPARE(page.registerDisplay(QStringLiteral("targetWidth"))->text(),
-             QStringLiteral("200 mm"));
+             QStringLiteral("20.0 mm"));
     QCOMPARE(page.registerDisplay(QStringLiteral("pulsePerMm"))->text(),
              QStringLiteral("1280 脉冲/mm"));
 }
@@ -709,7 +710,7 @@ void DiagnosticsPageTest::pageVisionFailureIsolated()
     QCOMPARE(page.rawWordTable()->item(0, 1)->text(), QStringLiteral("0x0000"));
     QCOMPARE(page.d100BitTable()->item(0, 2)->text(), QStringLiteral("0"));
     QCOMPARE(page.registerDisplay(QStringLiteral("targetWidth"))->text(),
-             QStringLiteral("200 mm"));
+             QStringLiteral("20.0 mm"));
     QCOMPARE(page.heartbeatLight()->text(), QStringLiteral("心跳 活性"));
 }
 
@@ -844,7 +845,7 @@ void DiagnosticsPageTest::pageNeverSendsWriteIntents()
     QVERIFY(!model->hasPendingCommands());
     // The page still renders the snapshot inside the real shell.
     QCOMPARE(page->registerDisplay(QStringLiteral("targetWidth"))->text(),
-             QStringLiteral("200 mm"));
+             QStringLiteral("20.0 mm"));
 }
 
 // --- MainWindow integration ------------------------------------------------------
@@ -862,7 +863,7 @@ void DiagnosticsPageTest::mainWindowUsesDiagnosticsPage()
 
     w.shellModel()->updateSnapshot(DeviceSnapshot(validSnapshotData()));
     QCOMPARE(page->registerDisplay(QStringLiteral("targetWidth"))->text(),
-             QStringLiteral("200 mm"));
+             QStringLiteral("20.0 mm"));
 }
 
 void DiagnosticsPageTest::tableRowHeightAtLeast48()

@@ -122,11 +122,14 @@ void InterlockRulesTest::adjustWidthPreconditions()
 void InterlockRulesTest::adjustWidthRangeChecks()
 {
     const DeviceSnapshot s = readyManual();
-    // Target out of 50-400.
-    QVERIFY(!InterlockRules::checkAdjustWidth(s, true, 49).allowed);
-    QVERIFY(!InterlockRules::checkAdjustWidth(s, true, 401).allowed);
-    QVERIFY(InterlockRules::checkAdjustWidth(s, true, 50).allowed);
-    QVERIFY(InterlockRules::checkAdjustWidth(s, true, 400).allowed);
+    // The retired 50-400 mm envelope is replaced by "greater than zero"
+    // (user decision 2026-09-21): raw 0 is rejected, and everything above it
+    // is accepted up to the u16 register ceiling.
+    QVERIFY(!InterlockRules::checkAdjustWidth(s, true, 0).allowed);
+    QVERIFY(InterlockRules::checkAdjustWidth(s, true, 1).allowed);
+    QVERIFY(InterlockRules::checkAdjustWidth(s, true, 49).allowed);
+    QVERIFY(InterlockRules::checkAdjustWidth(s, true, 401).allowed);
+    QVERIFY(InterlockRules::checkAdjustWidth(s, true, 65535).allowed);
 
     // D204 out of 1-32767.
     QVERIFY(!InterlockRules::checkAdjustWidth(makeSnapshot(bit(bit(0,1),9), 0, 300, 200, 0, 15), true, 300).allowed);

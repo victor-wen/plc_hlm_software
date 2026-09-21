@@ -375,7 +375,16 @@ void H3uSimulationModel::onM100Write(bool value)
 
 void H3uSimulationModel::updateM60()
 {
-    m_coils[kM60] = m_coils[kM61] && m_regs[kD130] >= 50 && m_regs[kD130] <= 400;
+    // Decoded rung (SBR_FAULT.LD, rung comment "自动准备完成：回原点完成 +
+    // 调宽到位 + 无故障"): M60 = M61 AND (D128 == D130) AND NOT M0 AND NOT M14,
+    // re-evaluated as an OUT coil every scan. The former "D130 in 50..400"
+    // term was an HMI invention from the pre-decode spec (commit a337510): no
+    // ladder rung compares D130 against a constant, and with the 0.1 mm width
+    // units (user decision 2026-09-21) it would have meant a 5.0-40.0 mm
+    // window. PLC-HMI-005 D2 removed the sibling width gates from the M43
+    // preconditions for the same reason.
+    m_coils[kM60] = m_coils[kM61] && m_regs[kD128] == m_regs[kD130]
+        && !m_coils[kM0] && !m_coils[kM14];
 }
 
 void H3uSimulationModel::updateD210()
@@ -456,6 +465,10 @@ void H3uSimulationModel::tick(quint64 seconds)
             m_remaining -= seconds;
         }
     }
+
+    // M60 is an OUT coil in the decoded ladder, so it tracks its terms on every
+    // scan rather than only at the events that change them.
+    updateM60();
 }
 
 } // namespace hlm

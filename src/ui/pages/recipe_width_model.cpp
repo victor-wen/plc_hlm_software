@@ -60,7 +60,7 @@ void RecipeWidthModel::setRecipes(const QVector<RecipeRecord> &recipes)
     // selection and reset the editors to their neutral state (D1/OB-2).
     m_selected.reset();
     m_editedName.clear();
-    m_editedWidth = 50;
+    m_editedWidth = width_units::kNeutralTargetRaw;
 }
 
 void RecipeWidthModel::selectRecipe(const RecipeRecord &r)
@@ -68,7 +68,7 @@ void RecipeWidthModel::selectRecipe(const RecipeRecord &r)
     // 选择配方只把名称和目标宽度加载到界面, 不写 PLC (spec §10.3).
     m_selected = r;
     m_editedName = r.name;
-    m_editedWidth = r.targetWidthMm;
+    m_editedWidth = r.targetWidthRaw;
 }
 
 void RecipeWidthModel::setEditedName(const QString &name)

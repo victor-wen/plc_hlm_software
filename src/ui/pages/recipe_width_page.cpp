@@ -1,7 +1,9 @@
 #include "ui/pages/recipe_width_page.h"
 
+#include "domain/width_units.h"
 #include "ui/shell/shell_model.h"
 #include "ui/widgets/value_display.h"
+#include "ui/widgets/width_spin_box.h"
 #include "ui/widgets/permission_button.h"
 
 #include <QLabel>
@@ -98,10 +100,11 @@ void RecipeWidthPage::buildLayout()
     editRow->addWidget(m_nameEdit, /*stretch=*/1);
     auto *widthLabel = new QLabel(QStringLiteral("宽度 mm"), recipeBox);
     editRow->addWidget(widthLabel);
-    m_widthSpin = new QSpinBox(recipeBox);
+    // WidthSpinBox carries the raw 0.1 mm register value and shows it in
+    // millimetres with one decimal (user decision 2026-09-21); it owns its
+    // range (1..65535 raw, i.e. "> 0" with no upper envelope).
+    m_widthSpin = new WidthSpinBox(recipeBox);
     m_widthSpin->setObjectName(QStringLiteral("recipeWidthSpin"));
-    m_widthSpin->setRange(50, 400); // D128 range (spec §10.3)
-    m_widthSpin->setValue(50);
     m_widthSpin->setMinimumHeight(48); // touch target >= 48 px (spec §11.1)
     editRow->addWidget(m_widthSpin);
     recipeLayout->addLayout(editRow);
@@ -214,7 +217,9 @@ void RecipeWidthPage::setRecipes(const QVector<RecipeRecord> &recipes)
         m_recipeList->clear();
         for (const RecipeRecord &r : recipes) {
             auto *item = new QListWidgetItem(
-                QStringLiteral("%1  (%2 mm)").arg(r.name).arg(r.targetWidthMm),
+                QStringLiteral("%1  (%2 mm)")
+                    .arg(r.name)
+                    .arg(width_units::rawToDisplay(quint16(r.targetWidthRaw))),
                 m_recipeList);
             item->setData(Qt::UserRole, r.id);
         }
@@ -236,7 +241,7 @@ void RecipeWidthPage::setRecipes(const QVector<RecipeRecord> &recipes)
         // Confirmed deletion: clear selection and reset the editors to the
         // neutral state (the page model already dropped the stale selection).
         m_nameEdit->clear();
-        m_widthSpin->setValue(50);
+        m_widthSpin->setValue(width_units::kNeutralTargetRaw);
     }
     refresh();
 }
@@ -386,13 +391,18 @@ void RecipeWidthPage::refresh()
                                        bool valid, const QString &unit) {
         m_displays[key]->setValue(valid ? text : QString(), unit, valid);
     };
-    field(QStringLiteral("targetWidth"), QString::number(s.targetWidth()),
+    field(QStringLiteral("targetWidth"),
+          width_units::rawToDisplay(s.targetWidth()),
           SnapshotField::TargetWidth, QStringLiteral("mm"));
-    field(QStringLiteral("currentWidth"), QString::number(s.currentWidth()),
+    field(QStringLiteral("currentWidth"),
+          width_units::rawToDisplay(s.currentWidth()),
           SnapshotField::CurrentWidth, QStringLiteral("mm"));
-    // D210 has its own validity metadata (PLC-HMI-003 D7): a valid slow block
-    // plus signed D210 in -350..350; it never aliases CurrentWidth validity.
-    fieldWithValidity(QStringLiteral("widthDelta"), QString::number(s.widthDelta()),
+    // D210 has its own validity metadata (PLC-HMI-003 D7): a valid slow block;
+    // the former signed -350..350 window went with the retired 50-400 mm
+    // envelope (user decision 2026-09-21). It never aliases CurrentWidth
+    // validity.
+    fieldWithValidity(QStringLiteral("widthDelta"),
+                      width_units::rawDeltaToDisplay(s.widthDelta()),
                       fresh && s.width_delta_valid, QStringLiteral("mm"));
     field(QStringLiteral("pulsePerMm"), QString::number(s.pulsePerMm()),
           SnapshotField::PulsePerMm, QStringLiteral("脉冲/mm"));

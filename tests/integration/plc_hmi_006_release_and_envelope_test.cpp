@@ -1,6 +1,9 @@
 // PLC-HMI-006 black-box tests (independent): restricted-mode de-energizing
-// release of a held manual output (brief OB-5) and the 50-400 mm target-width
-// envelope on the operator surface (brief OB-6).
+// release of a held manual output (brief OB-5).
+//
+// The former OB-6 50-400 mm operator target-width envelope cases were removed
+// on 2026-09-21 with the envelope itself (user decision: the width registers
+// carry 0.1 mm units and the target only has to be greater than zero).
 //
 // Authored only from .ai/test-briefs/PLC-HMI-006.yaml, the approved
 // .ai/project-contract.yaml, and inspectable test sources under tests/**. No
@@ -35,14 +38,12 @@
 // rejection wording is not fixed by the brief and is therefore not asserted.
 //
 // Expected RED until PLC-HMI-006 is implemented (runtime assertions, not a
-// compile error): no 50-400 mm operator envelope exists, so out-of-envelope
-// targets are accepted and written to D128 and the parity path has no 50-400
-// precondition; and the existing public lifecycle seam
+// compile error): the existing public lifecycle seam
 // Application::lifecycle()->enterRestrictedMode(reason) currently performs
 // only a logout, so restricted-mode entry does not clear holds/outputs and the
 // OB-5 release assertions fail. Fresh-session execution evidence (moc +
-// compiler probe, ctest listing; the sandbox has no registered PLC-HMI-006
-// target) is recorded in .ai/reports/PLC-HMI-006-test-red.yaml.
+// compiler probe, ctest listing) is recorded in
+// .ai/reports/PLC-HMI-006-test-red.yaml.
 
 #include <QtTest>
 
@@ -79,20 +80,6 @@ constexpr quint16 kM50 = 50;   // PLC-HMI-011: home-start coil
 constexpr quint16 kM106 = 106; // manual hold output
 constexpr quint16 kM109 = 109; // manual latch output
 constexpr quint16 kM110 = 110; // bypass output
-constexpr quint16 kD128 = 128; // target width
-constexpr quint16 kD130 = 130; // current width
-
-// Brief OB-6: the operator target-width envelope.
-constexpr int kMinTargetWidthMm = 50;
-constexpr int kMaxTargetWidthMm = 400;
-
-// Simulator default target width of a fresh machine, documented by the
-// inspectable PLC-HMI-008 test source (restricted_mode_routing_test.cpp).
-constexpr quint16 kDefaultTargetWidth = 200;
-
-// Deterministic current width used for the envelope cases so the +/-350 mm
-// decoded delta window cannot confound the envelope decision.
-constexpr quint16 kDeterministicCurrentWidth = 100;
 
 constexpr int kMaxConvergenceTicks = 45;
 
@@ -159,27 +146,6 @@ struct StartedApp
 
 // --- shared helpers -------------------------------------------------------------
 
-// Counts completed PLC submissions to one protocol address.
-int countSubmissionsTo(const QVector<quint16> &submittedAddresses, quint16 address)
-{
-    int count = 0;
-    for (const quint16 submitted : submittedAddresses) {
-        if (submitted == address)
-            ++count;
-    }
-    return count;
-}
-
-// True when every produced status is a terminal state (nothing left pending).
-bool allTerminal(const QVector<OperatorCommandStatus> &produced)
-{
-    for (const OperatorCommandStatus &status : produced) {
-        if (!isTerminal(status.lifecycle_state))
-            return false;
-    }
-    return true;
-}
-
 // PLC-HMI-009 D1: the restricted-entry clear now emits an immediate visible
 // request-start (accepted/pending) before its correlated terminal, so a Pending
 // status may legitimately appear. Convergence means the final observed state of
@@ -213,14 +179,6 @@ bool anyRejectionWithReason(const QVector<OperatorCommandStatus> &produced)
     return false;
 }
 
-bool anyVisibleReason(const QVector<OperatorCommandStatus> &produced)
-{
-    for (const OperatorCommandStatus &status : produced) {
-        if (!status.human_readable_detail.trimmed().isEmpty())
-            return true;
-    }
-    return false;
-}
 
 // True when a status is a non-success terminal state, i.e. the command failed
 // observably instead of being reported as a machine success.
@@ -308,10 +266,6 @@ private slots:
     void restrictedEntryRejectsHeldOutputReenergizingWithoutLatch();
     void restrictedEntryWhileOfflineNeverReportsTheClearSucceeded();
 
-    // --- OB-6: the 50-400 mm operator target-width envelope -------------------
-    void outOfEnvelopeAdjustTargetsAreRejectedWithoutSubmission();
-    void inEnvelopeAdjustTargetsConvergeVisibly();
-    void widthSpinOutOfEnvelopeAttemptIsNeverSilentlyAccepted();
 };
 
 // --- OB-5: restricted-mode entry releases a held output -------------------------
@@ -585,250 +539,6 @@ void PlcHmi006ReleaseAndEnvelopeTest::restrictedEntryWhileOfflineNeverReportsThe
     QVERIFY2(failedVisibly,
              "the offline clear failure must be reported as CommunicationsLost or Failed with "
              "a non-empty human_readable_detail");
-
-    started.shutdown();
-}
-
-// --- OB-6: the 50-400 mm operator target-width envelope -------------------------
-
-void PlcHmi006ReleaseAndEnvelopeTest::outOfEnvelopeAdjustTargetsAreRejectedWithoutSubmission()
-{
-    // Brief OB-6: operator targets outside 50..400 mm must be rejected visibly
-    // and must never reach the PLC. The simulator default target width stays
-    // untouched and D128 is never written.
-    StartedApp started;
-    started.start();
-    QVERIFY(started.app != nullptr);
-    QVERIFY2(started.gw != nullptr, "the composed application must expose the gateway");
-    started.advanceUntilOnline();
-    QVERIFY2(started.gw->isOnline(), "precondition: the simulator gateway must come online");
-
-    started.app->coordinator()->setRole(Role::Admin);
-    RecipeWidthPage *recipe = started.app->window()->findChild<RecipeWidthPage *>();
-    QVERIFY(recipe != nullptr);
-    StatusSink sink;
-    QObject sinkScope; // RAII: severs the connection before the sink dies
-    attachStatusSink(&sinkScope, started.app->shell(), sink);
-    QVector<quint16> submittedAddresses;
-    QObject submissionScope; // RAII: severs the connection before the log dies
-    attachSubmissionLog(&submissionScope, started.gw, submittedAddresses);
-
-    // Deterministic current width so a decoded delta cannot confound the
-    // envelope decision.
-    started.gw->model().writeRegister(kD130, kDeterministicCurrentWidth);
-    QVERIFY2(started.gw->model().readRegister(kD128) == kDefaultTargetWidth,
-             "precondition: the fresh machine starts at the default target width");
-
-    const int targets[] = {kMinTargetWidthMm - 1, kMaxTargetWidthMm + 1};
-    for (const int target : targets) {
-        const int mark = sink.mark();
-        const int submissionsBefore = int(submittedAddresses.size());
-        const quint16 d128Before = started.gw->model().readRegister(kD128);
-        emit recipe->applyAdjustRequested(target);
-        for (int i = 0; i < 6; ++i)
-            started.gw->tick();
-        QApplication::processEvents();
-
-        const QVector<OperatorCommandStatus> produced = sink.since(mark);
-        QVERIFY2(!produced.isEmpty(),
-                 qPrintable(QStringLiteral("the out-of-envelope target %1 produced no "
-                                           "visible command state")
-                                .arg(target)));
-        for (const OperatorCommandStatus &status : produced) {
-            QVERIFY2(status.lifecycle_state == OperatorCommandState::Rejected,
-                     qPrintable(QStringLiteral("the out-of-envelope target %1 produced "
-                                               "state %2 instead of a rejection")
-                                    .arg(target)
-                                    .arg(toString(status.lifecycle_state))));
-            QVERIFY2(!status.human_readable_detail.trimmed().isEmpty(),
-                     qPrintable(QStringLiteral("the out-of-envelope target %1 rejection "
-                                               "carries no visible reason")
-                                    .arg(target)));
-        }
-        QCOMPARE(int(submittedAddresses.size()), submissionsBefore);
-        QCOMPARE(int(countSubmissionsTo(submittedAddresses, kD128)), 0);
-        QVERIFY2(started.gw->model().readRegister(kD128) == d128Before,
-                 qPrintable(QStringLiteral("the out-of-envelope target %1 must not write "
-                                           "D128")
-                                .arg(target)));
-    }
-
-    QVERIFY2(started.gw->model().readRegister(kD128) == kDefaultTargetWidth,
-             "out-of-envelope operator targets must not replace the machine target");
-
-    // No latch: further ticks produce no accepted/pending or later state.
-    const int settled = sink.mark();
-    for (int i = 0; i < 30; ++i)
-        started.gw->tick();
-    QApplication::processEvents();
-    QCOMPARE(sink.mark(), settled);
-
-    started.shutdown();
-}
-
-void PlcHmi006ReleaseAndEnvelopeTest::inEnvelopeAdjustTargetsConvergeVisibly()
-{
-    // Brief OB-6 boundary: the exact envelope endpoints 50 and 400 mm must not
-    // be treated as out of range. A correct implementation either accepts them
-    // and converges to a terminal state with D128 equal to the request, or
-    // rejects them visibly with a reason; it must never silently ignore them.
-    StartedApp started;
-    started.start();
-    QVERIFY(started.app != nullptr);
-    QVERIFY2(started.gw != nullptr, "the composed application must expose the gateway");
-    started.advanceUntilOnline();
-    QVERIFY2(started.gw->isOnline(), "precondition: the simulator gateway must come online");
-
-    started.app->coordinator()->setRole(Role::Admin);
-    RecipeWidthPage *recipe = started.app->window()->findChild<RecipeWidthPage *>();
-    QVERIFY(recipe != nullptr);
-    StatusSink sink;
-    QObject sinkScope; // RAII: severs the connection before the sink dies
-    attachStatusSink(&sinkScope, started.app->shell(), sink);
-    QVector<quint16> submittedAddresses;
-    QObject submissionScope; // RAII: severs the connection before the log dies
-    attachSubmissionLog(&submissionScope, started.gw, submittedAddresses);
-
-    // Homing is no longer an HMI gate for the width adjust (user decision
-    // 2026-09-21), so this case now reaches the accepted path and must exercise
-    // a machine that can actually complete the adjust: home it first, exactly
-    // like the sibling cases. Without homing the PLC's own M43 rung refuses the
-    // command and the case would only ever observe 调宽失败.
-    homeReady(started);
-    started.gw->model().writeRegister(kD130, kDeterministicCurrentWidth);
-
-    const int targets[] = {kMinTargetWidthMm, kMaxTargetWidthMm};
-    for (const int target : targets) {
-        const int mark = sink.mark();
-        emit recipe->applyAdjustRequested(target);
-        QVERIFY2(tickUntil(started, kMaxConvergenceTicks,
-                           [&] { return !sink.since(mark).isEmpty(); }),
-                 qPrintable(QStringLiteral("the in-envelope target %1 produced no visible "
-                                           "command state")
-                                .arg(target)));
-        // The lifecycle's request-start (Accepted/Pending) is a legitimate part
-        // of the projection; convergence means the LAST state of the lifecycle
-        // is terminal. allTerminal() would reject the request-start itself, so
-        // the file's convergence helper is the correct predicate here.
-        tickUntil(started, kMaxConvergenceTicks,
-                  [&] { return everyCommandLifecycleReachedTerminal(sink.since(mark)); });
-
-        const QVector<OperatorCommandStatus> produced = sink.since(mark);
-        const bool accepted = [&] {
-            for (const OperatorCommandStatus &status : produced) {
-                if (status.lifecycle_state != OperatorCommandState::Rejected)
-                    return true;
-            }
-            return false;
-        }();
-        if (accepted) {
-            QVERIFY2(everyCommandLifecycleReachedTerminal(produced),
-                     qPrintable(QStringLiteral("the accepted in-envelope target %1 must "
-                                               "converge to a terminal state")
-                                        .arg(target)));
-            QVERIFY2(started.gw->model().readRegister(kD128) == quint16(target),
-                     qPrintable(QStringLiteral("the accepted in-envelope target %1 must "
-                                               "reach D128")
-                                        .arg(target)));
-        } else {
-            QVERIFY2(anyVisibleReason(produced),
-                     qPrintable(QStringLiteral("the in-envelope target %1 was not accepted "
-                                               "and carries no visible reason")
-                                        .arg(target)));
-        }
-    }
-
-    started.shutdown();
-}
-
-void PlcHmi006ReleaseAndEnvelopeTest::widthSpinOutOfEnvelopeAttemptIsNeverSilentlyAccepted()
-{
-    // Brief OB-6: the same envelope applies to the widget path. The operator
-    // cannot prepare an out-of-envelope target and have it accepted by the
-    // two-step apply. Refusal has two allowed shapes: (a) the control itself
-    // refuses the out-of-envelope entry (e.g. clamps it into the range), so the
-    // attempt never reaches the application and no operator rejection status
-    // is required; (b) the control does not refuse the entry, and then the
-    // apply attempt must produce a visible rejection with a reason. In both
-    // shapes D128 keeps the machine target and the attempt is never silently
-    // accepted.
-    StartedApp started;
-    started.start();
-    QVERIFY(started.app != nullptr);
-    QVERIFY2(started.gw != nullptr, "the composed application must expose the gateway");
-    started.advanceUntilOnline();
-    QVERIFY2(started.gw->isOnline(), "precondition: the simulator gateway must come online");
-
-    started.app->coordinator()->setRole(Role::Admin);
-    RecipeWidthPage *recipe = started.app->window()->findChild<RecipeWidthPage *>();
-    QVERIFY(recipe != nullptr);
-    QSpinBox *widthSpin = recipe->widthSpin();
-    QVERIFY(widthSpin != nullptr);
-    QVERIFY(recipe->applyButton() != nullptr);
-    StatusSink sink;
-    QObject sinkScope; // RAII: severs the connection before the sink dies
-    attachStatusSink(&sinkScope, started.app->shell(), sink);
-    QVector<quint16> submittedAddresses;
-    QObject submissionScope; // RAII: severs the connection before the log dies
-    attachSubmissionLog(&submissionScope, started.gw, submittedAddresses);
-
-    const int entered = kMaxTargetWidthMm + 1;
-    widthSpin->setValue(entered);
-    const int displayed = widthSpin->value();
-    const int mark = sink.mark();
-    const int submissionsBefore = int(submittedAddresses.size());
-    const quint16 d128Before = started.gw->model().readRegister(kD128);
-
-    recipe->applyButton()->click();
-    for (int i = 0; i < 4; ++i)
-        started.gw->tick();
-    QApplication::processEvents();
-    recipe->applyButton()->click();
-    for (int i = 0; i < 6; ++i)
-        started.gw->tick();
-    QApplication::processEvents();
-
-    const QVector<OperatorCommandStatus> produced = sink.since(mark);
-    const quint16 d128After = started.gw->model().readRegister(kD128);
-
-    // Never silently accept an out-of-envelope value: D128 must never become
-    // the entered 401 mm, and any applied target must be the value the control
-    // visibly displayed at apply time.
-    QVERIFY2(d128After != quint16(entered),
-             "the widget path must never apply an out-of-envelope target to D128");
-    if (d128After != d128Before) {
-        QVERIFY2(d128After == quint16(displayed),
-                 "an applied widget target must be the value the operator could see");
-        QVERIFY2(d128After >= quint16(kMinTargetWidthMm)
-                     && d128After <= quint16(kMaxTargetWidthMm),
-                 "an applied widget target must lie inside the 50-400 mm envelope");
-    } else {
-        QCOMPARE(int(submittedAddresses.size()), submissionsBefore);
-        QCOMPARE(int(countSubmissionsTo(submittedAddresses, kD128)), 0);
-
-        // Refusal shape (a): the control refused the out-of-envelope entry and
-        // is showing a different, in-envelope value (e.g. a clamp to the range
-        // maximum). The attempt never reached the application, so no operator
-        // rejection status is expected; the never-silent property is carried by
-        // the control refusal itself plus the D128/submission assertions above.
-        const bool controlRefusedEntry =
-            displayed != entered && displayed >= kMinTargetWidthMm
-            && displayed <= kMaxTargetWidthMm;
-        if (controlRefusedEntry) {
-            QVERIFY2(displayed >= kMinTargetWidthMm && displayed <= kMaxTargetWidthMm,
-                     "a control-refused out-of-envelope entry must leave the control "
-                     "showing a value inside the 50-400 mm envelope");
-        } else {
-            // Refusal shape (b): the control did not refuse the entry, so the
-            // apply attempt must not be silently ignored - a rejection with a
-            // visible reason is required.
-            QVERIFY2(anyRejectionWithReason(produced),
-                     "an out-of-envelope widget attempt that is not applied must be "
-                     "visibly rejected with a reason");
-        }
-    }
-    QVERIFY2(allTerminal(produced),
-             "the widget out-of-envelope attempt must not be left pending");
 
     started.shutdown();
 }

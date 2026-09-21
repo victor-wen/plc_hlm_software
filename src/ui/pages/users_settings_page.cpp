@@ -519,7 +519,12 @@ QWidget *UsersSettingsPage::buildParameterSection()
     form->addRow(QStringLiteral("D122"), m_d122Spin);
     m_d204Spin = new QSpinBox(box);
     m_d204Spin->setObjectName(QStringLiteral("d204Spin"));
-    m_d204Spin->setRange(1, 32767); // D204 1-32767 脉冲/mm
+    m_d204Spin->setRange(1, 32767); // D204 1-32767
+    // D204's unit text is unchanged (user decision 2026-09-21 kept D204 as it
+    // is), but note the PLC-side dependency introduced by the 0.1 mm width
+    // registers: the ladder computes the DDRVI distance as D210 * D204, so
+    // D204 must be pulses per 0.1 mm for that product to be truthful. Until a
+    // PLC engineer confirms the calibration, treat the suffix as provisional.
     m_d204Spin->setValue(128);
     m_d204Spin->setSuffix(QStringLiteral(" 脉冲/mm"));
     m_d204Spin->setMinimumHeight(48);

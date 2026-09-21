@@ -34,6 +34,7 @@ constexpr quint16 kM103 = 103;
 constexpr quint16 kM104 = 104;
 constexpr quint16 kM106 = 106;
 constexpr quint16 kM112 = 112;
+constexpr quint16 kD122 = 122;
 constexpr quint16 kD128 = 128;
 constexpr quint16 kD130 = 130;
 constexpr quint16 kD210 = 210;
@@ -484,12 +485,18 @@ void PlcCorrelationDeveloperTest::widthDeltaValidityIsIndependentAndRangeBounded
         qint16 delta;
         bool expected;
     };
+    // The former signed -350..350 window came from the retired 50-400 mm
+    // operator envelope and was removed with it (user decision 2026-09-21):
+    // with a valid slow block every signed delta is valid, including the
+    // boundary values the old window rejected.
     const QVector<DeltaCase> cases{
         {200, 150, 50, true},
         {400, 50, 350, true},
         {50, 400, -350, true},
-        {401, 50, 351, false},
-        {50, 401, -351, false},
+        {401, 50, 351, true},
+        {50, 401, -351, true},
+        {0, 65535, 32767, true},
+        {65535, 0, -32767, true},
     };
     for (const DeltaCase &c : cases) {
         gw.model().writeRegister(kD128, c.target);
@@ -499,16 +506,18 @@ void PlcCorrelationDeveloperTest::widthDeltaValidityIsIndependentAndRangeBounded
         QCOMPARE(gw.lastSnapshot().width_delta_valid, c.expected);
     }
 
-    // In-range D210 with another out-of-range fast field must stay independently
-    // valid: WidthDelta has its own metadata and never aliases another field's
-    // validity. D130 is no longer range-checked (the PLC reports 0 before the
-    // first homing/adjustment, user decision 2026-09-21), so the independent
-    // side is driven through D128 (target width, still 50-400).
-    gw.model().writeRegister(kD128, 401); // out of the 50-400 target range
+    // D210 with another out-of-range fast field must stay independently valid:
+    // WidthDelta has its own metadata (a valid slow block) and never aliases
+    // another field's validity. Neither width register is range-checked any
+    // more (user decision 2026-09-21), so the independent side is driven
+    // through D122, which still has its decoded 100-20000 range.
+    gw.model().writeRegister(kD128, 401); // target width: any u16 is accepted
     gw.model().writeRegister(kD130, 0);   // un-homed current width: always valid
-    gw.model().writeRegister(kD210, 200); // in -350..350
+    gw.model().writeRegister(kD122, 50000); // belt speed: outside 100-20000
+    gw.model().writeRegister(kD210, 200);
     gw.tick();
-    QVERIFY(!gw.lastSnapshot().fieldValid(SnapshotField::TargetWidth));
+    QVERIFY(!gw.lastSnapshot().fieldValid(SnapshotField::BeltSpeed));
+    QVERIFY(gw.lastSnapshot().fieldValid(SnapshotField::TargetWidth));
     QVERIFY(gw.lastSnapshot().fieldValid(SnapshotField::CurrentWidth));
     QVERIFY(gw.lastSnapshot().width_delta_valid);
 }

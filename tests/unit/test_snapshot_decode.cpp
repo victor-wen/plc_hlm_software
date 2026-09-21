@@ -195,7 +195,7 @@ void SnapshotDecodeTest::outOfRangeMarksFieldInvalid()
     quint16 raw[41] = {};
     raw[20] = 99;  // D120 current step: range 0-5
     raw[22] = 50;  // D122 belt speed: range 100-20000
-    raw[28] = 10;  // D128 target width: range 50-400
+    raw[28] = 10;  // D128 target width: no range (0.1 mm units, 2026-09-21)
     raw[30] = 500; // D130 current width: no range (any u16 is valid)
     raw[40] = 1;   // D140 heartbeat: no range
 
@@ -204,7 +204,9 @@ void SnapshotDecodeTest::outOfRangeMarksFieldInvalid()
     DeviceSnapshot s(d);
     QVERIFY(!s.fieldValid(SnapshotField::CurrentStep));
     QVERIFY(!s.fieldValid(SnapshotField::BeltSpeed));
-    QVERIFY(!s.fieldValid(SnapshotField::TargetWidth));
+    // D128 has no range any more (user decision 2026-09-21): the former
+    // 50-400 check was retired with the operator envelope.
+    QVERIFY(s.fieldValid(SnapshotField::TargetWidth));
     QVERIFY(s.fieldValid(SnapshotField::CurrentWidth));
     QCOMPARE(s.currentWidth(), quint16(500));
     QVERIFY(s.fieldValid(SnapshotField::Heartbeat));

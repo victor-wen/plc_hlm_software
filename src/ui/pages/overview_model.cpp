@@ -1,5 +1,6 @@
 #include "ui/pages/overview_model.h"
 
+#include "domain/width_units.h"
 #include "ui/shell/shell_model.h"
 
 namespace hlm {
@@ -31,19 +32,21 @@ OverviewField OverviewModel::step() const
 
 OverviewField OverviewModel::targetWidth() const
 {
-    return field(QString::number(m_model.snapshot().targetWidth()),
+    // D128 is a 0.1 mm register; the operator sees millimetres (user decision
+    // 2026-09-21). The snapshot value itself stays raw.
+    return field(width_units::rawToDisplay(m_model.snapshot().targetWidth()),
                  quint8(SnapshotField::TargetWidth)); // D128
 }
 
 OverviewField OverviewModel::currentWidth() const
 {
-    return field(QString::number(m_model.snapshot().currentWidth()),
+    return field(width_units::rawToDisplay(m_model.snapshot().currentWidth()),
                  quint8(SnapshotField::CurrentWidth)); // D130
 }
 
 OverviewField OverviewModel::widthDelta() const
 {
-    return field(QString::number(m_model.snapshot().widthDelta()),
+    return field(width_units::rawDeltaToDisplay(m_model.snapshot().widthDelta()),
                  quint8(SnapshotField::CurrentWidth)); // D210 (int16)
 }
 

@@ -72,7 +72,8 @@ private slots:
     void partiallyStaleOrFailedDataIsNotOverallValid();
 
     // --- OB-9: D210 has independent validity metadata --------------------------
-    void widthDeltaValidityRequiresSlowBlockAndSignedRange();
+    // The former signed -350..350 window case was removed with the window
+    // itself (user decision 2026-09-21: D210 validity is the slow block's).
     void widthDeltaValidityIsIndependentOfCurrentWidthValidity();
 };
 
@@ -193,58 +194,6 @@ void PlcSnapshotQualityTest::partiallyStaleOrFailedDataIsNotOverallValid()
 
 // --- OB-9 ---------------------------------------------------------------------
 
-void PlcSnapshotQualityTest::widthDeltaValidityRequiresSlowBlockAndSignedRange()
-{
-    SimulatedPlcGateway gw;
-    gw.start();
-    advanceUntilOnline(gw);
-    QVERIFY(gw.isOnline());
-    gw.tick();
-
-    struct DeltaCase
-    {
-        quint16 target;  // D128
-        quint16 current; // D130
-        qint16 delta;    // D210
-        bool expectedValid;
-        const char *why;
-    };
-
-    const QVector<DeltaCase> cases{
-        {200, 150, 50, true, "in-range positive D210 must be valid"},
-        {400, 50, 350, true, "upper boundary +350 must be valid"},
-        {50, 400, -350, true, "lower boundary -350 must be valid"},
-        {200, 0, 200, true, "in-range D210 stays valid with an out-of-range D130"},
-        {401, 50, 351, false, "D210 above +350 must be invalid"},
-        {50, 401, -351, false, "D210 below -350 must be invalid"},
-    };
-
-    for (const DeltaCase &c : cases) {
-        // Write the widths and the delta consistently so the assertion holds
-        // whether the simulator stores D210 verbatim or derives it from
-        // D128 - D130.
-        gw.model().writeRegister(kD128, c.target);
-        gw.model().writeRegister(kD130, c.current);
-        gw.model().writeRegister(kD210, static_cast<quint16>(c.delta));
-        gw.tick();
-        QVERIFY2(gw.lastSnapshot().width_delta_valid == c.expectedValid, c.why);
-    }
-
-    // A failed slow transfer invalidates the delta metadata as well.
-    QVector<bool> deltasDuringFailure;
-    connect(&gw, &SimulatedPlcGateway::snapshotReady, this,
-            [&deltasDuringFailure](quint64, const DeviceSnapshot &s) {
-                deltasDuringFailure.append(s.width_delta_valid);
-            });
-    gw.setLinkDown(true);
-    for (int i = 0; i < 5; ++i)
-        gw.tick();
-    for (bool valid : deltasDuringFailure) {
-        QVERIFY2(!valid,
-                 "width-delta validity must require a valid slow block");
-    }
-}
-
 void PlcSnapshotQualityTest::widthDeltaValidityIsIndependentOfCurrentWidthValidity()
 {
     SimulatedPlcGateway gw;
@@ -253,9 +202,9 @@ void PlcSnapshotQualityTest::widthDeltaValidityIsIndependentOfCurrentWidthValidi
     QVERIFY(gw.isOnline());
     gw.tick();
 
-    // D130 = 0 is outside the authoritative 50..400 width range, so
-    // CurrentWidth is invalid; D210 = 200 is inside the signed -350..350
-    // range with a valid slow block, so the delta metadata must stay valid.
+    // Neither width register is range-checked any more (user decision
+    // 2026-09-21), so CurrentWidth is valid here; the point of the case is
+    // that the delta metadata does not alias another field's validity.
     gw.model().writeRegister(kD128, 200);
     gw.model().writeRegister(kD130, 0);
     gw.model().writeRegister(kD210, 200);

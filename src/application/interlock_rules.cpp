@@ -51,11 +51,12 @@ InterlockResult InterlockRules::checkAdjustWidth(const DeviceSnapshot &s, bool o
     add(r.unmet, !s.m3(), QStringLiteral("设备正在运行, 请先停止"));
     add(r.unmet, !s.m0(), QStringLiteral("急停有效"));
     add(r.unmet, !s.m14(), QStringLiteral("存在锁存故障"));
-    // 50-400 mm 是操作员/配方的有意包络 (需求 D128 50~400), 由 HMI 在此执行;
-    // 它不是解码 PLC 梯图的限制. 仿真器只建模解码后的 M43 前置条件, 因此
-    // 超出包络的目标不会在 parity 侧复现 (PLC-HMI-006 D5; CORE-005-LOW-1).
-    add(r.unmet, targetWidth >= 50 && targetWidth <= 400,
-        QStringLiteral("目标宽度需在 50-400 mm 之间"));
+    // 目标宽度必须是大于 0 的原始寄存器值 (用户决定 2026-09-21): 寄存器单位
+    // 是 0.1mm, 旧的上限 400 (以及下限 50) 已随操作员包络一并取消. 该包络本来
+    // 就只是 HMI 侧的限制, 不是解码 PLC 梯图得到的 (梯图对 D128/D130 无任何数值
+    // 比较). 注意 PLC 侧依赖: 梯图用 D210 × D204 计算 DDRVI 距离, 因此 D204 必须
+    // 是"每 0.1mm 的脉冲数"该单位才成立 —— 这属于 PLC 工程师的改动, 不是 HMI.
+    add(r.unmet, targetWidth > 0, QStringLiteral("目标宽度需大于 0 mm"));
     add(r.unmet, s.fieldValid(SnapshotField::PulsePerMm) && s.pulsePerMm() >= 1
             && s.pulsePerMm() <= 32767,
         QStringLiteral("脉冲当量 D204 需在 1-32767 之间"));

@@ -276,7 +276,8 @@ void RtuSimulatorTest::statusWordTracksHomeReturnTick()
     QVERIFY(!model.readCoil(61));
     QCOMPARE(model.readRegister(100) & quint16(1 << 9), quint16(0));
 
-    // Home return completes after 2 s: M61=1 and M60=1 (D130 in range).
+    // Home return completes after 2 s: M61=1 and M60=1 (decoded rung:
+    // M61 AND D128 == D130 AND no estop/fault).
     handler.tick();
     handler.tick();
     QVERIFY(!model.readCoil(50));

@@ -141,12 +141,20 @@ AddressTable::AddressTable()
         1.0, QStringLiteral("Hz")));
     m_defs.push_back(def(QStringLiteral("D"), 127, QStringLiteral("D127"),
         QStringLiteral("调宽频率(高字)"), AccessType::Read, ValueType::U16));
+    // D128/D130/D210 are 0.1 mm registers (user decision 2026-09-21): raw 2000
+    // is 200.0 mm, so scale 0.1 is the display conversion and min/max below are
+    // raw units. The former 50-400 operator envelope is removed: the target
+    // must simply be greater than zero (max 0 == unbounded), and D130/D210
+    // carry no range at all. NOTE (PLC-side dependency): the ladder computes
+    // the DDRVI distance as D210 * D204, so D204 must be pulses per 0.1 mm for
+    // this unit to be truthful on the machine; that is a PLC-engineer change,
+    // not an HMI one.
     m_defs.push_back(def(QStringLiteral("D"), 128, QStringLiteral("D128"),
-        QStringLiteral("目标宽度"), AccessType::ReadWrite, ValueType::U16, 0, 50, 400,
-        1.0, QStringLiteral("mm")));
+        QStringLiteral("目标宽度"), AccessType::ReadWrite, ValueType::U16, 0, 1, 0,
+        0.1, QStringLiteral("mm")));
     m_defs.push_back(def(QStringLiteral("D"), 130, QStringLiteral("D130"),
         QStringLiteral("当前宽度"), AccessType::Read, ValueType::U16, 0, 0, 0,
-        1.0, QStringLiteral("mm")));
+        0.1, QStringLiteral("mm")));
     m_defs.push_back(def(QStringLiteral("D"), 136, QStringLiteral("D136"),
         QStringLiteral("调宽脉冲数(低字)"), AccessType::Read, ValueType::I32, 137));
     m_defs.push_back(def(QStringLiteral("D"), 137, QStringLiteral("D137"),
@@ -162,7 +170,7 @@ AddressTable::AddressTable()
         1.0, QStringLiteral("脉冲/mm")));
     m_defs.push_back(def(QStringLiteral("D"), 210, QStringLiteral("D210"),
         QStringLiteral("调宽差值(目标-当前)"), AccessType::Read, ValueType::I16, 0, 0, 0,
-        1.0, QStringLiteral("mm")));
+        0.1, QStringLiteral("mm")));
     m_defs.push_back(def(QStringLiteral("D"), 220, QStringLiteral("D220"),
         QStringLiteral("调宽速度设定"), AccessType::ReadWrite, ValueType::U16, 0, 1, 15,
         1.0, QStringLiteral("mm/s")));

@@ -72,7 +72,7 @@ DeviceSnapshot decodedFastSnapshot(quint16 statusWord1, quint16 currentWidth,
     raw[10] = 0;            // D110 fault code (0-10)
     raw[20] = 0;            // D120 step (0-5)
     raw[22] = beltSpeed;    // D122 belt speed (100-20000)
-    raw[28] = 100;          // D128 target width (50-400)
+    raw[28] = 100;          // D128 target width (0.1 mm units, no range)
     raw[30] = currentWidth; // D130 current width (no range)
     raw[40] = 1;            // D140 heartbeat
     const QDateTime now = QDateTime::currentDateTime();

@@ -1,5 +1,6 @@
 #include "ui/pages/diagnostics_model.h"
 
+#include "domain/width_units.h"
 #include "ui/shell/shell_model.h"
 
 namespace hlm {
@@ -305,13 +306,15 @@ DiagnosticsField DiagnosticsModel::widthFrequency() const
 
 DiagnosticsField DiagnosticsModel::targetWidth() const
 {
-    return field(QString::number(m_model.snapshot().targetWidth()),
+    // D128 is a 0.1 mm register; the surface shows millimetres (user decision
+    // 2026-09-21). The snapshot value itself stays raw.
+    return field(width_units::rawToDisplay(m_model.snapshot().targetWidth()),
                  quint8(SnapshotField::TargetWidth), fastFresh()); // D128
 }
 
 DiagnosticsField DiagnosticsModel::currentWidth() const
 {
-    return field(QString::number(m_model.snapshot().currentWidth()),
+    return field(width_units::rawToDisplay(m_model.snapshot().currentWidth()),
                  quint8(SnapshotField::CurrentWidth), fastFresh()); // D130
 }
 
@@ -342,12 +345,13 @@ DiagnosticsField DiagnosticsModel::pulsePerMm() const
 
 DiagnosticsField DiagnosticsModel::widthDelta() const
 {
-    // D210 has its own validity metadata (never aliases CurrentWidth):
-    // a valid slow block plus signed D210 in -350..350 (PLC-HMI-003 D6/D7).
+    // D210 has its own validity metadata (never aliases CurrentWidth): a valid
+    // slow block. The former signed -350..350 window came from the retired
+    // 50-400 mm envelope (user decision 2026-09-21).
     const DeviceSnapshot &s = m_model.snapshot();
     if (!slowFresh() || !s.width_delta_valid)
         return {};
-    return {QString::number(s.widthDelta()), true}; // D210
+    return {width_units::rawDeltaToDisplay(s.widthDelta()), true}; // D210
 }
 
 DiagnosticsField DiagnosticsModel::widthSpeed() const
