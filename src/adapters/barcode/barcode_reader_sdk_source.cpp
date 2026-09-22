@@ -25,11 +25,6 @@ namespace {
 constexpr int kResponseCapacity = 1024 * 1024 + 1;
 // The SDK blocks in the calling thread; its own C/C++ examples pass 2000 ms.
 constexpr unsigned int kCallTimeoutMs = 2000;
-// The vendor's sample polls every 50 ms and allows 35 s per cycle
-// (TriggerClient.cs:62,73; README_CN.md:109). A board is either in the cached
-// frame by then or it is not.
-constexpr int kPollIntervalMs = 50;
-constexpr qint64 kCycleDeadlineMs = 35000;
 // Largest response this adapter will parse (matches the sample's MaxJsonLength).
 constexpr qint64 kMaxJsonBytes = 1024 * 1024;
 
@@ -103,6 +98,18 @@ bool parseRows(const QByteArray &json, QVector<BarcodeRow> *rows, QString *reaso
 
 } // namespace
 
+QByteArray barcodePayloadFromBuffer(const QByteArray &raw, quint32 requiredBytes)
+{
+    const qsizetype cap = qMin<qsizetype>(
+        raw.size(),
+        requiredBytes > 0 ? static_cast<qsizetype>(requiredBytes) - 1 : raw.size());
+    // An oversized/unset requiredBytes (or a buffer the SDK left unpadded): read
+    // up to the first NUL rather than trusting the count blindly.
+    const qsizetype nul = raw.indexOf('\0');
+    const qsizetype length = nul >= 0 ? qMin(cap, nul) : cap;
+    return raw.left(length);
+}
+
 #ifdef _WIN32
 
 namespace {
@@ -148,13 +155,13 @@ public:
     BarcodeSdkReply status() override
     {
         if (m_status == nullptr)
-            return reply(BarcodeSdkStatus::LibraryUnavailable, 0, nullptr);
+            return unavailable();
         QByteArray buffer(kResponseCapacity, '\0');
         unsigned int required = 0;
         const int rc = m_status(nullptr, buffer.data(),
                                 static_cast<unsigned int>(buffer.size()),
                                 &required, kCallTimeoutMs);
-        return reply(static_cast<BarcodeSdkStatus>(rc), rc, &buffer);
+        return replyFrom(static_cast<BarcodeSdkStatus>(rc), buffer, required);
     }
 
     BarcodeSdkReply trigger(const QString &requestId) override
@@ -167,23 +174,29 @@ public:
     }
 
 private:
-    // requiredBytes includes the NUL (README_CN.md:28), so the payload is
-    // requiredBytes - 1 bytes. Grows and retries once on BR_BUFFER_TOO_SMALL —
-    // the caller is expected to use the reported size.
-    static BarcodeSdkReply reply(BarcodeSdkStatus status, int rc,
-                                 const QByteArray *buffer)
+    static BarcodeSdkReply unavailable()
+    {
+        BarcodeSdkReply out;
+        out.status = BarcodeSdkStatus::LibraryUnavailable;
+        return out;
+    }
+
+    // A transport failure carries no payload; a success carries exactly the
+    // payload the SDK reported, never the whole NUL-padded buffer.
+    static BarcodeSdkReply replyFrom(BarcodeSdkStatus status,
+                                     const QByteArray &buffer, unsigned int required)
     {
         BarcodeSdkReply out;
         out.status = status;
-        if (rc == kBrOk && buffer != nullptr)
-            out.json = *buffer;
+        if (status == BarcodeSdkStatus::Ok)
+            out.json = barcodePayloadFromBuffer(buffer, required);
         return out;
     }
 
     BarcodeSdkReply callWithId(IdFn fn, const QString &requestId)
     {
         if (fn == nullptr)
-            return reply(BarcodeSdkStatus::LibraryUnavailable, 0, nullptr);
+            return unavailable();
         const QByteArray id = requestId.toUtf8();
         QByteArray buffer(kResponseCapacity, '\0');
         for (int attempt = 0; attempt < 2; ++attempt) {
@@ -192,20 +205,22 @@ private:
                               static_cast<unsigned int>(buffer.size()),
                               &required, kCallTimeoutMs);
             if (rc == kBrOk) {
-                if (required > 0)
-                    out_json = buffer;
-                return reply(BarcodeSdkStatus::Ok, rc, &buffer);
+                return replyFrom(BarcodeSdkStatus::Ok, buffer, required);
             }
             if (rc == kBrBufferTooSmall && attempt == 0 && required > 0) {
+                // The reported size is the caller's grow-and-retry signal.
                 buffer = QByteArray(static_cast<int>(required), '\0');
                 continue;
             }
-            return reply(static_cast<BarcodeSdkStatus>(rc), rc, nullptr);
+            BarcodeSdkReply out;
+            out.status = static_cast<BarcodeSdkStatus>(rc);
+            return out;
         }
-        return reply(BarcodeSdkStatus::BufferTooSmall, kBrBufferTooSmall, nullptr);
+        BarcodeSdkReply out;
+        out.status = BarcodeSdkStatus::BufferTooSmall;
+        return out;
     }
 
-    QByteArray out_json;
     HMODULE m_module = nullptr;
     StatusFn m_status = nullptr;
     IdFn m_trigger = nullptr;
@@ -248,8 +263,10 @@ std::unique_ptr<IBarcodeSdk> makeSystemBarcodeSdk()
 
 #endif
 
-BarcodeReaderSdkSource::BarcodeReaderSdkSource(IBarcodeSdk *sdk, QObject *parent)
+BarcodeReaderSdkSource::BarcodeReaderSdkSource(IBarcodeSdk *sdk, Config config,
+                                               QObject *parent)
     : IBarcodeSource(parent)
+    , m_config(config)
     , m_ownerThread(QThread::currentThread())
 {
     if (sdk != nullptr) {
@@ -368,7 +385,7 @@ void BarcodeReaderSdkSource::performCycle()
 
     const BarcodeSdkReply triggered = m_sdk->trigger(m_requestId);
     bool keepPolling = false;
-    if (applyReply(triggered, &result, &keepPolling)) {
+    if (applyReply(triggered, &result, &keepPolling, /*isTriggerReply=*/true)) {
         persistRows(&result);
         emitTerminal(result);
         return;
@@ -384,7 +401,7 @@ void BarcodeReaderSdkSource::performCycle()
     m_deadline->start();
     if (m_poll == nullptr) {
         m_poll = new QTimer(this);
-        m_poll->setInterval(kPollIntervalMs);
+        m_poll->setInterval(m_config.pollIntervalMs);
         connect(m_poll, &QTimer::timeout, this,
                 &BarcodeReaderSdkSource::onPollTimeout);
     }
@@ -393,7 +410,7 @@ void BarcodeReaderSdkSource::performCycle()
 
 void BarcodeReaderSdkSource::onPollTimeout()
 {
-    if (m_deadline != nullptr && m_deadline->elapsed() >= kCycleDeadlineMs) {
+    if (m_deadline != nullptr && m_deadline->elapsed() >= m_config.cycleDeadlineMs) {
         if (m_poll != nullptr)
             m_poll->stop();
         BarcodeResult result;
@@ -408,7 +425,8 @@ void BarcodeReaderSdkSource::onPollTimeout()
         // visible timeout instead of an open-ended pending state.
         result.state = BarcodeState::Failed;
         result.detail =
-            QStringLiteral("扫码结果等待超时（%1 秒）").arg(kCycleDeadlineMs / 1000);
+            QStringLiteral("扫码结果等待超时（%1 秒）")
+                .arg(m_config.cycleDeadlineMs / 1000);
         emitTerminal(result);
         return;
     }
@@ -422,7 +440,8 @@ void BarcodeReaderSdkSource::onPollTimeout()
     result.requestId = m_requestId;
 
     bool keepPolling = false;
-    if (applyReply(m_sdk->result(m_requestId), &result, &keepPolling)) {
+    if (applyReply(m_sdk->result(m_requestId), &result, &keepPolling,
+                   /*isTriggerReply=*/false)) {
         if (m_poll != nullptr)
             m_poll->stop();
         persistRows(&result);
@@ -441,7 +460,8 @@ void BarcodeReaderSdkSource::onPollTimeout()
 }
 
 bool BarcodeReaderSdkSource::applyReply(const BarcodeSdkReply &reply,
-                                        BarcodeResult *result, bool *keepPolling)
+                                        BarcodeResult *result, bool *keepPolling,
+                                        bool isTriggerReply)
 {
     *keepPolling = false;
 
@@ -467,11 +487,17 @@ bool BarcodeReaderSdkSource::applyReply(const BarcodeSdkReply &reply,
     }
     if (!object.value(QStringLiteral("ok")).toBool()) {
         const QString code = object.value(QStringLiteral("code")).toString();
-        // busy: the previous round is still decoding (the SDK does not queue a
-        // second trigger). not_ready: no decodable frame yet. Both are
-        // transient — the cycle keeps querying the SAME requestId, and the
-        // cycle deadline is what finally converges a permanently busy server.
-        if (code == QLatin1String("busy") || code == QLatin1String("not_ready")) {
+        // busy: the previous round is still decoding. not_ready: no decodable
+        // frame yet. Both are TRANSIENT ONLY when they answer a result query —
+        // a poll that comes back busy simply means "not finished". In a TRIGGER
+        // reply they are terminal for this attempt, because the SDK does not
+        // queue triggers: nothing was accepted under this requestId, so polling
+        // it can only ever return not_found. Converging at once is what keeps
+        // the operator from waiting out the whole deadline for an answer the
+        // adapter already has.
+        const bool transient = !isTriggerReply
+            && (code == QLatin1String("busy") || code == QLatin1String("not_ready"));
+        if (transient) {
             *keepPolling = true;
             return false;
         }
@@ -508,6 +534,17 @@ bool BarcodeReaderSdkSource::applyReply(const BarcodeSdkReply &reply,
                 ? businessCodeReason(
                       object.value(QStringLiteral("code")).toString())
                 : message;
+        return true;
+    }
+
+    // A reply whose rows were omitted because the result exceeded the SDK's
+    // 128 KiB payload limit. The README is explicit that a truncated or empty
+    // row list must NOT be read as "decoded nothing" — presenting this as
+    // NoCode would tell the operator "no barcode this cycle" for a cycle that
+    // decoded six. It is a failure of the transfer, not a result.
+    if (object.value(QStringLiteral("rowsTruncated")).toBool()) {
+        result->state = BarcodeState::Failed;
+        result->detail = QStringLiteral("扫码结果过大被截断，请按相机/识别区域筛选后重试");
         return true;
     }
 
@@ -567,17 +604,30 @@ void BarcodeReaderSdkSource::persistRows(BarcodeResult *result)
                                     .arg(file.errorString());
         return;
     }
+    const qint64 startSize = file.size();
     // One line per decoded barcode, in table order, CRLF-terminated —
     // byte-for-byte the format the scan program itself writes
     // (需求/扫码相关/Barcode.txt). Empty positions are NOT written: they are
     // not barcodes.
+    QByteArray payload;
     for (const BarcodeRow &row : result->rows) {
         if (row.barcode.trimmed().isEmpty())
             continue;
-        file.write(row.barcode.toUtf8());
-        file.write("\r\n");
+        payload += row.barcode.toUtf8();
+        payload += "\r\n";
     }
+    file.write(payload);
+    // A short write (a full disk, a quota, a device that filled up mid-batch)
+    // leaves a traceability file quietly missing rows. On this file a silent
+    // partial batch is worse than a visible failure, so report it: the operator
+    // sees that the barcode was read but not completely stored.
+    const bool shortWrite = file.error() != QFileDevice::NoError
+                            || file.size() - startSize != payload.size();
     file.close();
+    if (shortWrite) {
+        result->persistDetail = QStringLiteral("结果文件写入不完整，请检查磁盘空间");
+        return;
+    }
     result->persisted = true;
 }
 

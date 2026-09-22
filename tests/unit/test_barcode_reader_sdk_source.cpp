@@ -135,6 +135,7 @@ class BarcodeReaderSdkSourceTest : public QObject
     Q_OBJECT
 
 private slots:
+    void paddedReplyBufferYieldsExactlyThePayload();
     void notConfiguredTriggersNothing();
     void completedCycleParsesEveryRowAndAppendsEachBarcode();
     void emptyPositionsAreCountedAndNeverWritten();
@@ -142,13 +143,52 @@ private slots:
     void absentSdkConvergesToTheOperatorReason();
     void rejectedTriggerCarriesTheBusinessReason();
     void serverRestartNeverTrustsTheResult();
-    void pollTimeoutConvergesAndReusesTheSameRequestId();
+    void truncatedResultIsAFailureNotNoCode();
+    void transportTimeoutKeepsPollingTheSameRequestId();
+    void cycleDeadlineConvergesTheWaitNotTheDecode();
+    void busyTriggerIsTerminalBecauseNothingWasAccepted();
     void busyKeepsPollingTheSameRequestId();
     void twoCyclesUseDifferentRequestIds();
     void failedWriteStillShowsTheBarcode();
     void overlappingCycleIsRejectedNotQueued();
     void sdkCallsRunOffTheCallingThread();
 };
+
+void BarcodeReaderSdkSourceTest::paddedReplyBufferYieldsExactlyThePayload()
+{
+    // The real DLL writes its JSON at the front of the caller's 1 MiB + 1
+    // buffer and leaves the rest untouched, so the buffer handed back is
+    // NUL-padded. Qt's JSON parser does NOT treat NUL as whitespace: passing
+    // the whole padded buffer fails with GarbageAtEnd. This helper is the
+    // single place that trims it, and it is deliberately outside the
+    // #ifdef _WIN32 block so the DLL-less dev loop can still test it.
+    const QByteArray json = R"({"ok":true,"code":"completed"})";
+    const quint32 required =
+        static_cast<quint32>(json.size()) + 1; // requiredBytes includes the NUL
+
+    QByteArray padded(1024 * 1024 + 1, '\0');
+    memcpy(padded.data(), json.constData(), json.size());
+
+    // 1. The exact payload, given the SDK's own byte count.
+    QCOMPARE(barcodePayloadFromBuffer(padded, required), json);
+    // 2. The proof that this matters: the untrimmed buffer does not parse.
+    QJsonParseError paddedError{};
+    QJsonDocument::fromJson(padded, &paddedError);
+    QVERIFY2(paddedError.error != QJsonParseError::NoError,
+             "the padded buffer must NOT be parseable, or this trim is pointless");
+    QJsonParseError trimmedError{};
+    QJsonDocument::fromJson(barcodePayloadFromBuffer(padded, required),
+                            &trimmedError);
+    QCOMPARE(trimmedError.error, QJsonParseError::NoError);
+    // 3. No byte count reported: fall back to the first NUL.
+    QCOMPARE(barcodePayloadFromBuffer(padded, 0), json);
+    // 4. An over-reported count still stops at the NUL instead of overrunning.
+    QCOMPARE(barcodePayloadFromBuffer(padded, padded.size()), json);
+    // 5. A buffer the SDK filled exactly (no padding) is returned whole.
+    QCOMPARE(barcodePayloadFromBuffer(json, required), json);
+    // 6. A zero-length payload is empty, not the whole buffer.
+    QVERIFY(barcodePayloadFromBuffer(QByteArray(8, '\0'), 1).isEmpty());
+}
 
 void BarcodeReaderSdkSourceTest::notConfiguredTriggersNothing()
 {
@@ -357,15 +397,16 @@ void BarcodeReaderSdkSourceTest::serverRestartNeverTrustsTheResult()
     source.stop();
 }
 
-void BarcodeReaderSdkSourceTest::pollTimeoutConvergesAndReusesTheSameRequestId()
+// A transport timeout does NOT cancel an accepted job, so the adapter must keep
+// querying — with the SAME requestId, never a fresh one — rather than converge
+// on the first timeout.
+void BarcodeReaderSdkSourceTest::transportTimeoutKeepsPollingTheSameRequestId()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     FakeBarcodeSdk sdk;
     sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
     sdk.triggerReplies = {okReply(acceptedJson(QStringLiteral("job-1")))};
-    // A transport timeout does NOT cancel the job, so the adapter must keep
-    // querying — with the SAME requestId, never a fresh one.
     sdk.resultReplies = {{BarcodeSdkStatus::Timeout, QByteArray()}};
 
     BarcodeReaderSdkSource source(&sdk);
@@ -387,6 +428,107 @@ void BarcodeReaderSdkSourceTest::pollTimeoutConvergesAndReusesTheSameRequestId()
         QStringLiteral("job-1"), {QStringLiteral("C3003090^M10^260224^002695")}))};
     QTRY_COMPARE_WITH_TIMEOUT(spy.size(), 1, 10000);
     QCOMPARE(spy[0][0].value<BarcodeResult>().state, BarcodeState::Ok);
+    source.stop();
+}
+
+// The cycle deadline is the adapter's promise that a pending state is never
+// left open, and it is the one path a test could not reach while the constants
+// were file-local: it would have to wait 35 s. With an injected 60 ms budget
+// the whole path — keep polling, then converge with a visible reason — is
+// proven in milliseconds.
+void BarcodeReaderSdkSourceTest::cycleDeadlineConvergesTheWaitNotTheDecode()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FakeBarcodeSdk sdk;
+    sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
+    sdk.triggerReplies = {okReply(acceptedJson(QStringLiteral("job-1")))};
+    // The server never finishes: every poll comes back accepted/pending.
+    sdk.resultReplies = {okReply(acceptedJson(QStringLiteral("job-1")))};
+
+    BarcodeReaderSdkSource::Config config;
+    config.pollIntervalMs = 5;
+    config.cycleDeadlineMs = 60;
+    BarcodeReaderSdkSource source(&sdk, config);
+    source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
+    source.start();
+    QSignalSpy spy(&source, &IBarcodeSource::resultReady);
+
+    QVERIFY(source.requestRead());
+    QTRY_COMPARE_WITH_TIMEOUT(spy.size(), 1, 5000);
+    const BarcodeResult result = spy[0][0].value<BarcodeResult>();
+    QCOMPARE(result.state, BarcodeState::Failed);
+    QVERIFY(result.detail.contains(QStringLiteral("超时")));
+    // Still one trigger, and every query used that same id: giving up on the
+    // WAIT never re-keys the cycle (the decode was not cancelled).
+    QCOMPARE(sdk.triggerIds.size(), 1);
+    for (const QString &queried : sdk.resultIds)
+        QCOMPARE(queried, sdk.triggerIds.first());
+    // And a new cycle is accepted once the failed one converged.
+    QVERIFY(!source.cycleInProgress());
+    QVERIFY(source.requestRead());
+    source.stop();
+}
+
+// A `busy` answer means different things at the two call sites. On a result
+// query it is "not finished yet". On a TRIGGER it means nothing was accepted
+// under this id — the SDK does not queue triggers — so polling could only ever
+// return not_found, and waiting out the whole deadline would make the operator
+// wait for an answer the adapter already has.
+void BarcodeReaderSdkSourceTest::busyTriggerIsTerminalBecauseNothingWasAccepted()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FakeBarcodeSdk sdk;
+    sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
+    sdk.triggerReplies = {
+        okReply(R"({"ok":false,"code":"busy","serverId":"server-1"})")};
+
+    BarcodeReaderSdkSource source(&sdk);
+    source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
+    source.start();
+    QSignalSpy spy(&source, &IBarcodeSource::resultReady);
+
+    QVERIFY(source.requestRead());
+    QTRY_COMPARE_WITH_TIMEOUT(spy.size(), 1, 5000);
+    const BarcodeResult result = spy[0][0].value<BarcodeResult>();
+    QCOMPARE(result.state, BarcodeState::Failed);
+    QVERIFY(result.detail.contains(QStringLiteral("上一轮")));
+    // Converged at once: no polling of an id that was never accepted.
+    QVERIFY2(sdk.resultIds.isEmpty(),
+             "a refused trigger must not be polled as if it had been accepted");
+    QCOMPARE(sdk.triggerIds.size(), 1);
+    source.stop();
+}
+
+// A truncated reply omits `rows` and sets rowsTruncated. The README is explicit
+// that this must not be read as "decoded nothing" — doing so would tell the
+// operator 本轮未识别到条码 for a cycle that actually decoded the board.
+void BarcodeReaderSdkSourceTest::truncatedResultIsAFailureNotNoCode()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("Barcode.txt"));
+    FakeBarcodeSdk sdk;
+    sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
+    sdk.triggerReplies = {okReply(acceptedJson(QStringLiteral("job-1")))};
+    sdk.resultReplies = {okReply(
+        R"({"ok":true,"code":"completed","state":"completed","serverId":"server-1",)"
+        R"("requestId":"job-1","saved":true,"rowsTruncated":true,"rows":[]})")};
+
+    BarcodeReaderSdkSource source(&sdk);
+    source.setResultPath(path);
+    source.start();
+    QSignalSpy spy(&source, &IBarcodeSource::resultReady);
+
+    QVERIFY(source.requestRead());
+    QTRY_COMPARE_WITH_TIMEOUT(spy.size(), 1, 5000);
+    const BarcodeResult result = spy[0][0].value<BarcodeResult>();
+    QCOMPARE(result.state, BarcodeState::Failed);
+    QVERIFY(result.detail.contains(QStringLiteral("截断")));
+    // Nothing decoded as far as this adapter knows, so nothing is appended and
+    // the file is left untouched.
+    QVERIFY(!QFile::exists(path));
     source.stop();
 }
 

@@ -345,6 +345,14 @@ QString OverviewPage::barcodeStatusText() const
     }
     case BarcodeState::NoCode:
         return QStringLiteral("条码：本轮未识别到条码");
+    case BarcodeState::Overlapped:
+        // A 扫码结束 edge arrived while the previous cycle was still polling.
+        // The refusal is shown, not swallowed, and the last barcode it could
+        // have produced is not implied to be this board's.
+        return QStringLiteral("条码：%1").arg(
+            m_barcodeResult.detail.isEmpty()
+                ? QStringLiteral("上一轮扫码尚未结束，本次扫码结束信号未处理")
+                : m_barcodeResult.detail);
     case BarcodeState::Failed:
         return QStringLiteral("条码：读取失败 — %1").arg(m_barcodeResult.detail);
     }

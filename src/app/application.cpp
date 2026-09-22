@@ -522,13 +522,29 @@ void Application::wireGateway(IPlcGateway *gw)
                     return; // obsolete gateway generation: rejected
                 m_coordinator->onSnapshot(s);
                 m_shell->updateSnapshot(s);
-                // M15 扫码结束 rising edge (user decision 2026-09-22): the scan
-                // cycle ended, so read the result file. Gated on a fresh
-                // snapshot so a stale M15 readback can never trigger a read,
-                // and edge-only so a held M15 does not re-read every poll.
+                // M15 扫码结束 rising edge (user decision 2026-09-22, revised:
+                // the HMI drives the scan). Gated on a fresh snapshot so a stale
+                // M15 readback can never start a cycle, and edge-only so a held
+                // M15 does not restart one every poll.
                 const bool scanComplete = m_shell->snapshotFresh() && s.m15();
-                if (scanComplete && !m_lastScanComplete)
-                    m_barcodeSource->requestRead();
+                if (scanComplete && !m_lastScanComplete
+                    && !m_barcodeSource->requestRead()) {
+                    // The previous cycle is still polling, so this board's
+                    // 扫码结束 signal was refused rather than queued. A refused
+                    // request must never be silent (contract: no silent
+                    // rejection), and it must not overwrite the last real
+                    // barcode either — so it is reported as its own outcome.
+                    BarcodeResult refused;
+                    refused.state = BarcodeState::Overlapped;
+                    refused.detail =
+                        QStringLiteral("上一轮扫码尚未结束，本次扫码结束信号未处理");
+                    refused.readAt = QDateTime::currentDateTime();
+                    // Deliberately NOT stored as m_lastBarcode: this carries no
+                    // barcode, and keeping it would make the next real result
+                    // look like a change from a value that never existed.
+                    if (m_overviewPage != nullptr)
+                        m_overviewPage->setBarcodeResult(refused);
+                }
                 m_lastScanComplete = scanComplete;
                 m_db->feedPlcAlarmSnapshot(s.faultCode(), s.m14(), s.m4(),
                                            s.sequence());

@@ -28,6 +28,7 @@
 #include <QDir>
 #include <QFile>
 #include <QLineEdit>
+#include <QSemaphore>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 
@@ -82,6 +83,13 @@ public:
         if (!available) {
             return {BarcodeSdkStatus::LibraryUnavailable, QByteArray()};
         }
+        // A test can park the cycle here to hold one open across a second M15
+        // edge. The wait is bounded so a failing assertion can never leave the
+        // worker thread blocked forever (which would hang stop()).
+        if (holdResults) {
+            QSemaphore *gate = holdResults;
+            gate->tryAcquire(1, 5000);
+        }
         resultIds.append(requestId);
         return {BarcodeSdkStatus::Ok, completedJson(requestId)};
     }
@@ -90,6 +98,8 @@ public:
     // positions the SDK looked at and did not recognise.
     QStringList nextRows;
     bool available = true;
+    // When set, result() waits on this semaphore before answering.
+    QSemaphore *holdResults = nullptr;
     int statusCalls = 0;
     QStringList triggerIds;
     QStringList resultIds;
@@ -283,6 +293,7 @@ private slots:
     void scanServiceDownReportsAnActionableFailure();
     void persistedPathIsRestoredAtStartup();
     void manualScanTriggerDrivesTheWholePath();
+    void refusedOverlappingScanIsVisible();
 };
 
 void BarcodeIngestionDeveloperTest::unconfiguredPathStaysNotConfigured()
@@ -490,6 +501,46 @@ void BarcodeIngestionDeveloperTest::manualScanTriggerDrivesTheWholePath()
     scan->click();
     QVERIFY(rig.waitForText(QStringLiteral("002777")));
     QCOMPARE(rig.sdk.triggerIds.size(), 1);
+    QCOMPARE(fileLines(path).size(), 1);
+    rig.shutdown();
+}
+
+// A 扫码结束 edge that arrives while the previous cycle is still polling is
+// REFUSED, not queued — and a refusal must never be silent (contract: no silent
+// rejection). The first cycle's own result must still land afterwards.
+void BarcodeIngestionDeveloperTest::refusedOverlappingScanIsVisible()
+{
+    StartedApp rig;
+    rig.start();
+    rig.advanceUntilOnline();
+    rig.loginAsAdmin();
+
+    const QString path = rig.dir.filePath(QStringLiteral("Barcode.txt"));
+    savePath(rig, path);
+
+    // Park the first cycle inside result() so the second M15 edge cannot start
+    // one of its own.
+    QSemaphore gate;
+    rig.sdk.holdResults = &gate;
+    rig.sdk.nextRows = {QStringLiteral("C3003090^M10^260224^002801")};
+    rig.raiseScanComplete();
+
+    // Let the cycle reach the parked call before the second edge.
+    QTRY_VERIFY_WITH_TIMEOUT(rig.source->cycleInProgress(), 5000);
+
+    // A second board's 扫码结束 while the first is still running.
+    rig.clearScanComplete();
+    rig.raiseScanComplete();
+    const QString text = rig.overview->barcodeText();
+    QVERIFY2(text.contains(QStringLiteral("上一轮扫码尚未结束")),
+             qPrintable(text));
+    // The refused edge did NOT start a second cycle.
+    QCOMPARE(rig.sdk.triggerIds.size(), 1);
+
+    // Release the first cycle: its own result still arrives and is displayed.
+    gate.release(1);
+    rig.sdk.holdResults = nullptr;
+    QVERIFY(rig.waitForText(QStringLiteral("002801")));
     QCOMPARE(fileLines(path).size(), 1);
     rig.shutdown();
 }

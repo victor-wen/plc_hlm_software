@@ -43,6 +43,21 @@ struct BarcodeSdkReply {
     QByteArray json;
 };
 
+// Cuts the JSON payload out of an SDK response buffer.
+//
+// The SDK writes its JSON at the front of a caller-provided buffer and leaves
+// the rest as it found it, so the buffer is NUL-PADDED. Handing the whole thing
+// to QJsonDocument fails with GarbageAtEnd: Qt's parser does not treat NUL as
+// whitespace, so it stops at the first NUL and then reports that the document
+// did not end there. The payload is `requiredBytes - 1` bytes (requiredBytes
+// includes the NUL — README_CN.md:28).
+//
+// This is deliberately platform-neutral and NOT inside the #ifdef: a fake SDK
+// returns exactly the JSON with no padding, so without a shared, testable
+// helper the DLL-less Linux dev loop can never catch a padding mistake — and
+// the only place it bites is real Windows hardware.
+QByteArray barcodePayloadFromBuffer(const QByteArray &raw, quint32 requiredBytes);
+
 class IBarcodeSdk
 {
 public:

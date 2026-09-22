@@ -28,6 +28,11 @@ enum class BarcodeState : quint8 {
     // position it looked at and did not recognise. Never substitute an older
     // barcode for an empty one (SDK example_c.c warns about exactly this).
     NoCode,
+    // A 扫码结束 edge arrived while the previous cycle was still running, so
+    // this board's signal was refused rather than queued (the SDK rejects a
+    // second trigger while one is pending, and a silent drop would violate the
+    // no-silent-rejection rule). Carries no barcode.
+    Overlapped,
     Failed, // the trigger was rejected, the poll timed out, the SDK is absent…
 };
 

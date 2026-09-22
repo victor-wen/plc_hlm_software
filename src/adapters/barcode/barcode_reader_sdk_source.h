@@ -6,8 +6,8 @@
 //   1. no configured append path → visibly 未配置, nothing is triggered;
 //   2. BR_GetStatusW → remember serverId;
 //   3. BR_TriggerW(new requestId) → accepted/pending;
-//   4. every kPollIntervalMs, BR_GetResultW(SAME requestId) until the state is
-//      completed/failed, or the kCycleDeadlineMs budget runs out;
+//   4. every Config::pollIntervalMs, BR_GetResultW(SAME requestId) until the
+//      state is completed/failed, or the Config::cycleDeadlineMs runs out;
 //   5. append each decoded barcode to the configured file, then emit exactly
 //      one terminal BarcodeResult.
 //
@@ -46,16 +46,32 @@ namespace hlm {
 // know which one it got.
 std::unique_ptr<IBarcodeSdk> makeSystemBarcodeSdk();
 
+// Poll cadence and per-cycle budget for one scan cycle. The defaults are the
+// vendor sample's (TriggerClient.cs:62,73). They are injectable so a test can
+// prove the deadline path in milliseconds instead of waiting 35 s — the values
+// are otherwise file-local constants no test can reach.
+//
+// Declared at namespace scope rather than nested: a nested type's default
+// member initializers may not be used by a default argument of a member
+// function of the still-incomplete enclosing class.
+struct BarcodeSdkSourceConfig {
+    int pollIntervalMs = 50;
+    qint64 cycleDeadlineMs = 35000;
+};
+
 class BarcodeReaderSdkSource : public IBarcodeSource
 {
     Q_OBJECT
 
 public:
+    using Config = BarcodeSdkSourceConfig;
+
     // `sdk` is caller-owned and never deleted or reparented here (the same rule
     // as AppConfig::plcGateway / serialPortDiscovery). Passing nullptr builds
     // the production façade, which reports "unavailable" on any machine
     // without the DLL rather than going silent.
     explicit BarcodeReaderSdkSource(IBarcodeSdk *sdk = nullptr,
+                                    Config config = Config(),
                                     QObject *parent = nullptr);
     ~BarcodeReaderSdkSource() override;
 
@@ -77,9 +93,11 @@ private slots:
 private:
     // Applies one SDK reply to `result`. Returns true when `result` is terminal
     // (caller emits it), false when the cycle must keep polling — in which case
-    // *keepPolling says whether a poll is expected at all.
+    // *keepPolling says whether a poll is expected at all. `isTriggerReply`
+    // distinguishes the two call sites: `busy`/`not_ready` answer a poll as
+    // "not finished yet" but a trigger as "nothing was accepted".
     bool applyReply(const BarcodeSdkReply &reply, BarcodeResult *result,
-                    bool *keepPolling);
+                    bool *keepPolling, bool isTriggerReply);
     // Appends one line per decoded barcode to the configured path. Never
     // touches state: a failed write must not hide a decoded barcode.
     void persistRows(BarcodeResult *result);
@@ -88,6 +106,7 @@ private:
 
     IBarcodeSdk *m_sdk = nullptr;
     std::unique_ptr<IBarcodeSdk> m_ownedSdk;
+    Config m_config;
 
     mutable QMutex m_mutex; // guards m_path / m_cycleInProgress
     QString m_path;
