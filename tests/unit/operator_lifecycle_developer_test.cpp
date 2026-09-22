@@ -58,13 +58,26 @@ SubmissionResult rejectedResult(const QString &reason)
 
 // PLC-HMI-011 D6: the M103 pulse no longer starts homing; the single
 // sustained M50=1 home-start write does.
+//
+// The decoded SBR_HOME completion zeroes the current width (`DMOV K0 D130`),
+// and the decoded M60 rung is M61 ∧ D128==D130 ∧ ¬M0 ∧ ¬M14 ∧ ¬T6 — so a homed
+// machine is not 自动准备完成 until one width adjust actually reaches the
+// target (user decision 2026-09-22). D128 defaults to 200, D204 to 128 and D220
+// to the clamped 15, so the run takes ceil(200 * 128 / (15 * 1280)) = 2 s.
 void homeReady(SimulatedPlcGateway &gw)
 {
+    // The M43 preconditions include manual mode M1, so a test that switched to
+    // auto mode before calling this must be put back first.
+    gw.model().writeCoil(kM104, false);
     gw.model().writeCoil(kM103, true);
     gw.model().writeCoil(kM103, false);
     gw.model().writeCoil(kM50, true);
     gw.tick();
     gw.tick(); // home return takes 2 s
+    gw.model().writeCoil(43, true);
+    gw.model().writeCoil(43, false);
+    gw.tick();
+    gw.tick(); // width adjust takes 2 s
 }
 
 void putInAutoMode(SimulatedPlcGateway &gw)

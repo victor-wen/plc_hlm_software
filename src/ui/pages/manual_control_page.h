@@ -7,6 +7,7 @@
 
 class QLabel;
 class QHideEvent;
+class QSpinBox;
 
 namespace hlm {
 
@@ -16,7 +17,8 @@ class ValueDisplay;
 class ShellModel;
 
 // 手动控制 page (spec §11.3): 皮带点动、调宽正反转、挡停、D220、M42、M105、
-// M110、M111; 操作员只读 (spec §11.4).
+// M110、M111; 机器命令操作员只读 (spec §11.4), 调宽速度 D220 由管理员在此页
+// 直接配置 (user decision 2026-09-22).
 //
 // The page binds ManualControlModel to widgets. It never touches Modbus or
 // SQL: manualHoldRequested / manualLatchRequested / bypassRequested intents
@@ -54,6 +56,12 @@ public:
         return m_simSignalButtons.value(address, nullptr);
     }
     ValueDisplay *fieldDisplay(const QString &key) const;
+    // 调宽速度 D220 editor (user decision 2026-09-22): the spin box is the
+    // operator's value, the button dispatches it, the label carries the
+    // page-local write result (never silent).
+    QSpinBox *widthSpeedSpin() const { return m_widthSpeedSpin; }
+    PermissionButton *writeWidthSpeedButton() const { return m_writeWidthSpeed; }
+    QString widthSpeedResultText() const;
     QLabel *shieldBanner() const { return m_shieldBanner; }
     QString shieldBannerText() const;
     QLabel *statusLabel() const { return m_statusLabel; }
@@ -63,6 +71,10 @@ public:
 public slots:
     // Re-renders every widget from the model's current state.
     void refresh();
+    // Page-local result of a 调宽速度 D220 write (user decision 2026-09-22):
+    // shown inline next to the editor, so a parameter write is never silent
+    // (spec §11.2; the users page reports its own writes the same way).
+    void setWidthSpeedWriteResult(bool ok, const QString &detail);
 
 signals:
     // Write intents for the app shell (Task 20). Never emitted optimistically.
@@ -72,6 +84,10 @@ signals:
     // 测试信号 M114-M117: one 100 ms pulse per simulated station signal
     // (user decision 2026-09-22). Never emitted optimistically.
     void simStationPulseRequested(quint16 address);
+    // 调宽速度 D220 write request (user decision 2026-09-22): the app shell
+    // validates and submits it, then reports back through
+    // setWidthSpeedWriteResult.
+    void widthSpeedWriteRequested(quint16 value);
 
 protected:
     // Page switch (QStackedWidget hides the page) clears the armed shield
@@ -82,6 +98,7 @@ private:
     void buildLayout();
     QWidget *addField(const QString &key, const QString &title);
     void onStopGateClicked();
+    void onWriteWidthSpeedClicked();
     void onShieldClicked(PermissionButton *button, quint16 address);
     void disarmShield(PermissionButton *button, quint16 address);
 
@@ -107,6 +124,15 @@ private:
     QLabel *m_shieldBanner = nullptr;
     QLabel *m_statusLabel = nullptr;
     QHash<QString, ValueDisplay *> m_displays;
+    // 调宽速度 D220 editor (user decision 2026-09-22): configurable from the
+    // manual page. The value shown is the confirmed readback; the write is
+    // admin-only and reports its result in m_widthSpeedResult.
+    QSpinBox *m_widthSpeedSpin = nullptr;
+    PermissionButton *m_writeWidthSpeed = nullptr;
+    QLabel *m_widthSpeedResult = nullptr;
+    // Last value seeded into the spin box from the readback, so refresh() does
+    // not overwrite an edit the operator is typing.
+    int m_lastSeededWidthSpeed = 0;
 };
 
 } // namespace hlm

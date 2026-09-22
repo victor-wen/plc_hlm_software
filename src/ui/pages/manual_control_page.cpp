@@ -12,6 +12,9 @@
 #include <QFrame>
 #include <QHideEvent>
 #include <QSizePolicy>
+#include <QSpinBox>
+
+#include "domain/width_units.h"
 
 namespace hlm {
 
@@ -182,11 +185,57 @@ void ManualControlPage::buildLayout()
     }
     simLayout->addLayout(simRow);
 
-    // --- 调宽速度 (D220, 只读显示) + 状态行 --------------------------------------
+    // --- 调宽速度写入 (D220, user decision 2026-09-22) ---------------------------
+    // 调宽速度在这里可配置: the same register the users/settings page writes,
+    // exposed where the operator actually jogs the width. Admin-only; the
+    // write result is reported inline by setWidthSpeedWriteResult (never
+    // silent, spec §11.2).
+    auto *speedBox = new QFrame(this);
+    speedBox->setObjectName(QStringLiteral("widthSpeedPanel"));
+    speedBox->setFrameShape(QFrame::StyledPanel);
+    auto *speedLayout = new QVBoxLayout(speedBox);
+    speedLayout->setSpacing(8);
+    auto *speedTitle = new QLabel(QStringLiteral("调宽速度 (D220)"), speedBox);
+    speedTitle->setObjectName(QStringLiteral("sectionTitle"));
+    speedLayout->addWidget(speedTitle);
+
+    auto *speedRow = new QHBoxLayout();
+    speedRow->setSpacing(12);
+    m_widthSpeedSpin = new QSpinBox(speedBox);
+    m_widthSpeedSpin->setObjectName(QStringLiteral("widthSpeedSpin"));
+    m_widthSpeedSpin->setRange(1, 15); // decoded PLC clamp (PLC-HMI-005 D1)
+    m_widthSpeedSpin->setSuffix(QStringLiteral(" mm/s"));
+    m_widthSpeedSpin->setMinimumHeight(56);
+    // The editor starts at the low end of the decoded 1-15 range; the first
+    // refresh seeds it from the confirmed readback. The baseline must start at
+    // the editor's own value, otherwise that first seeding looks like an
+    // operator edit and the readback would never reach the editor.
+    m_lastSeededWidthSpeed = m_widthSpeedSpin->value();
+    speedRow->addWidget(m_widthSpeedSpin);
+    m_writeWidthSpeed = new PermissionButton(QStringLiteral("写入调宽速度"), speedBox);
+    m_writeWidthSpeed->setObjectName(QStringLiteral("writeWidthSpeedButton"));
+    m_writeWidthSpeed->setMinimumHeight(56);
+    speedRow->addWidget(m_writeWidthSpeed);
+    speedRow->addStretch();
+    speedLayout->addLayout(speedRow);
+
+    m_widthSpeedResult = new QLabel(speedBox);
+    m_widthSpeedResult->setObjectName(QStringLiteral("widthSpeedWriteResult"));
+    m_widthSpeedResult->setWordWrap(true);
+    m_widthSpeedResult->setMinimumHeight(24);
+    speedLayout->addWidget(m_widthSpeedResult);
+    connect(m_writeWidthSpeed, &QPushButton::clicked, this,
+            &ManualControlPage::onWriteWidthSpeedClicked);
+
+    // --- 调宽速度 (D220, 只读回读) / 当前宽度 (D130, 实时回读) + 状态行 ----------
     auto *infoRow = new QHBoxLayout();
     infoRow->setSpacing(24);
     infoRow->addWidget(addField(QStringLiteral("widthSpeed"),
                                 QStringLiteral("调宽速度 (D220)")));
+    // D130 当前宽度 实时回读 (user decision 2026-09-22): while jogging the
+    // operator needs the live position, not only the recipe target.
+    infoRow->addWidget(addField(QStringLiteral("currentWidth"),
+                                QStringLiteral("当前宽度 (D130)")));
     infoRow->addStretch();
     m_statusLabel = new QLabel(this);
     m_statusLabel->setObjectName(QStringLiteral("manualStatus"));
@@ -197,6 +246,7 @@ void ManualControlPage::buildLayout()
     root->addWidget(manualBox, /*stretch=*/1);
     root->addWidget(bypassBox, /*stretch=*/1);
     root->addWidget(simBox, /*stretch=*/1);
+    root->addWidget(speedBox, /*stretch=*/1);
 
     // --- wiring -----------------------------------------------------------------
     // HoldButtons forward their hold state to the coordinator intent
@@ -248,6 +298,37 @@ QWidget *ManualControlPage::addField(const QString &key, const QString &title)
 ValueDisplay *ManualControlPage::fieldDisplay(const QString &key) const
 {
     return m_displays.value(key, nullptr);
+}
+
+void ManualControlPage::onWriteWidthSpeedClicked()
+{
+    // The click is a request, not an effect: the value is shown as 正在写入 and
+    // only the app shell's confirmed result replaces it (spec §11.2 无乐观更新).
+    const quint16 value = quint16(m_widthSpeedSpin->value());
+    m_widthSpeedResult->setText(
+        QStringLiteral("正在写入调宽速度 %1 mm/s…").arg(value));
+    m_widthSpeedResult->setStyleSheet(QStringLiteral("color: #606266;"));
+    emit widthSpeedWriteRequested(value);
+}
+
+void ManualControlPage::setWidthSpeedWriteResult(bool ok, const QString &detail)
+{
+    if (m_widthSpeedResult == nullptr)
+        return;
+    // The app shell owns the message (it knows the confirmed value); the page
+    // only guarantees that a terminal result is never silent.
+    const QString text = !detail.isEmpty()
+        ? detail
+        : (ok ? QStringLiteral("调宽速度已写入")
+              : QStringLiteral("调宽速度写入失败"));
+    m_widthSpeedResult->setText(text);
+    m_widthSpeedResult->setStyleSheet(
+        ok ? QStringLiteral("color: #67c23a;") : QStringLiteral("color: #f56c6c;"));
+}
+
+QString ManualControlPage::widthSpeedResultText() const
+{
+    return m_widthSpeedResult ? m_widthSpeedResult->text() : QString();
 }
 
 QString ManualControlPage::shieldBannerText() const
@@ -309,6 +390,30 @@ void ManualControlPage::refresh()
     m_displays[QStringLiteral("widthSpeed")]->setValue(
         speedValid ? QString::number(m_pageModel.widthSpeed()) : QString(),
         QStringLiteral("mm/s"), speedValid);
+
+    // D130 当前宽度 实时回读: raw 0.1mm -> mm (domain/width_units.h).
+    const bool widthValid = m_pageModel.currentWidthValid();
+    m_displays[QStringLiteral("currentWidth")]->setValue(
+        widthValid ? width_units::rawToDisplay(m_pageModel.currentWidth())
+                   : QString(),
+        QStringLiteral("mm"), widthValid);
+
+    // 调宽速度编辑器 (user decision 2026-09-22): seed from the confirmed
+    // readback (spec §11.2 无乐观更新). The editor is re-rendered only while it
+    // still shows the last value this page seeded, so an in-progress edit is
+    // never clobbered by a refresh — the same rule the users/settings page
+    // applies to its D220 editor.
+    if (speedValid) {
+        const int readback = int(m_pageModel.widthSpeed());
+        if (m_widthSpeedSpin->value() == m_lastSeededWidthSpeed)
+            m_widthSpeedSpin->setValue(readback);
+        m_lastSeededWidthSpeed = readback;
+    }
+    const bool canWriteSpeed = m_pageModel.canWriteWidthSpeed();
+    m_widthSpeedSpin->setEnabled(canWriteSpeed);
+    m_writeWidthSpeed->setEnabledWithReason(
+        canWriteSpeed,
+        m_pageModel.widthSpeedWriteUnmetReasons().join(QStringLiteral("；")));
 
     // 安全屏蔽生效期间持续显示琥珀色横幅 (spec §10.8).
     if (m_pageModel.shieldActive()) {

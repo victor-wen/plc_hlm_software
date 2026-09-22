@@ -161,15 +161,28 @@ private:
     // Parameter writes (D122/D220/D204): correlated by request identity +
     // gateway generation, with a defensive timeout so a lost completion never
     // leaves the page pending (PLC-HMI-003 D4).
+    // The same register can be written from more than one page (D220 from the
+    // users page and from the 手动控制 page), so each pending write remembers
+    // which page asked: the result must surface where the operator clicked
+    // (user decision 2026-09-22), never on the other page.
+    enum class ParamWriteSink { Users, Manual };
     struct PendingParamWrite {
         quint64 request_id = 0;
         quint64 gateway_generation = 0;
         quint16 address = 0;
+        quint16 value = 0; // the written value, for the success detail
         qint64 deadline_ms = 0;
+        ParamWriteSink sink = ParamWriteSink::Users;
     };
     QVector<PendingParamWrite> m_pendingParamWrites;
-    void submitParameterWrite(quint16 address, quint16 value);
+    void submitParameterWrite(quint16 address, quint16 value,
+                              ParamWriteSink sink = ParamWriteSink::Users);
     void failAllPendingParamWrites(const QString &reason);
+    // Routes a parameter-write outcome to the page that requested it.
+    void reportParamWriteResult(const PendingParamWrite &pending, bool ok,
+                                const QString &detail);
+    // 手动控制 → D220 调宽速度 write (user decision 2026-09-22).
+    void handleManualWidthSpeedWrite(quint16 value);
     // Gateway generation: incremented before a gateway replacement; events
     // from older generations are rejected (PLC-HMI-003 D4).
     quint64 m_gatewayGeneration = 0;

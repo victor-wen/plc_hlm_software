@@ -65,6 +65,22 @@ QStringList simSignalReasons(const ShellModel &model)
     return reasons;
 }
 
+// 调宽速度写入 D220 (user decision 2026-09-22): 仅管理员 + 在线. The editor
+// additionally requires a fresh readback (see canWriteWidthSpeed) so the
+// operator never edits against a stale value; the online gate is the same one
+// every other write on this page uses.
+QStringList widthSpeedWriteReasons(const ShellModel &model)
+{
+    QStringList reasons;
+    const PermissionResult p =
+        PermissionPolicy::check(model.role(), Command::ParameterChange);
+    if (!p.allowed && !p.reason.isEmpty())
+        reasons.append(p.reason);
+    if (!model.online())
+        reasons.append(QStringLiteral("PLC 未连接"));
+    return reasons;
+}
+
 // Permission + interlock reasons for the bypass commands (spec §10.8, §11.4).
 QStringList bypassReasons(const ShellModel &model)
 {
@@ -244,6 +260,33 @@ bool ManualControlModel::widthSpeedValid() const
 quint16 ManualControlModel::widthSpeed() const
 {
     return m_model.snapshot().widthSpeed();
+}
+
+bool ManualControlModel::canWriteWidthSpeed() const
+{
+    return widthSpeedWriteUnmetReasons().isEmpty();
+}
+
+QStringList ManualControlModel::widthSpeedWriteUnmetReasons() const
+{
+    QStringList reasons = widthSpeedWriteReasons(m_model);
+    // The editor needs a value to start from: without a fresh readback the
+    // spin box would seed from a stale or empty snapshot, so the write stays
+    // disabled with a visible reason (spec §11.4, no tooltip-only gating).
+    if (!widthSpeedValid())
+        reasons.append(QStringLiteral("调宽速度回读无效, 无法写入"));
+    return reasons;
+}
+
+bool ManualControlModel::currentWidthValid() const
+{
+    return m_model.snapshotFresh()
+        && m_model.snapshot().fieldValid(SnapshotField::CurrentWidth);
+}
+
+quint16 ManualControlModel::currentWidth() const
+{
+    return m_model.snapshot().currentWidth();
 }
 
 QString ManualControlModel::statusText() const

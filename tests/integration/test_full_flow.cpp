@@ -353,6 +353,17 @@ void FullFlowTest::fullFlowResetAdjustAutoStartStop()
     // 配方调宽 300: D128 written, M43 pulse, converges on M44 + D130=300.
     // D204 is pinned to 1280 so the pulse-based run keeps the documented 7 s
     // duration: ceil(100 * 1280 / (15 * 1280)) = 7 s (PLC-HMI-005 D1/D2).
+    //
+    // The decoded SBR_HOME completion zeroed D130 (`DMOV K0 D130`), so the run
+    // is first brought back to the neutral target 200 — the 100-count run the
+    // 7 s figure describes. It also restores 自动准备完成, which the decoded
+    // M60 rung ties to D128 == D130 (user decision 2026-09-22).
+    gw.model().writeCoil(43, true);
+    gw.model().writeCoil(43, false);
+    gw.tick();
+    gw.tick(); // ceil(200 * 128 / 19200) = 2 s
+    QCOMPARE(gw.lastSnapshot().currentWidth(), quint16(200));
+
     gw.model().writeRegister(kD204, 1280);
     QVERIFY(c->adjustWidth(300).accepted);
     QCOMPARE(gw.model().readRegister(kD128), quint16(300));
@@ -911,6 +922,17 @@ void FullFlowTest::applicationAdjustWidthConverges()
     gw->tick();
     gw->tick();
     QVERIFY(gw->lastSnapshot().m9());
+
+    // 回原点把 D130 清零 (SBR_HOME `DMOV K0 D130`): bring the width back to the
+    // neutral target so the 300 run is the documented 100-count (7 s) run, and
+    // so 自动准备完成 (M61 ∧ D128==D130 ∧ …) is restored (user decision
+    // 2026-09-22).
+    gw->model().writeRegister(kD204, 128); // an earlier case left D204 at 5000
+    gw->model().writeCoil(43, true);
+    gw->model().writeCoil(43, false);
+    gw->tick();
+    gw->tick(); // ceil(200 * 128 / 19200) = 2 s
+    QCOMPARE(gw->lastSnapshot().currentWidth(), quint16(200));
 
     // Drive adjustWidth through the composition root: the recipe page emits
     // applyAdjustRequested, Application routes it to the coordinator, and the

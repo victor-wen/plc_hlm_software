@@ -61,6 +61,7 @@ constexpr quint16 kM101 = 101;
 constexpr quint16 kM102 = 102;
 constexpr quint16 kM103 = 103;
 constexpr quint16 kM50 = 50; // PLC-HMI-011: home-start coil
+constexpr quint16 kM43 = 43; // width-adjust pulse (M43)
 constexpr quint16 kM104 = 104;
 constexpr quint16 kM106 = 106;
 constexpr quint16 kM109 = 109;
@@ -73,11 +74,22 @@ constexpr quint16 kDefaultTargetWidth = 200;
 
 void homeReady(SimulatedPlcGateway &gw)
 {
+    // The decoded M43 preconditions require manual mode M1.
+    gw.model().writeCoil(kM104, false);
     gw.model().writeCoil(kM103, true);
     gw.model().writeCoil(kM103, false);
     gw.model().writeCoil(kM50, true); // PLC-HMI-011: homing starts on the home-start write
     gw.tick();
     gw.tick(); // home return takes 2 s
+    // User decision 2026-09-22: the decoded SBR_HOME completion zeroes D130
+    // (`DMOV K0 D130`), and the decoded M60 rung is
+    // M61 AND D128==D130 AND NOT M0 AND NOT M14 AND NOT T6 — so a homed machine
+    // is not 自动准备完成 until one width adjust actually reaches the target.
+    // With the model defaults (D128=200, D204=128, D220=15) that run takes 2 s.
+    gw.model().writeCoil(kM43, true);
+    gw.model().writeCoil(kM43, false);
+    gw.tick();
+    gw.tick();
 }
 
 void putInAutoMode(SimulatedPlcGateway &gw)

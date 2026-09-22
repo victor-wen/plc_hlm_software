@@ -276,13 +276,24 @@ void RtuSimulatorTest::statusWordTracksHomeReturnTick()
     QVERIFY(!model.readCoil(61));
     QCOMPARE(model.readRegister(100) & quint16(1 << 9), quint16(0));
 
-    // Home return completes after 2 s: M61=1 and M60=1 (decoded rung:
-    // M61 AND D128 == D130 AND no estop/fault).
+    // Home return completes after 2 s: M61=1, and D100 bit8 (M60) follows the
+    // decoded rung M61 AND D128 == D130 AND no estop/fault. SBR_HOME zeroes
+    // D130 on completion (`DMOV K0 D130`), so M60 stays 0 until one width
+    // adjust reaches the target (user decision 2026-09-22).
     handler.tick();
     handler.tick();
     QVERIFY(!model.readCoil(50));
     QVERIFY(model.readCoil(61));
     QVERIFY(model.readRegister(100) & quint16(1 << 9)); // M61
+    QVERIFY(!(model.readRegister(100) & quint16(1 << 8))); // M60: D130 = 0
+
+    // One successful adjust to the current target (200): D130 == D128 and the
+    // same scan resets T6, so 自动准备完成 returns.
+    model.writeCoil(43, true);
+    model.writeCoil(43, false);
+    handler.tick();
+    handler.tick(); // ceil(200 * 128 / (15 * 1280)) = 2 s
+    QCOMPARE(model.readRegister(130), quint16(200));
     QVERIFY(model.readRegister(100) & quint16(1 << 8)); // M60
 }
 

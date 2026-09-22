@@ -27,6 +27,10 @@ constexpr quint16 kM109 = 109; // manual stop gate (latch)
 constexpr quint16 kM110 = 110; // light curtain bypass
 constexpr quint16 kM111 = 111; // door bypass
 constexpr quint16 kD128 = 128; // target width
+// D110 = 10 调宽定位超时 (domain/fault_code.h, spec §10.3): the PLC's own
+// width-timeout fault. The adjust verdict treats it as an explicit failure
+// (user decision 2026-09-22).
+constexpr quint16 kWidthTimeoutFaultCode = 10;
 
 // Fixed PLC width-adjust timeout (T6 K300, spec §10.3): the decoded PLC fails
 // the adjustment 30 s after the M43 pulse, so the HMI defensive deadline is
@@ -346,6 +350,7 @@ ControlCoordinator::CommandResult ControlCoordinator::adjustWidth(quint16 target
     // authoritative result comparison (D130 == target); the removed estimated
     // deadline consumed the start width and speed, so they are no longer saved.
     m_adjustTarget = targetWidth;
+    m_adjustPulseDelivered = false;
 
     m_adjustPhase = AdjustPhase::WaitTargetWrite;
     emit commandAccepted(Command::AdjustWidth);
@@ -892,6 +897,15 @@ void ControlCoordinator::onSubmissionCompleted(const SubmissionCompletion &compl
         // on the snapshot feed once the fixed 200 ms minimum elapsed.
         if (pending.cmd == Command::Reset && pending.operation == PlcOperation::Pulse)
             m_resetPulseCompleted = true;
+        // 调宽 (user decision 2026-09-22): the correlated M43 pulse completion
+        // is the transport evidence that the PLC has seen the command. Result
+        // verdicts are only taken from snapshots delivered after it, so a
+        // snapshot that raced the pulse (still showing M34=0 and the old
+        // width) can never produce a verdict.
+        if (pending.cmd == Command::AdjustWidth
+            && pending.operation == PlcOperation::Pulse) {
+            m_adjustPulseDelivered = true;
+        }
         // 测试信号: the correlated pulse completion IS the whole evidence — a
         // test pulse has no machine state to confirm, so it converges to its
         // single terminal here.
@@ -997,6 +1011,7 @@ void ControlCoordinator::onConnectionChanged(bool online)
     if (m_adjustPhase != AdjustPhase::Idle) {
         m_adjustPhase = AdjustPhase::Idle;
         m_adjustTimeoutArmed = false;
+        m_adjustPulseDelivered = false;
         m_adjustTarget.reset();
         emit commandResult(Command::AdjustWidth, false, QStringLiteral("通讯中断"));
     }
@@ -1077,18 +1092,39 @@ void ControlCoordinator::onAdjustSnapshot(const DeviceSnapshot &s)
 {
     if (m_adjustPhase != AdjustPhase::WaitResult)
         return;
+    // No verdict before the M43 pulse was actually delivered (spec §10.3
+    // step 5): a snapshot captured before the pulse still shows M34=0 and the
+    // old width, and must not be read as "not reached target".
+    if (!m_adjustPulseDelivered)
+        return;
     if (s.m34())
         return; // still adjusting
-    // Only accept the result from a snapshot after the pulse (spec §10.3
-    // step 5). Success: M34=0, M44=1, M45=0, D130 == saved target.
-    if (s.m44() && !s.m45()
-        && s.fieldValid(SnapshotField::CurrentWidth)
+
+    // Result determination (user decision 2026-09-22): the physical state only
+    // — M34 (D103 bit4) and D130 (fast block). The PLC's M44/M45 result flags
+    // are deliberately NOT consulted, because they can be stale, unset or set
+    // for reasons the HMI cannot attribute.
+    //
+    // 1. Success: M34=0 and D130 == the target we wrote to D128.
+    if (s.fieldValid(SnapshotField::CurrentWidth)
         && s.currentWidth() == m_adjustTarget.value_or(0)) {
         finishCommand(Command::AdjustWidth, true, QStringLiteral("调宽完成"));
-    } else if (!s.m44() && s.m45()) {
-        finishCommand(Command::AdjustWidth, false, QStringLiteral("调宽失败"));
+        return;
     }
-    // Transient idle (M34=0, M44=0, M45=0): keep waiting for the PLC result.
+    // 2. Explicit failure: the width-timeout fault code (D110 == 10) or the
+    //    latched fault M14 (D100 bit14). Both are visible in the fast block.
+    if (s.faultCode() == kWidthTimeoutFaultCode || s.m14()) {
+        finishCommand(Command::AdjustWidth, false,
+                      s.faultCode() == kWidthTimeoutFaultCode
+                          ? QStringLiteral("调宽失败: 调宽超时 (D110=10)")
+                          : QStringLiteral("调宽失败: 设备故障锁存 (M14)"));
+        return;
+    }
+    // 3. Anything else: the PLC stopped adjusting without reaching the target
+    //    and without raising a fault — report the physical diagnosis rather
+    //    than waiting for a flag that will never come.
+    finishCommand(Command::AdjustWidth, false,
+                  QStringLiteral("调宽未到位, 请检查限位与回原点状态"));
 }
 
 void ControlCoordinator::onStartSnapshot(const DeviceSnapshot &s)
@@ -1185,6 +1221,7 @@ void ControlCoordinator::finishCommand(Command cmd, bool ok, const QString &deta
     case Command::AdjustWidth:
         m_adjustPhase = AdjustPhase::Idle;
         m_adjustTimeoutArmed = false;
+        m_adjustPulseDelivered = false;
         m_adjustTarget.reset();
         break;
     case Command::Start:

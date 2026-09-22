@@ -57,6 +57,20 @@ void requireHomeStart(SimulatedPlcGateway &gw)
     QVERIFY2(r.accepted, qPrintable(r.immediate_rejection_reason));
 }
 
+// The decoded SBR_HOME completion zeroes the current width (`DMOV K0 D130`),
+// and the decoded M60 rung is M61 ∧ D128==D130 ∧ ¬M0 ∧ ¬M14 ∧ ¬T6: after a home
+// return the machine is NOT 自动准备完成, so 启动 stays invalid until one width
+// adjust actually reaches the target (user decision 2026-09-22). This performs
+// that adjust to the model's default D128 (200) — ceil(200 * 128 / (15 * 1280))
+// = 2 s — and leaves D130 at 200.
+void requireWidthAtTarget(SimulatedPlcGateway &gw)
+{
+    requireRegister(gw, 128, 200);
+    requirePulse(gw, 43);
+    gw.tick();
+    gw.tick();
+}
+
 } // namespace
 
 class SimulatedGatewayFlowTest : public QObject
@@ -176,6 +190,10 @@ void SimulatedGatewayFlowTest::fullFlowResetAdjustAutoStartStop()
     QVERIFY(m_gw->lastSnapshot().m50()); // homing in progress
     m_gw->tick();
     QVERIFY(!m_gw->lastSnapshot().m50()); // homed
+    // 回原点把 D130 清零 (SBR_HOME `DMOV K0 D130`): 自动准备完成 needs one width
+    // adjust that actually reaches the target (user decision 2026-09-22).
+    requireWidthAtTarget(*m_gw);
+    QVERIFY(m_gw->lastSnapshot().m8()); // M60 via D100 bit8
 
     // 调宽: target 300, M43 pulse. D204 is pinned to 1280 so the run keeps the
     // documented 7 s duration: ceil(100 * 1280 / (15 * 1280)) = 7 s.
@@ -263,6 +281,7 @@ void SimulatedGatewayFlowTest::estopLatchesFault()
     requireHomeStart(*m_gw);
     m_gw->tick();
     m_gw->tick();
+    requireWidthAtTarget(*m_gw); // 回原点清零 D130, M60 needs a real adjust
 
     // Auto mode + start.
     requireCoil(*m_gw, 104, true);
@@ -512,6 +531,7 @@ void SimulatedGatewayFlowTest::snapshotIsAtomicAndComplete()
     requireHomeStart(*m_gw);
     m_gw->tick();
     m_gw->tick();
+    requireWidthAtTarget(*m_gw); // 回原点清零 D130, M60 needs a real adjust
     // Width adjust in progress (D204 pinned to 1280: 7 s run, so M34 stays
     // set after the first tick).
     requireRegister(*m_gw, 204, 1280);

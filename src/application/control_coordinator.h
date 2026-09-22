@@ -31,8 +31,9 @@ namespace hlm {
 //    PulseStateMachine callbacks into the gateway (spec §7.2, §8.5).
 //  - Command lifecycle is tracked per flow: reset is a
 //    fire-and-confirm-by-fixed-delay request that sends the M103 pulse only and
-//    converges after a fixed 200 ms (spec §10.2, PLC-HMI-010); adjust waits for
-//    M44/M45 with the saved target, start waits for M3, stop waits for M3=0.
+//    converges after a fixed 200 ms (spec §10.2, PLC-HMI-010); adjust decides
+//    from M34 + D130 against the saved target (user decision 2026-09-22),
+//    start waits for M3, stop waits for M3=0.
 //    Timeouts converge to the actual PLC state (spec §13).
 //  - Hold/latch/bypass commands are accepted+pending on submission and only
 //    report success when a confirmed snapshot shows the requested machine
@@ -109,7 +110,15 @@ public:
     // M50=1 coil (never a pulse, never repeated); the PLC clears it and raises
     // M61/M9 when homing ends.
     CommandResult homeStart();
-    // 配方调宽 (spec §10.3). Admin only. `targetWidth` 50-400.
+    // 配方调宽 (spec §10.3). Admin only. `targetWidth` is the raw D128 target
+    // in 0.1 mm units (user decision 2026-09-21); no operator envelope is
+    // applied — the only rule is > 0 (InterlockRules).
+    //
+    // Result determination (user decision 2026-09-22) uses the physical state
+    // only, never the PLC's M44/M45 result flags: success = M34 (D103 bit4) 0
+    // and D130 == the target written to D128; explicit failure = D110 == 10
+    // (调宽定位超时) or M14 latched; otherwise "调宽未到位, 请检查限位与回原点
+    // 状态".
     CommandResult adjustWidth(quint16 targetWidth);
     // 模式切换 (spec §10.1). Admin only.
     CommandResult setMode(bool autoMode);
@@ -300,6 +309,10 @@ private:
     StartPhase m_startPhase = StartPhase::Idle;
     StopPhase m_stopPhase = StopPhase::Idle;
     std::optional<quint16> m_adjustTarget;
+    // True once the correlated M43 pulse completion arrived (user decision
+    // 2026-09-22): the adjust verdict is only evaluated from snapshots
+    // delivered after the PLC has actually seen the command.
+    bool m_adjustPulseDelivered = false;
     qint64 m_resetCompletionDeadlineMs = 0; // clock time of the fixed 200 ms boundary
     // M103 pulse correlated completion; the reset terminal may only follow it.
     bool m_resetPulseCompleted = false;

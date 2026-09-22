@@ -137,8 +137,16 @@ void H3uSimulationModel::writeRegister(quint16 addr, quint16 value)
     if (addr == kD100 || addr == kD103)
         return;
     m_regs[addr] = value;
-    if (addr == kD128 || addr == kD130)
+    if (addr == kD128 || addr == kD130) {
         updateD210();
+        // Same per-scan derived state tick() evaluates: reaching the target
+        // resets T6, and M60 is a function of D128/D130. Kept consistent here
+        // so a caller that reads the derived coils before the next tick never
+        // sees a stale M60/T6 pair.
+        if (m_regs[kD128] == m_regs[kD130])
+            m_t6Done = false;
+        updateM60();
+    }
     if (addr == kD220)
         clampD220(); // D126/D127 = D220 * fixed K1280
 }
@@ -319,8 +327,12 @@ void H3uSimulationModel::onM103RisingEdge()
 
     // PLC-HMI-011 D6: the reset pulse no longer starts homing. Homing starts
     // only from the HMI's sustained M50=1 write; M103 still clears the
-    // home-complete bit (spec §10.2).
+    // home-complete bit (spec §10.2). M60 is an OUT coil driven by M61, so the
+    // reset clears 自动准备完成 with it (user decision 2026-09-22); it is
+    // recomputed here so the clear is visible immediately rather than only on
+    // the next tick.
     m_coils[kM61] = false;
+    updateM60();
 }
 
 // --- M104: mode select (spec §10.1) -----------------------------------------
@@ -377,15 +389,21 @@ void H3uSimulationModel::onM100Write(bool value)
 void H3uSimulationModel::updateM60()
 {
     // Decoded rung (SBR_FAULT.LD, rung comment "自动准备完成：回原点完成 +
-    // 调宽到位 + 无故障"): M60 = M61 AND (D128 == D130) AND NOT M0 AND NOT M14,
+    // 调宽到位 + 无故障"), confirmed element-by-element against the ladder:
+    // M60 = M61 AND (D128 == D130) AND NOT M0 AND NOT M14 AND NOT T6,
     // re-evaluated as an OUT coil every scan. The former "D130 in 50..400"
     // term was an HMI invention from the pre-decode spec (commit a337510): no
     // ladder rung compares D130 against a constant, and with the 0.1 mm width
     // units (user decision 2026-09-21) it would have meant a 5.0-40.0 mm
     // window. PLC-HMI-005 D2 removed the sibling width gates from the M43
     // preconditions for the same reason.
+    //
+    // ¬T6 (user decision 2026-09-22): T6 is the `T6 K300` width-adjust timeout
+    // in SBR_MANUALWIDTH, reset only by `LD= D128 D130` → `RST T6`. A width
+    // timeout therefore keeps M60 at 0 until a later run actually reaches the
+    // target — clearing the fault with M103 is not enough on its own.
     m_coils[kM60] = m_coils[kM61] && m_regs[kD128] == m_regs[kD130]
-        && !m_coils[kM0] && !m_coils[kM14];
+        && !m_coils[kM0] && !m_coils[kM14] && !m_t6Done;
 }
 
 void H3uSimulationModel::updateD210()
@@ -431,6 +449,13 @@ void H3uSimulationModel::tick(quint64 seconds)
                 m_regs[kD110] = quint16(m_homeFault);
             } else {
                 m_coils[kM61] = true;
+                // SBR_HOME.LD zeroes the current width in the home-return
+                // completion sequence (`DMOV K0 D130`, beside SET M52/RST M53):
+                // the belt is back at the zero position. D128 != D130 after
+                // homing, so M60 stays 0 until a later width adjust actually
+                // reaches the target (user decision 2026-09-22).
+                m_regs[kD130] = 0;
+                updateD210();
             }
             updateM60();
         } else {
@@ -442,10 +467,13 @@ void H3uSimulationModel::tick(quint64 seconds)
     if (m_positioning) {
         m_t6Elapsed += seconds * 10;
         if (!m_stall && seconds >= m_remaining) {
-            // Normal completion (spec §10.3.1): D130 = latched target.
-            // Checked before the timeout so completion wins in the same scan.
+            // Normal completion (spec §10.3.1): D130 = D128. The decoded rung
+            // is `M8029 → DMOV D128 D130` — the LIVE target register, not a
+            // latched copy (D212/D213 are spec-reference registers that the
+            // supplied ladder does not contain). Checked before the timeout so
+            // completion wins in the same scan.
             m_coils[kM34] = false;
-            m_regs[kD130] = m_regs[kD212];
+            m_regs[kD130] = m_regs[kD128];
             updateD210(); // D210 = D128 - D130
             m_coils[kM45] = false;
             m_coils[kM44] = true;
@@ -454,11 +482,13 @@ void H3uSimulationModel::tick(quint64 seconds)
             m_t6Elapsed = 0;
         } else if (m_t6Elapsed >= kFixedTimeoutTicks) {
             // Fixed 30 s timeout (spec §10.3.1 T6 K300): M45, M14, D110 = 10.
+            // T6 stays done (¬T6) until D128 == D130 resets it below.
             m_coils[kM34] = false;
             m_coils[kM44] = false;
             m_coils[kM45] = true;
             m_coils[kM14] = true;
             m_regs[kD110] = 10;
+            m_t6Done = true;
             m_positioning = false;
             m_remaining = 0;
             m_t6Elapsed = 0;
@@ -466,6 +496,13 @@ void H3uSimulationModel::tick(quint64 seconds)
             m_remaining -= seconds;
         }
     }
+
+    // Decoded SBR_MANUALWIDTH rung `LD= D128 D130` → `RST T6`: T6 is reset the
+    // moment the current width reaches the target. SBR_MANUALWIDTH is called
+    // before SBR_FAULT in MAIN.LD, so in the completion scan the reset lands
+    // before M60 is recomputed and M60 rises in the same scan.
+    if (m_regs[kD128] == m_regs[kD130])
+        m_t6Done = false;
 
     // M60 is an OUT coil in the decoded ladder, so it tracks its terms on every
     // scan rather than only at the events that change them.

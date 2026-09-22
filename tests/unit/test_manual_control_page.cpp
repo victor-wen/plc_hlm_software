@@ -20,6 +20,7 @@
 #include <QSignalSpy>
 #include <QMouseEvent>
 #include <QLabel>
+#include <QSpinBox>
 
 #include "domain/device_snapshot.h"
 #include "ui/shell/shell_model.h"
@@ -116,6 +117,10 @@ private slots:
     // --- page: bypass two-step confirm + readback state -------------------------
     // --- 测试信号 M114-M117 (user decision 2026-09-22) -----------------------
     void simSignalPulsesAreAdminOnlyAndCarryTheAddress();
+
+    // --- page: D220 调宽速度可配置 + D130 实时回读 (user decision 2026-09-22) -----
+    void widthSpeedEditorIsAdminOnlyAndCarriesTheValue();
+    void currentWidthIsShownFromReadback();
 
     void passthroughRequiresSecondConfirmation();
     void bypassStateFromReadbackNotButton();
@@ -551,6 +556,77 @@ void ManualControlPageTest::simSignalPulsesAreAdminOnlyAndCarryTheAddress()
     QCOMPARE(spy.count(), 4);
     for (int i = 0; i < 4; ++i)
         QCOMPARE(spy.at(i).at(0).toUInt(), quint16(addresses[i]));
+}
+
+void ManualControlPageTest::widthSpeedEditorIsAdminOnlyAndCarriesTheValue()
+{
+    ShellModel model;
+    ManualControlPage page(model);
+
+    // Offline: the editor is disabled and the reason is visible text.
+    QVERIFY2(page.widthSpeedSpin() != nullptr, "the D220 editor must exist");
+    QVERIFY2(page.writeWidthSpeedButton() != nullptr, "the D220 write must exist");
+    QVERIFY(!page.widthSpeedSpin()->isEnabled());
+    QVERIFY(!page.writeWidthSpeedButton()->isEnabled());
+    QVERIFY2(!page.writeWidthSpeedButton()->visibleReasonText().isEmpty(),
+             "a disabled D220 write must expose its reason as text");
+
+    // 仅管理员: an operator sees the same disabled state.
+    model.setUser(QStringLiteral("operator"), Role::Operator);
+    model.updateSnapshot(DeviceSnapshot(validSnapshotData()));
+    QVERIFY(!page.widthSpeedSpin()->isEnabled());
+    QVERIFY(!page.writeWidthSpeedButton()->isEnabled());
+    QVERIFY(!page.writeWidthSpeedButton()->visibleReasonText().isEmpty());
+
+    // Admin + online: the spin seeds from the confirmed readback (D220 = 15)
+    // and a click carries the edited value. The click is a request, not an
+    // effect: the page shows 正在写入, never a success (spec §11.2).
+    model.setUser(QStringLiteral("admin"), Role::Admin);
+    QVERIFY(page.widthSpeedSpin()->isEnabled());
+    QVERIFY(page.writeWidthSpeedButton()->isEnabled());
+    QCOMPARE(page.widthSpeedSpin()->value(), 15);
+
+    page.widthSpeedSpin()->setValue(8);
+    QSignalSpy spy(&page, &ManualControlPage::widthSpeedWriteRequested);
+    clickAt(page.writeWidthSpeedButton());
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.at(0).at(0).toUInt(), quint16(8));
+    QVERIFY2(page.widthSpeedResultText().contains(QStringLiteral("正在写入")),
+             "a dispatched write must show a pending state");
+
+    // The result is reported inline, where the operator clicked.
+    page.setWidthSpeedWriteResult(false, QStringLiteral("参数写入确认超时"));
+    QCOMPARE(page.widthSpeedResultText(), QStringLiteral("参数写入确认超时"));
+    page.setWidthSpeedWriteResult(true, QStringLiteral("调宽速度已写入 8 mm/s"));
+    QCOMPARE(page.widthSpeedResultText(), QStringLiteral("调宽速度已写入 8 mm/s"));
+
+    // An in-progress edit survives a refresh (the page never clobbers the
+    // operator's value), while the confirmed readback stays visible in the D220
+    // display next to the editor.
+    model.updateSnapshot(DeviceSnapshot(validSnapshotData()));
+    QCOMPARE(page.widthSpeedSpin()->value(), 8);
+    QCOMPARE(page.fieldDisplay(QStringLiteral("widthSpeed"))->text(),
+             QStringLiteral("15 mm/s"));
+}
+
+void ManualControlPageTest::currentWidthIsShownFromReadback()
+{
+    ShellModel model;
+    ManualControlPage page(model);
+    model.setUser(QStringLiteral("admin"), Role::Admin);
+
+    // D130 is carried in 0.1 mm units (user decision 2026-09-21): raw 150
+    // displays as 15.0 mm.
+    model.updateSnapshot(DeviceSnapshot(validSnapshotData()));
+    QCOMPARE(page.fieldDisplay(QStringLiteral("currentWidth"))->text(),
+             QStringLiteral("15.0 mm"));
+
+    // 实时回读: the next snapshot updates the display immediately.
+    DeviceSnapshotData d = validSnapshotData();
+    d.currentWidth = 2043; // 204.3 mm
+    model.updateSnapshot(DeviceSnapshot(d));
+    QCOMPARE(page.fieldDisplay(QStringLiteral("currentWidth"))->text(),
+             QStringLiteral("204.3 mm"));
 }
 
 void ManualControlPageTest::passthroughRequiresSecondConfirmation()

@@ -27,15 +27,32 @@ using namespace hlm;
 
 namespace {
 
-// Reset + home return to a ready state (M61=1, M60=1). PLC-HMI-011 D6: the
-// M103 pulse clears state but no longer starts homing; the single sustained
-// M50=1 home-start write starts it. Home return takes 2 simulated seconds.
+// Reset + home return + one successful width adjust to a ready state
+// (M61=1, M60=1). PLC-HMI-011 D6: the M103 pulse clears state but no longer
+// starts homing; the single sustained M50=1 home-start write starts it. Home
+// return takes 2 simulated seconds.
+//
+// The decoded SBR_HOME completion also zeroes the current width
+// (`DMOV K0 D130`), and the decoded M60 rung is
+// M61 ∧ D128==D130 ∧ ¬M0 ∧ ¬M14 ∧ ¬T6 — so a homed machine is NOT
+// 自动准备完成 until one width adjust actually reaches the target (user
+// decision 2026-09-22). D128 defaults to 200 (0.1 mm units), D204 to 128 and
+// D220 to the clamped 15, so that run takes ceil(200 * 128 / (15 * 1280)) = 2 s
+// and leaves D130 at 200, exactly the pre-decision state.
 void homeReady(H3uSimulationModel &m)
 {
+    // The M43 preconditions include manual mode M1, so a test that switched to
+    // auto mode before calling this must be put back first.
+    m.writeCoil(104, false);
     m.writeCoil(103, true);
     m.writeCoil(103, false);
     m.writeCoil(50, true);
     m.advance(2);
+    m.writeCoil(43, true);
+    m.writeCoil(43, false);
+    m.advance(2);
+    Q_ASSERT(m.readCoil(61));
+    Q_ASSERT(m.readCoil(60));
 }
 
 } // namespace
@@ -68,6 +85,12 @@ private slots:
     void d126IsSpeedTimesFixedK1280();
     void d210SignedDelta();
     void readOnlyStatusWordsIgnoreRegisterWrites();
+    // Decoded M60 rung (user decision 2026-09-22): M61 ∧ D128==D130 ∧ ¬M0 ∧
+    // ¬M14 ∧ ¬T6, plus the SBR_HOME `DMOV K0 D130` that makes a fresh home
+    // return drop 自动准备完成.
+    void homingZeroesWidthAndClearsM60();
+    void resetClearsM60AndM61();
+    void m60RecoversAfterFaultClearAndNewAdjust();
 };
 
 void H3uSimulationModelTest::m43SuccessOnlyM44()
@@ -174,6 +197,11 @@ void H3uSimulationModelTest::m43NeverBothM44AndM45()
 
 void H3uSimulationModelTest::targetLatchDuringPositioning()
 {
+    // The M43 edge latches the command context (D212 target, D136/D137 pulse
+    // load), so a D128 change during the run cannot change its duration. The
+    // completion rung, however, is the decoded `M8029 → DMOV D128 D130`: D130
+    // takes the LIVE D128 at that moment — the supplied ladder contains no
+    // D212/D213 copy (they are spec-reference registers).
     SimulationClock clock;
     H3uSimulationModel m(clock);
     homeReady(m);
@@ -182,13 +210,15 @@ void H3uSimulationModelTest::targetLatchDuringPositioning()
     m.writeCoil(43, true);
     m.writeCoil(43, false);
     QCOMPARE(m.readRegister(212), quint16(300));
+    // Pulse load latched at the edge: (300 - 200) * 128 = 12800.
+    QCOMPARE(m.readRegister32(136), quint32(12800));
 
     // External D128 change during positioning must not affect this run.
     m.writeRegister(128, 350);
     m.advance(7);
 
-    QCOMPARE(m.readRegister(130), quint16(300)); // latched target, not 350
-    QCOMPARE(qint16(m.readRegister(210)), qint16(50)); // 350 - 300
+    QCOMPARE(m.readRegister(130), quint16(350)); // live D128 at completion
+    QCOMPARE(qint16(m.readRegister(210)), qint16(0)); // 350 - 350
     QVERIFY(m.readCoil(44));
     QVERIFY(!m.readCoil(45));
 }
@@ -467,8 +497,11 @@ void H3uSimulationModelTest::startRequiresReady()
     m.writeCoil(101, false);
     QVERIFY(!m.readCoil(3));
 
-    // Ready: start sets M3.
+    // Ready: start sets M3. The decoded start rung requires auto mode, and
+    // homeReady() leaves the model in manual mode (the M43 preconditions need
+    // M1), so auto mode is selected here.
     homeReady(m);
+    m.writeCoil(104, true);
     m.writeCoil(101, true);
     m.writeCoil(101, false);
     QVERIFY(m.readCoil(3));
@@ -543,6 +576,91 @@ void H3uSimulationModelTest::d210SignedDelta()
     homeReady(m);
     m.writeRegister(128, 150); // D130 = 200 -> delta = -50
     QCOMPARE(qint16(m.readRegister(210)), qint16(-50));
+}
+
+void H3uSimulationModelTest::homingZeroesWidthAndClearsM60()
+{
+    // Decoded SBR_HOME completion: `DMOV K0 D130` beside SET M52/RST M53 — the
+    // belt is back at the zero position. With M60 = M61 ∧ D128==D130 ∧ ¬M0 ∧
+    // ¬M14 ∧ ¬T6, a homed machine is therefore NOT 自动准备完成 until one width
+    // adjust actually reaches the target (user decision 2026-09-22).
+    SimulationClock clock;
+    H3uSimulationModel m(clock);
+    homeReady(m);
+    QVERIFY(m.readCoil(60));
+    QCOMPARE(m.readRegister(130), quint16(200));
+
+    // A fresh home return drops D130 to 0 and 自动准备完成 with it.
+    m.writeCoil(50, true);
+    m.advance(2);
+    QVERIFY(m.readCoil(61));
+    QCOMPARE(m.readRegister(130), quint16(0));
+    QVERIFY(!m.readCoil(60));
+
+    // One successful adjust to the current target restores it.
+    m.writeCoil(43, true);
+    m.writeCoil(43, false);
+    m.advance(2);
+    QCOMPARE(m.readRegister(130), quint16(200));
+    QVERIFY(m.readCoil(60));
+}
+
+void H3uSimulationModelTest::resetClearsM60AndM61()
+{
+    // M103 clears the home-complete bit and, because M60 is an OUT coil driven
+    // by it, 自动准备完成 in the same scan.
+    SimulationClock clock;
+    H3uSimulationModel m(clock);
+    homeReady(m);
+    QVERIFY(m.readCoil(61));
+    QVERIFY(m.readCoil(60));
+
+    m.writeCoil(103, true);
+    m.writeCoil(103, false);
+    QVERIFY(!m.readCoil(61));
+    QVERIFY(!m.readCoil(60));
+}
+
+void H3uSimulationModelTest::m60RecoversAfterFaultClearAndNewAdjust()
+{
+    // A width timeout sets M14/D110=10 and leaves T6 done. M103 clears the
+    // fault and M61, a fresh home return zeroes D130, and only a successful
+    // adjust makes the machine ready again — the `¬T6` term is reset by the
+    // decoded `LD= D128 D130` → `RST T6` at that moment.
+    SimulationClock clock;
+    H3uSimulationModel m(clock);
+    homeReady(m);
+    QVERIFY(m.readCoil(60));
+
+    // 6000 - 200 = 5800 (0.1 mm) needs ceil(5800 * 128 / 19200) = 39 s, so the
+    // fixed T6 K300 window closes first.
+    m.writeRegister(128, 6000);
+    m.writeCoil(43, true);
+    m.writeCoil(43, false);
+    m.advance(30);
+    QVERIFY(!m.readCoil(34));
+    QVERIFY(m.readCoil(45));
+    QVERIFY(m.readCoil(14));
+    QCOMPARE(m.readRegister(110), quint16(10));
+    QVERIFY(!m.readCoil(60));
+
+    // Reset + home return: fault cleared, homed, but D128 (6000) != D130 (0).
+    m.writeCoil(103, true);
+    m.writeCoil(103, false);
+    QVERIFY(!m.readCoil(14));
+    m.writeCoil(50, true);
+    m.advance(2);
+    QVERIFY(m.readCoil(61));
+    QVERIFY(!m.readCoil(60));
+
+    // Back to the neutral target and one successful run: M60 returns.
+    m.writeRegister(128, 200);
+    m.writeCoil(43, true);
+    m.writeCoil(43, false);
+    m.advance(2);
+    QCOMPARE(m.readRegister(130), quint16(200));
+    QVERIFY(m.readCoil(44));
+    QVERIFY(m.readCoil(60));
 }
 
 void H3uSimulationModelTest::readOnlyStatusWordsIgnoreRegisterWrites()

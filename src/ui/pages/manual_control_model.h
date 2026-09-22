@@ -75,9 +75,17 @@ public:
     // 安全屏蔽生效 (M110 或 M111): 顶部持续显示琥珀色横幅 (spec §10.8).
     bool shieldActive() const;
 
-    // --- D220 调宽速度 (read-only display; no coordinator write path) ---------
+    // --- D220 调宽速度 (readback + admin write, user decision 2026-09-22) -------
     bool widthSpeedValid() const;
     quint16 widthSpeed() const;
+    // 调宽速度可配置: 仅管理员 + 在线 + 回读有效. The page renders the editor
+    // from this verdict and shows every unmet reason inline (spec §11.4).
+    bool canWriteWidthSpeed() const;
+    QStringList widthSpeedWriteUnmetReasons() const;
+
+    // --- D130 当前宽度 实时回读 (0.1mm raw, see domain/width_units.h) ---------
+    bool currentWidthValid() const;
+    quint16 currentWidth() const;
 
     // --- status ---------------------------------------------------------------
     QString statusText() const;

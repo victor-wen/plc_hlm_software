@@ -241,13 +241,27 @@ namespace {
 // Drive a reset+home-return to a ready manual state via the raw gateway.
 // PLC-HMI-011 D6: the M103 pulse no longer starts homing; the HMI's single
 // sustained M50=1 home-start write does.
+//
+// The decoded SBR_HOME completion zeroes the current width (`DMOV K0 D130`),
+// and the decoded M60 rung is M61 ∧ D128==D130 ∧ ¬M0 ∧ ¬M14 ∧ ¬T6 — so a homed
+// machine is not 自动准备完成 until one width adjust actually reaches the
+// target (user decision 2026-09-22). D128 defaults to 200, D204 to 128 and D220
+// to the clamped 15, so the run takes ceil(200 * 128 / (15 * 1280)) = 2 s and
+// leaves D130 at 200, the state these tests were written against.
 void homeReady(SimulatedPlcGateway &gw)
 {
+    // The M43 preconditions include manual mode M1, so a test that switched to
+    // auto mode before calling this must be put back first.
+    gw.model().writeCoil(kM104, false);
     gw.model().writeCoil(kM103, true);
     gw.model().writeCoil(kM103, false);
     gw.model().writeCoil(kM50, true);
     gw.tick();
     gw.tick(); // home return takes 2 s
+    gw.model().writeCoil(43, true);
+    gw.model().writeCoil(43, false);
+    gw.tick();
+    gw.tick(); // width adjust takes 2 s
 }
 
 // Forward declaration: see definition below (used by makeCoordinator).
@@ -847,17 +861,21 @@ void ControlCoordinatorTest::adjustWidthConcurrentEstopNeverHangs()
     QVERIFY(gw.lastSnapshot().m0());
     QVERIFY(gw.lastSnapshot().m100());
 
-    // The D128 completion is dropped and a concurrent safety command arrives;
-    // the adjust flow must still converge to exactly one terminal failure
-    // through its armed result deadline (never hang, never double-report).
+    // Neither the D128 write nor the M43 pulse ever reports a correlated
+    // completion here, so the flow has no evidence that the PLC saw the
+    // command. The verdict (M34 + D130, user decision 2026-09-22) is therefore
+    // not evaluated at all and convergence must come from the armed defensive
+    // deadline — never a hang, never a double report.
     now += 30'000;
+    gw.tick();
+    QVERIFY(c->adjustInProgress()); // no verdict without a delivered pulse
+    QCOMPARE(adjustReports, 0);
+
+    now += 4'000; // past plc_timeout (30 s) + 3 s
     gw.tick();
     QVERIFY(!c->adjustInProgress());
     QCOMPARE(adjustReports, 1);
     QVERIFY(!writeResult);
-    // Convergence may be the immediate M45 failure or the defensive timeout;
-    // either way the flow must report exactly one failure with a visible
-    // detail and never hang or double-report.
     QVERIFY2(!detail.isEmpty(), "a terminal failure must carry a visible detail");
 
     gw.tick();

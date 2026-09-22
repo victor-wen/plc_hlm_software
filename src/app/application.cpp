@@ -344,6 +344,10 @@ void Application::wireSignals()
     // the coordinator owns the command identity and the pulse.
     connect(m_manualPage, &ManualControlPage::simStationPulseRequested,
             m_coordinator, &ControlCoordinator::simStationPulse);
+    // 调宽速度 D220 就地配置 (user decision 2026-09-22): validated by the same
+    // single parameter-write path, result reported on the manual page.
+    connect(m_manualPage, &ManualControlPage::widthSpeedWriteRequested, this,
+            &Application::handleManualWidthSpeedWrite);
 
     // --- AlarmPage / AuditLogPage -> database ---------------------------------
     connect(m_alarmPage, &AlarmPage::requestReload, this, [this]() {
@@ -874,23 +878,29 @@ void Application::handlePasswordVerified(bool ok)
     submitParameterWrite(kD204, value);
 }
 
-void Application::submitParameterWrite(quint16 address, quint16 value)
+void Application::submitParameterWrite(quint16 address, quint16 value,
+                                       ParamWriteSink sink)
 {
     const SubmissionResult result =
         m_gw->submitWriteRegister(address, value, CommandPriority::Normal);
     if (!result.accepted) {
         // Rejected synchronously: the page sees the immediate reason, never
         // silence (spec §11.2: 无乐观状态).
-        m_usersPage->setParameterWriteResult(
-            false, result.immediate_rejection_reason.isEmpty()
-                       ? QStringLiteral("参数写入被拒绝")
-                       : result.immediate_rejection_reason);
+        const QString reason = result.immediate_rejection_reason.isEmpty()
+            ? QStringLiteral("参数写入被拒绝")
+            : result.immediate_rejection_reason;
+        if (sink == ParamWriteSink::Manual)
+            m_manualPage->setWidthSpeedWriteResult(false, reason);
+        else
+            m_usersPage->setParameterWriteResult(false, reason);
         return;
     }
     PendingParamWrite pending;
     pending.request_id = result.request_id;
     pending.gateway_generation = result.gateway_generation;
     pending.address = address;
+    pending.value = value;
+    pending.sink = sink;
     pending.deadline_ms =
         QDateTime::currentMSecsSinceEpoch() + kParamWriteTimeoutMs;
     m_pendingParamWrites.append(pending);
@@ -901,16 +911,50 @@ void Application::submitParameterWrite(quint16 address, quint16 value)
     QTimer::singleShot(kParamWriteTimeoutMs, this,
                        [this, requestId, generation]() {
                            for (int i = 0; i < m_pendingParamWrites.size(); ++i) {
-                               const PendingParamWrite &p = m_pendingParamWrites.at(i);
+                               const PendingParamWrite p = m_pendingParamWrites.at(i);
                                if (p.request_id == requestId
                                    && p.gateway_generation == generation) {
                                    m_pendingParamWrites.removeAt(i);
-                                   m_usersPage->setParameterWriteResult(
-                                       false, QStringLiteral("参数写入确认超时"));
+                                   reportParamWriteResult(
+                                       p, false,
+                                       QStringLiteral("参数写入确认超时"));
                                    return;
                                }
                            }
                        });
+}
+
+void Application::reportParamWriteResult(const PendingParamWrite &pending,
+                                         bool ok, const QString &detail)
+{
+    if (pending.sink == ParamWriteSink::Manual) {
+        // The manual page's only parameter is D220 调宽速度: name the confirmed
+        // value in the success detail so the operator sees what was written.
+        m_manualPage->setWidthSpeedWriteResult(
+            ok, ok ? QStringLiteral("调宽速度已写入 %1 mm/s").arg(pending.value)
+                   : detail);
+        return;
+    }
+    m_usersPage->setParameterWriteResult(ok, detail);
+}
+
+void Application::handleManualWidthSpeedWrite(quint16 value)
+{
+    // Same single restricted-mode verdict as every other user-initiated
+    // parameter write (PLC-HMI-008 D1), but the outcome goes back to the page
+    // the operator clicked on.
+    if (m_lifecycle != nullptr
+        && !m_lifecycle->commandAllowed(Command::ParameterChange)) {
+        m_manualPage->setWidthSpeedWriteResult(
+            false, m_lifecycle->commandRejectionReason());
+        return;
+    }
+    QString error;
+    if (!validateParameterWrite(kD220, value, &error)) {
+        m_manualPage->setWidthSpeedWriteResult(false, error);
+        return;
+    }
+    submitParameterWrite(kD220, value, ParamWriteSink::Manual);
 }
 
 void Application::handleSubmissionCompleted(const SubmissionCompletion &completion)
@@ -919,7 +963,7 @@ void Application::handleSubmissionCompleted(const SubmissionCompletion &completi
         return; // obsolete generation: rejected
     // Correlate by request identity + generation only (contract invariant).
     for (int i = 0; i < m_pendingParamWrites.size(); ++i) {
-        const PendingParamWrite &p = m_pendingParamWrites.at(i);
+        const PendingParamWrite p = m_pendingParamWrites.at(i);
         if (p.request_id != completion.request_id
             || p.gateway_generation != completion.gateway_generation) {
             continue;
@@ -927,7 +971,7 @@ void Application::handleSubmissionCompleted(const SubmissionCompletion &completi
         const bool isParamWrite = completion.operation == PlcOperation::WriteRegister;
         m_pendingParamWrites.removeAt(i);
         if (isParamWrite)
-            m_usersPage->setParameterWriteResult(completion.result, completion.error);
+            reportParamWriteResult(p, completion.result, completion.error);
         return;
     }
 }
@@ -936,10 +980,8 @@ void Application::failAllPendingParamWrites(const QString &reason)
 {
     const QVector<PendingParamWrite> pending = m_pendingParamWrites;
     m_pendingParamWrites.clear();
-    for (const PendingParamWrite &p : pending) {
-        Q_UNUSED(p);
-        m_usersPage->setParameterWriteResult(false, reason);
-    }
+    for (const PendingParamWrite &p : pending)
+        reportParamWriteResult(p, false, reason);
 }
 
 // --- login / logout ----------------------------------------------------------

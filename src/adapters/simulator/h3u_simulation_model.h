@@ -86,6 +86,11 @@ private:
     quint64 m_t6Elapsed = 0;
     bool m_positioning = false;
     bool m_stall = false; // injected stall: motor never reaches position
+    // T6 done bit (user decision 2026-09-22). The decoded SBR_MANUALWIDTH
+    // drives `T6 K300` and resets it only when D128 == D130, so a width
+    // timeout stays latched until the width actually reaches the target; the
+    // decoded M60 rung in SBR_FAULT uses ¬T6 as one of its terms.
+    bool m_t6Done = false;
 
     // Home return: remaining seconds until completion.
     quint64 m_homeRemaining = 0;
