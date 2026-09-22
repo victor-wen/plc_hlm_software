@@ -126,6 +126,16 @@ public:
     CommandResult manualLatch(quint16 address, bool value);
     // 屏蔽 (spec §10.8). Admin only. M105/M42/M110/M111.
     CommandResult bypass(quint16 address, bool value);
+    // 测试信号 (user decision 2026-09-22): one 100 ms pulse for one of the
+    // simulated neighbouring-station signals (M114 前站进板 / M115 后站要板 /
+    // M116 前站要板请求 / M117 后站出站请求). Admin only; the only gate is an
+    // online link, because the signal must be injectable while the flow runs
+    // (see InterlockRules::checkSimStationSignal). These coils are absent from
+    // the current PLC program, so on an unchanged PLC the pulses are inert.
+    // Each signal is single-flight and converges to exactly one terminal
+    // ("已发送" on the correlated pulse completion, a failure on transport
+    // error, timeout or link loss).
+    CommandResult simStationPulse(quint16 address);
     // 注销/会话超时: try to clear M42/M106-M111; M100 is never touched
     // (spec §11.5, §13).
     void logoutClear();
@@ -239,6 +249,8 @@ private:
     bool submitRegister(Command cmd, quint16 address, quint16 value,
                         CommandPriority priority);
     bool submitPulse(Command cmd, quint16 address);
+    // Shared body of simStationPulse(): gate, single-flight, pulse, pending.
+    CommandResult pulseSimSignal(Command cmd, quint16 address);
     void trackSubmission(Command cmd, const SubmissionResult &result,
                          PlcOperation operation, quint16 address);
     void clearPendingSubmissions(Command cmd);
@@ -317,6 +329,12 @@ private:
     qint64 m_estopDeadlineMs = 0;
     // Accepted hold/latch/bypass commands waiting for snapshot confirmation.
     QVector<ManualConfirm> m_manualPending;
+    // 测试信号 M114-M117 (user decision 2026-09-22): one single-flight slot per
+    // signal, indexed by simSignalIndex(), plus its defensive deadline. A pulse
+    // whose correlated completion never arrives still converges visibly.
+    static constexpr int kSimSignalCount = 4;
+    bool m_simSignalPending[kSimSignalCount] = {false, false, false, false};
+    qint64 m_simSignalDeadlineMs[kSimSignalCount] = {0, 0, 0, 0};
     // Pending logout/session-timeout clear generation (REV-P0-1). Only one
     // clear may be in flight; a duplicate logoutClear() while it is pending is
     // absorbed (no second generation, no second request-start).

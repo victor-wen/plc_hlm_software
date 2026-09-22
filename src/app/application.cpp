@@ -340,6 +340,10 @@ void Application::wireSignals()
             &ControlCoordinator::manualLatch);
     connect(m_manualPage, &ManualControlPage::bypassRequested, m_coordinator,
             &ControlCoordinator::bypass);
+    // 测试信号 M114-M117 (user decision 2026-09-22): the page sends the address,
+    // the coordinator owns the command identity and the pulse.
+    connect(m_manualPage, &ManualControlPage::simStationPulseRequested,
+            m_coordinator, &ControlCoordinator::simStationPulse);
 
     // --- AlarmPage / AuditLogPage -> database ---------------------------------
     connect(m_alarmPage, &AlarmPage::requestReload, this, [this]() {

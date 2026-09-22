@@ -26,9 +26,10 @@ constexpr quint16 kM103 = 103; // HMI reset
 constexpr quint16 kM104 = 104; // auto mode select
 constexpr quint16 kM105 = 105; // passthrough mode
 
-// Coil address space stays 0-112 (113 coils): address 112 remains an
-// in-range but unused coil after the M112 removal (PLC-HMI-003 D3).
-constexpr quint16 kLastCoilAddress = 112;
+// Highest coil the model accepts. M112 stays an unused hole (PLC-HMI-003 D3);
+// the range extends to M117 for the 测试信号 pulses (user decision 2026-09-22),
+// which the PLC program does not consume yet.
+constexpr quint16 kLastCoilAddress = 117;
 
 constexpr quint16 kD100 = 100; // status word 1: M0-M14 map, bit15 reserved
 constexpr quint16 kD103 = 103; // status word 3: M30-M45 map

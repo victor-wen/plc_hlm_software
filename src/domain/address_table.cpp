@@ -116,6 +116,21 @@ AddressTable::AddressTable()
         QStringLiteral("光栅屏蔽"), AccessType::ReadWrite, ValueType::U16));
     m_defs.push_back(def(QStringLiteral("M"), 111, QStringLiteral("M111"),
         QStringLiteral("门磁屏蔽"), AccessType::ReadWrite, ValueType::U16));
+    // 测试信号 (user decision 2026-09-22): simulate the neighbouring-station
+    // handshake for bench testing. Absent from the current PLC program — the
+    // PLC engineer adds the rungs that consume them (M114 前站进板 / M115 后站
+    // 要板 / M116 前站要板请求 / M117 后站出站请求), so until then these pulses
+    // are inert on the machine. The real handshake today lives on the physical
+    // I/O: X14 上站给板信号 (mirror M306), X15 允许出站信号 (mirror M307),
+    // Y14 上站要板信号, Y15 请求放行.
+    m_defs.push_back(def(QStringLiteral("M"), 114, QStringLiteral("M114"),
+        QStringLiteral("模拟前站进板信号"), AccessType::ReadWrite, ValueType::U16));
+    m_defs.push_back(def(QStringLiteral("M"), 115, QStringLiteral("M115"),
+        QStringLiteral("模拟后站要板信号"), AccessType::ReadWrite, ValueType::U16));
+    m_defs.push_back(def(QStringLiteral("M"), 116, QStringLiteral("M116"),
+        QStringLiteral("模拟前站要板请求信号"), AccessType::ReadWrite, ValueType::U16));
+    m_defs.push_back(def(QStringLiteral("M"), 117, QStringLiteral("M117"),
+        QStringLiteral("模拟后站出站请求信号"), AccessType::ReadWrite, ValueType::U16));
 
     // --- D area (holding registers) -----------------------------------------
     // 0-based protocol addresses (D100 -> 100). Source: 需求/PLC上位机地址及要求.txt.

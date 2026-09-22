@@ -114,6 +114,9 @@ private slots:
     void stopGateTogglesFromReadback();
 
     // --- page: bypass two-step confirm + readback state -------------------------
+    // --- 测试信号 M114-M117 (user decision 2026-09-22) -----------------------
+    void simSignalPulsesAreAdminOnlyAndCarryTheAddress();
+
     void passthroughRequiresSecondConfirmation();
     void bypassStateFromReadbackNotButton();
     void shieldRequiresSecondConfirmation();
@@ -510,6 +513,45 @@ void ManualControlPageTest::stopGateTogglesFromReadback()
 }
 
 // --- page: bypass two-step confirm + readback state ----------------------------------
+
+// --- 测试信号 M114-M117 (user decision 2026-09-22) -----------------------------
+
+void ManualControlPageTest::simSignalPulsesAreAdminOnlyAndCarryTheAddress()
+{
+    ShellModel model;
+    ManualControlPage page(model);
+    const quint16 addresses[] = {114, 115, 116, 117};
+
+    // Offline: every test-signal button is disabled with a visible reason.
+    for (const quint16 address : addresses) {
+        PermissionButton *button = page.simSignalButton(address);
+        QVERIFY2(button != nullptr, "each test-signal button must exist");
+        QVERIFY(!button->isEnabled());
+        QVERIFY2(!button->visibleReasonText().isEmpty(),
+                 "a disabled test-signal button must expose its reason as text");
+    }
+
+    // 仅管理员: an operator sees the same disabled state.
+    model.setUser(QStringLiteral("operator"), Role::Operator);
+    model.updateSnapshot(DeviceSnapshot(validSnapshotData()));
+    for (const quint16 address : addresses) {
+        QVERIFY(!page.simSignalButton(address)->isEnabled());
+        QVERIFY(!page.simSignalButton(address)->visibleReasonText().isEmpty());
+    }
+
+    // Admin + online: each button emits one pulse intent carrying its address
+    // (the coordinator owns the command identity and the 100 ms pulse).
+    model.setUser(QStringLiteral("admin"), Role::Admin);
+    QSignalSpy spy(&page, &ManualControlPage::simStationPulseRequested);
+    for (const quint16 address : addresses) {
+        PermissionButton *button = page.simSignalButton(address);
+        QVERIFY(button->isEnabled());
+        clickAt(button);
+    }
+    QCOMPARE(spy.count(), 4);
+    for (int i = 0; i < 4; ++i)
+        QCOMPARE(spy.at(i).at(0).toUInt(), quint16(addresses[i]));
+}
 
 void ManualControlPageTest::passthroughRequiresSecondConfirmation()
 {

@@ -43,6 +43,12 @@ public:
     static InterlockResult checkManualCommand(const DeviceSnapshot &s, bool online,
                                               quint16 address = 0);
     static InterlockResult checkBypass(const DeviceSnapshot &s, bool online);
+    // 测试信号 M114-M117 (user decision 2026-09-22). The only gate is an online
+    // link: these pulses exist to inject a neighbouring-station signal while
+    // the machine runs its flow, so a machine-state gate would defeat them.
+    // They are test-only coils — absent from the current PLC program — and the
+    // PLC must treat them as such (e.g. honoured only in a bench/test mode).
+    static InterlockResult checkSimStationSignal(const DeviceSnapshot &s, bool online);
 };
 
 } // namespace hlm

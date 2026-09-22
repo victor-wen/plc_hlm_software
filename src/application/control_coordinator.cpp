@@ -47,10 +47,60 @@ constexpr qint64 kEstopTimeoutMs = 5'000;
 // accepted continuous command only succeeds when a confirmed snapshot shows
 // the requested state; without confirmation it converges to failure.
 constexpr qint64 kManualConfirmTimeoutMs = 3'000;
+// 测试信号 M114-M117 (user decision 2026-09-22): the pulse is 100 ms and its
+// correlated completion is the whole evidence, so the defensive deadline uses
+// the same 3 s class as the other transport confirmations.
+constexpr qint64 kSimSignalTimeoutMs = 3'000;
 // Defensive logout/session-timeout clear deadline (REV-P0-1): the seven
 // M42/M106-M111 writes must converge even if no correlated completion ever
 // arrives. Same 3 s class as the manual confirmation timeout.
 constexpr qint64 kLogoutClearTimeoutMs = 3'000;
+
+// 测试信号 (user decision 2026-09-22): the four simulated neighbouring-station
+// signals on the 手动 page. The address order is the identity order used by
+// simSignalIndex(). M114-M117 are absent from the current PLC program, so on
+// an unchanged PLC these pulses are inert; the PLC engineer adds the rungs.
+constexpr quint16 kSimSignalAddresses[4] = {114, 115, 116, 117};
+constexpr Command kSimSignalCommands[4] = {
+    Command::SimUpstreamBoardIn,
+    Command::SimDownstreamBoardRequest,
+    Command::SimUpstreamBoardRequest,
+    Command::SimDownstreamExitRequest,
+};
+
+int simSignalIndex(Command cmd)
+{
+    for (int i = 0; i < 4; ++i) {
+        if (kSimSignalCommands[i] == cmd)
+            return i;
+    }
+    return -1;
+}
+
+QString simSignalName(Command cmd)
+{
+    switch (cmd) {
+    case Command::SimUpstreamBoardIn:
+        return QStringLiteral("模拟前站进板信号");
+    case Command::SimDownstreamBoardRequest:
+        return QStringLiteral("模拟后站要板信号");
+    case Command::SimUpstreamBoardRequest:
+        return QStringLiteral("模拟前站要板请求信号");
+    case Command::SimDownstreamExitRequest:
+        return QStringLiteral("模拟后站出站请求信号");
+    default:
+        return QString();
+    }
+}
+
+std::optional<Command> simSignalForAddress(quint16 address)
+{
+    for (int i = 0; i < 4; ++i) {
+        if (kSimSignalAddresses[i] == address)
+            return kSimSignalCommands[i];
+    }
+    return std::nullopt;
+}
 
 // Reads the M42/M105-M111 readback bit that confirms a hold/latch/bypass
 // command. Addresses are the coordinator's whitelisted ones (spec §10.7-§10.8).
@@ -163,6 +213,13 @@ InterlockResult ControlCoordinator::interlock(Command cmd, const DeviceSnapshot 
     case Command::ManualCommand:
         return InterlockRules::checkManualCommand(s, m_online, address);
     case Command::Bypass: return InterlockRules::checkBypass(s, m_online);
+    case Command::SimUpstreamBoardIn:
+    case Command::SimDownstreamBoardRequest:
+    case Command::SimUpstreamBoardRequest:
+    case Command::SimDownstreamExitRequest:
+        // 测试信号 (user decision 2026-09-22): online is the only gate, so the
+        // signal stays injectable while the machine runs its flow.
+        return InterlockRules::checkSimStationSignal(s, m_online);
     case Command::LogoutClear:
     case Command::ParameterChange:
     case Command::Count: break;
@@ -313,6 +370,45 @@ ControlCoordinator::CommandResult ControlCoordinator::adjustWidth(quint16 target
     m_adjustDeadlineMs = m_nowMs() + kAdjustTimeoutMs;
     m_adjustTimeoutArmed = true;
     emitPending(Command::AdjustWidth);
+    return {true, QString()};
+}
+
+ControlCoordinator::CommandResult ControlCoordinator::simStationPulse(quint16 address)
+{
+    const std::optional<Command> cmd = simSignalForAddress(address);
+    if (!cmd.has_value()) {
+        // Unreachable from the UI (the page only offers the four defined
+        // buttons); reported rather than swallowed.
+        return {false, QStringLiteral("未知的测试信号地址")};
+    }
+    return pulseSimSignal(*cmd, address);
+}
+
+ControlCoordinator::CommandResult ControlCoordinator::pulseSimSignal(Command cmd, quint16 address)
+{
+    if (const QString blocked = blockedByRestrictedMode(cmd); !blocked.isEmpty())
+        return rejectCommand(cmd, blocked);
+    const DeviceSnapshot s = m_snapshot.value_or(DeviceSnapshot(DeviceSnapshotData()));
+    CommandResult g = gate(cmd, s, 0, address);
+    if (!g.accepted)
+        return rejectCommand(cmd, g.reason);
+    const int index = simSignalIndex(cmd);
+    if (index >= 0 && m_simSignalPending[index])
+        return rejectCommand(cmd,
+                             QStringLiteral("%1正在发送中, 请等待当前脉冲结束")
+                                 .arg(simSignalName(cmd)));
+
+    emit commandAccepted(cmd);
+    if (!submitPulse(cmd, address)) {
+        finishCommand(cmd, false,
+                      QStringLiteral("%1脉冲发送失败").arg(simSignalName(cmd)));
+        return {true, QString()};
+    }
+    if (index >= 0) {
+        m_simSignalPending[index] = true;
+        m_simSignalDeadlineMs[index] = m_nowMs() + kSimSignalTimeoutMs;
+    }
+    emitPending(cmd);
     return {true, QString()};
 }
 
@@ -667,6 +763,16 @@ void ControlCoordinator::onSnapshot(const DeviceSnapshot &s)
         finishCommand(Command::EstopRelease, false,
                       QStringLiteral("急停解除超时, 请检查设备"));
     }
+    // 测试信号 M114-M117 (user decision 2026-09-22): a pulse whose correlated
+    // completion never arrives must still converge visibly instead of leaving
+    // the shell status 待确认 forever.
+    for (int i = 0; i < kSimSignalCount; ++i) {
+        if (m_simSignalPending[i] && m_nowMs() >= m_simSignalDeadlineMs[i]) {
+            const Command cmd = kSimSignalCommands[i];
+            finishCommand(cmd, false,
+                          QStringLiteral("%1脉冲超时, 请检查设备").arg(simSignalName(cmd)));
+        }
+    }
 
     // Hold/latch/bypass confirmation and defensive timeout (D4): the terminal
     // success only follows a snapshot that shows the requested machine state.
@@ -786,6 +892,13 @@ void ControlCoordinator::onSubmissionCompleted(const SubmissionCompletion &compl
         // on the snapshot feed once the fixed 200 ms minimum elapsed.
         if (pending.cmd == Command::Reset && pending.operation == PlcOperation::Pulse)
             m_resetPulseCompleted = true;
+        // 测试信号: the correlated pulse completion IS the whole evidence — a
+        // test pulse has no machine state to confirm, so it converges to its
+        // single terminal here.
+        if (simSignalIndex(pending.cmd) >= 0) {
+            finishCommand(pending.cmd, true,
+                          QStringLiteral("%1已发送").arg(simSignalName(pending.cmd)));
+        }
         return;
     }
 
@@ -831,6 +944,19 @@ void ControlCoordinator::onSubmissionCompleted(const SubmissionCompletion &compl
         if (m_modePending)
             finishCommand(Command::ModeSwitch, false, QStringLiteral("写 M104 失败"));
         break;
+    case Command::SimUpstreamBoardIn:
+    case Command::SimDownstreamBoardRequest:
+    case Command::SimUpstreamBoardRequest:
+    case Command::SimDownstreamExitRequest: {
+        // 测试信号 (user decision 2026-09-22): a failed pulse never started, so
+        // the single terminal is the failure itself.
+        const int simIndex = simSignalIndex(pending.cmd);
+        if (simIndex >= 0 && m_simSignalPending[simIndex]) {
+            finishCommand(pending.cmd, false,
+                          QStringLiteral("%1脉冲发送失败").arg(simSignalName(pending.cmd)));
+        }
+        break;
+    }
     case Command::ManualCommand:
     case Command::Bypass: {
         // Fail exactly the hold/latch/bypass request that owns this identity.
@@ -883,6 +1009,16 @@ void ControlCoordinator::onConnectionChanged(bool online)
         m_stopPhase = StopPhase::Idle;
         m_stopTimeoutArmed = false;
         emit commandResult(Command::Stop, false, QStringLiteral("通讯中断"));
+    }
+    // 测试信号 M114-M117 (user decision 2026-09-22): an in-flight test pulse
+    // converges on link loss instead of staying pending.
+    for (int i = 0; i < kSimSignalCount; ++i) {
+        if (m_simSignalPending[i]) {
+            m_simSignalPending[i] = false;
+            m_simSignalDeadlineMs[i] = 0;
+            emit commandResult(kSimSignalCommands[i], false,
+                               QStringLiteral("通讯中断"));
+        }
     }
     // Every in-flight submission identity is dropped: a late completion for
     // the old generation must never converge a command of the new one.
@@ -1068,6 +1204,17 @@ void ControlCoordinator::finishCommand(Command cmd, bool ok, const QString &deta
     case Command::ModeSwitch:
         m_modePending = false;
         break;
+    case Command::SimUpstreamBoardIn:
+    case Command::SimDownstreamBoardRequest:
+    case Command::SimUpstreamBoardRequest:
+    case Command::SimDownstreamExitRequest: {
+        const int simIndex = simSignalIndex(cmd);
+        if (simIndex >= 0) {
+            m_simSignalPending[simIndex] = false;
+            m_simSignalDeadlineMs[simIndex] = 0;
+        }
+        break;
+    }
     default:
         break;
     }
@@ -1107,6 +1254,11 @@ QString ControlCoordinator::pendingDetail(Command cmd) const
         return QStringLiteral("急停置位中: 等待 PLC 确认");
     case Command::EstopRelease:
         return QStringLiteral("急停解除中: 等待 PLC 确认");
+    case Command::SimUpstreamBoardIn:
+    case Command::SimDownstreamBoardRequest:
+    case Command::SimUpstreamBoardRequest:
+    case Command::SimDownstreamExitRequest:
+        return QStringLiteral("测试信号: 正在发送 %1 脉冲").arg(simSignalName(cmd));
     case Command::ManualCommand:
         return QStringLiteral("手动命令已发送: 等待 PLC 确认");
     case Command::Bypass:

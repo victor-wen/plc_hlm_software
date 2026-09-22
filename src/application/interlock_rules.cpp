@@ -145,4 +145,15 @@ InterlockResult InterlockRules::checkBypass(const DeviceSnapshot &s, bool online
     return r;
 }
 
+InterlockResult InterlockRules::checkSimStationSignal(const DeviceSnapshot &s, bool online)
+{
+    // Test-only signal injection (user decision 2026-09-22): online is the
+    // only gate, because the signal has to be injectable while the flow runs.
+    Q_UNUSED(s);
+    InterlockResult r;
+    add(r.unmet, online, QStringLiteral("通讯中断"));
+    r.allowed = r.unmet.isEmpty();
+    return r;
+}
+
 } // namespace hlm

@@ -207,6 +207,9 @@ private slots:
     void manualHoldReleaseRequiresPermission();
     void estopSetSyncFailureDoesNotEmitSecondSuccess();
 
+    // --- 测试信号 M114-M117 (user decision 2026-09-22) -----------------------
+    void simStationPulseIsAdminOnlyAndConvergesVisibly();
+
     // --- logout --------------------------------------------------------------
     void logoutClearsM42AndM106ToM111NotM100();
     void logoutClearDoesNotTouchM105();
@@ -1654,6 +1657,62 @@ void ControlCoordinatorTest::manualAndBypassRejectUnsupportedAddress()
     QVERIFY(!gw.model().readCoil(kM109)); // nothing was written
     QVERIFY(!gw.model().readCoil(kM106));
     QVERIFY(!gw.model().readCoil(kM100));
+}
+
+// --- 测试信号 M114-M117 (user decision 2026-09-22) -----------------------------
+
+void ControlCoordinatorTest::simStationPulseIsAdminOnlyAndConvergesVisibly()
+{
+    SimulatedPlcGateway gw;
+    gw.start();
+    qint64 now = 0;
+    std::unique_ptr<ControlCoordinator> c(makeCoordinator(gw, now));
+    gw.tick(); // publish a snapshot: the link is online
+
+    // 仅管理员 (spec §11.4).
+    c->setRole(Role::Operator);
+    const ControlCoordinator::CommandResult denied = c->simStationPulse(114);
+    QVERIFY(!denied.accepted);
+    QVERIFY(denied.reason.contains(QStringLiteral("需要管理员权限")));
+
+    c->setRole(Role::Admin);
+    bool result = false;
+    QString detail;
+    int terminals = 0;
+    connect(c.get(), &ControlCoordinator::commandResult, this,
+            [&](Command cmd, bool ok, const QString &d) {
+                if (cmd == Command::SimUpstreamBoardIn) {
+                    result = ok;
+                    detail = d;
+                    ++terminals;
+                }
+            });
+
+    // One 100 ms pulse (1 -> 0) to M114, correlated by request identity.
+    QVERIFY(c->simStationPulse(114).accepted);
+    QVERIFY(!result); // no optimistic success before the correlated completion
+
+    // A duplicate while the pulse is in flight is rejected visibly.
+    const ControlCoordinator::CommandResult duplicate = c->simStationPulse(114);
+    QVERIFY(!duplicate.accepted);
+    QVERIFY(!duplicate.reason.isEmpty());
+
+    gw.tick(); // deliver the correlated pulse completion
+    QVERIFY2(result, "the test pulse must converge to a visible success");
+    QVERIFY(detail.contains(QStringLiteral("已发送")));
+    QCOMPARE(terminals, 1); // exactly one terminal
+    QVERIFY2(!gw.model().readCoil(114), "the pulse must end with the coil cleared");
+
+    // The other three signals are independent identities and addresses.
+    QVERIFY(c->simStationPulse(115).accepted);
+    QVERIFY(c->simStationPulse(116).accepted);
+    QVERIFY(c->simStationPulse(117).accepted);
+    gw.tick();
+
+    // An address outside the four defined signals is reported, never swallowed.
+    const ControlCoordinator::CommandResult unknown = c->simStationPulse(113);
+    QVERIFY(!unknown.accepted);
+    QVERIFY(!unknown.reason.isEmpty());
 }
 
 QTEST_GUILESS_MAIN(ControlCoordinatorTest)

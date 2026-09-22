@@ -48,6 +48,10 @@ public:
     QStringList stopGateUnmetReasons() const;
     bool canBypass() const;
     QStringList bypassUnmetReasons() const;
+    // 测试信号 M114-M117 (user decision 2026-09-22): 仅管理员 + 在线, 无机器
+    // 状态前置条件, 以便在流程运行中注入模拟信号.
+    bool canSimSignal() const;
+    QStringList simSignalUnmetReasons() const;
 
     // --- shield two-step confirm (spec §10.8) ---------------------------------
     // Arms the confirmation for M110/M111 with the target derived from the

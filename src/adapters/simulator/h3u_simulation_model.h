@@ -73,7 +73,7 @@ private:
     // Coil storage (index = protocol address, extent 0-112). Address 112 is
     // in range but unused after the M112 removal; includes derived state bits
     // (M0, M1, M2, M60, M61) kept in sync by the handlers.
-    bool m_coils[113] = {};
+    bool m_coils[118] = {}; // 0..117 (M112 unused, M114-M117 test signals)
 
     // Holding registers D100-D223 (index = protocol address). D100/D103 are
     // read-only derived status words computed on read from the coils; writes

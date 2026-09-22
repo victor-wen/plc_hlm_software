@@ -48,6 +48,23 @@ QStringList manualReasons(const ShellModel &model)
     return reasons;
 }
 
+// 测试信号 M114-M117 (user decision 2026-09-22): 仅管理员 + 在线. The gate is
+// deliberately free of machine-state preconditions so the signal stays
+// injectable while the flow runs; snapshot freshness is not required either,
+// because a bench injection does not act on machine state.
+QStringList simSignalReasons(const ShellModel &model)
+{
+    QStringList reasons;
+    const PermissionResult p =
+        PermissionPolicy::check(model.role(), Command::SimUpstreamBoardIn);
+    if (!p.allowed && !p.reason.isEmpty())
+        reasons.append(p.reason);
+    reasons.append(InterlockRules::checkSimStationSignal(model.snapshot(),
+                                                         model.online())
+                       .unmet);
+    return reasons;
+}
+
 // Permission + interlock reasons for the bypass commands (spec §10.8, §11.4).
 QStringList bypassReasons(const ShellModel &model)
 {
@@ -123,6 +140,16 @@ bool ManualControlModel::canBypass() const
 QStringList ManualControlModel::bypassUnmetReasons() const
 {
     return bypassReasons(m_model);
+}
+
+bool ManualControlModel::canSimSignal() const
+{
+    return simSignalReasons(m_model).isEmpty();
+}
+
+QStringList ManualControlModel::simSignalUnmetReasons() const
+{
+    return simSignalReasons(m_model);
 }
 
 void ManualControlModel::armShield(quint16 address)

@@ -48,6 +48,11 @@ public:
     PermissionButton *beltContinuousButton() const { return m_beltContinuous; }
     PermissionButton *curtainShieldButton() const { return m_curtainShield; }
     PermissionButton *doorShieldButton() const { return m_doorShield; }
+    // 测试信号 M114-M117 (user decision 2026-09-22), keyed by protocol address.
+    PermissionButton *simSignalButton(quint16 address) const
+    {
+        return m_simSignalButtons.value(address, nullptr);
+    }
     ValueDisplay *fieldDisplay(const QString &key) const;
     QLabel *shieldBanner() const { return m_shieldBanner; }
     QString shieldBannerText() const;
@@ -64,6 +69,9 @@ signals:
     void manualHoldRequested(quint16 address, bool pressed);
     void manualLatchRequested(quint16 address, bool value);
     void bypassRequested(quint16 address, bool value);
+    // 测试信号 M114-M117: one 100 ms pulse per simulated station signal
+    // (user decision 2026-09-22). Never emitted optimistically.
+    void simStationPulseRequested(quint16 address);
 
 protected:
     // Page switch (QStackedWidget hides the page) clears the armed shield
@@ -94,7 +102,8 @@ private:
     PermissionButton *m_passthrough = nullptr;   // M105 直通
     PermissionButton *m_beltContinuous = nullptr; // M42 皮带常转
     PermissionButton *m_curtainShield = nullptr; // M110 光栅屏蔽
-    PermissionButton *m_doorShield = nullptr;    // M111 门磁屏蔽
+    PermissionButton *m_doorShield = nullptr;
+    QHash<quint16, PermissionButton *> m_simSignalButtons;    // M111 门磁屏蔽
     QLabel *m_shieldBanner = nullptr;
     QLabel *m_statusLabel = nullptr;
     QHash<QString, ValueDisplay *> m_displays;

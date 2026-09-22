@@ -25,6 +25,11 @@ constexpr quint16 kM108 = 108; // 手动皮带点动 (hold)
 constexpr quint16 kM109 = 109; // 手动挡停 (latch)
 constexpr quint16 kM110 = 110; // 光栅屏蔽
 constexpr quint16 kM111 = 111; // 门磁屏蔽
+// 测试信号 (user decision 2026-09-22): 模拟前后站信号, 台架测试用.
+constexpr quint16 kM114 = 114; // 模拟前站进板信号
+constexpr quint16 kM115 = 115; // 模拟后站要板信号
+constexpr quint16 kM116 = 116; // 模拟前站要板请求信号
+constexpr quint16 kM117 = 117; // 模拟后站出站请求信号
 } // namespace
 
 ManualControlPage::ManualControlPage(ShellModel &model, QWidget *parent)
@@ -139,6 +144,44 @@ void ManualControlPage::buildLayout()
     bypassRow->addWidget(m_doorShield);
     bypassLayout->addLayout(bypassRow);
 
+    // --- 测试信号 (M114-M117, user decision 2026-09-22) -------------------------
+    // 台架测试用: simulate the neighbouring-station handshake. Each button sends
+    // one 100 ms pulse (1 -> 100 ms -> 0) like M101/M102/M103/M43. These coils
+    // are absent from the current PLC program, so on an unchanged PLC the pulses
+    // are inert; the PLC engineer adds the rungs that consume them.
+    auto *simBox = new QFrame(this);
+    simBox->setObjectName(QStringLiteral("simSignalPanel"));
+    simBox->setFrameShape(QFrame::StyledPanel);
+    auto *simLayout = new QVBoxLayout(simBox);
+    simLayout->setSpacing(8);
+    auto *simTitle = new QLabel(QStringLiteral("测试信号 (模拟前后站)"), simBox);
+    simTitle->setObjectName(QStringLiteral("sectionTitle"));
+    simLayout->addWidget(simTitle);
+
+    auto *simRow = new QHBoxLayout();
+    simRow->setSpacing(8);
+    const struct {
+        quint16 address;
+        const char *text;
+        const char *objectName;
+    } simSignals[] = {
+        {kM114, "模拟前站进板", "simUpstreamBoardInButton"},
+        {kM115, "模拟后站要板", "simDownstreamBoardRequestButton"},
+        {kM116, "模拟前站要板请求", "simUpstreamBoardRequestButton"},
+        {kM117, "模拟后站出站请求", "simDownstreamExitRequestButton"},
+    };
+    for (const auto &signal : simSignals) {
+        auto *button = new PermissionButton(QString::fromUtf8(signal.text), simBox);
+        button->setObjectName(QString::fromUtf8(signal.objectName));
+        button->setMinimumHeight(64);
+        const quint16 address = signal.address;
+        connect(button, &QPushButton::clicked, this,
+                [this, address] { emit simStationPulseRequested(address); });
+        simRow->addWidget(button);
+        m_simSignalButtons.insert(address, button);
+    }
+    simLayout->addLayout(simRow);
+
     // --- 调宽速度 (D220, 只读显示) + 状态行 --------------------------------------
     auto *infoRow = new QHBoxLayout();
     infoRow->setSpacing(24);
@@ -153,6 +196,7 @@ void ManualControlPage::buildLayout()
 
     root->addWidget(manualBox, /*stretch=*/1);
     root->addWidget(bypassBox, /*stretch=*/1);
+    root->addWidget(simBox, /*stretch=*/1);
 
     // --- wiring -----------------------------------------------------------------
     // HoldButtons forward their hold state to the coordinator intent
@@ -337,6 +381,15 @@ void ManualControlPage::refresh()
     if (!m_pageModel.shieldArmed(kM111))
         m_doorShield->setText(m_pageModel.m111() ? QStringLiteral("屏蔽生效")
                                                  : QStringLiteral("门磁屏蔽"));
+
+    // 测试信号 gating (user decision 2026-09-22): 仅管理员 + 在线, 无机器状态
+    // 前置条件, 因此在自动流程运行中依然可注入. 每个按钮的禁用原因必须是可见
+    // 文本 (PermissionButton 已内联渲染).
+    const QStringList simReasons = m_pageModel.simSignalUnmetReasons();
+    const bool canSim = m_pageModel.canSimSignal();
+    const QString simReason = simReasons.join(QStringLiteral("；"));
+    for (PermissionButton *button : m_simSignalButtons)
+        button->setEnabledWithReason(canSim, simReason);
 
     // Status line.
     m_statusLabel->setText(m_pageModel.statusText());

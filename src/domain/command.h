@@ -18,6 +18,15 @@ enum class Command {
     EstopRelease,   // 解除软件急停 (M100=0)
     ManualCommand,  // 手动命令 M106-M109
     Bypass,         // 直通/常转/屏蔽 M105/M42/M110/M111
+    // 测试信号 (user decision 2026-09-22): the four simulated neighbouring-
+    // station handshake signals on the 手动 page, each a 100 ms pulse like
+    // M101/M102/M103/M43. The addresses are NOT in the current PLC program
+    // (M114-M117 are absent from the ladder); the PLC engineer adds the rungs
+    // that consume them, so on an unchanged PLC these pulses are inert.
+    SimUpstreamBoardIn,       // M114 模拟前站进板信号
+    SimDownstreamBoardRequest,// M115 模拟后站要板信号
+    SimUpstreamBoardRequest,  // M116 模拟前站要板请求信号
+    SimDownstreamExitRequest, // M117 模拟后站出站请求信号
     ParameterChange,// 用户/通讯/参数设置
     LogoutClear,    // 注销时清除 M42/M106-M111 (internal, not gated)
     Count           // "no command" sentinel (idle status)
