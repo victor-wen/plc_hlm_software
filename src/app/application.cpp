@@ -139,6 +139,11 @@ void Application::createObjects()
     // embedding or test injected one. Nothing is enumerated at startup and
     // enumeration never touches the gateway.
     qRegisterMetaType<SerialEnumerationResult>("hlm::SerialEnumerationResult");
+    // 扫码结果 arrives from the barcode adapter's own worker thread (user
+    // decision 2026-09-22), so the value must be registered by name for the
+    // queued connection the same way the enumeration result is.
+    qRegisterMetaType<BarcodeResult>("hlm::BarcodeResult");
+    qRegisterMetaType<BarcodeRow>("hlm::BarcodeRow");
     m_discovery = m_cfg.serialPortDiscovery;
     if (!m_discovery)
         m_discovery = new QtSerialPortDiscovery(this);
