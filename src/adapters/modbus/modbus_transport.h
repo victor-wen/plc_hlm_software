@@ -14,23 +14,26 @@ struct TransferResult {
     bool ok = false;
     QString error;
     // Read payload. For ReadRegisters: raw register values (count entries).
-    // For ReadCoils: one bit per coil packed into values[0] (bit i = coil i).
+    // For ReadCoils: the packed coil words (word w, bit i = coil 16*w + i),
+    // produced by packCoilBits.
     QList<quint16> values;
 };
 
-// Packs a ReadCoils result into the single word required by
-// TransferResult::values. Input is one entry per coil (0/1, LSB-first as
-// returned by QModbusDataUnit); output has bit i = coil i. A single-coil
-// readback (count == 1) is therefore unchanged: bit0 == the coil value.
-// Blocks are <= 16 coils (command 12, home 4), so one quint16 suffices.
-quint16 packCoilBits(const QList<quint16> &coilValues);
+// Packs a ReadCoils result into words. Input is one entry per coil (0/1,
+// LSB-first as returned by QModbusDataUnit); output word w, bit i = coil
+// 16*w + i. A single-coil readback (count == 1) is therefore unchanged
+// (bit0 == the coil value) and a block of at most 16 coils still packs into
+// exactly one word, which is what every block but the home/scan one uses.
+// The home/scan block reads M15-M53 (39 coils = 3 words), so more than one
+// word is a real case and must not be truncated.
+QList<quint16> packCoilBits(const QList<quint16> &coilValues);
 
 // Builds the TransferResult for one completed request from the raw values the
 // transport read. This is the SINGLE place the Modbus reply-to-result
 // conversion lives (qt_modbus_plc_gateway.cpp's RtuTransport only calls it),
 // so a unit test here locks the gateway wiring:
-//   - ReadCoils: rawValues is one 0/non-0 entry per coil -> packed into a
-//     single values[0] by packCoilBits (bit i = coil i).
+//   - ReadCoils: rawValues is one 0/non-0 entry per coil -> packed by
+//     packCoilBits into one word per 16 coils (word w bit i = coil 16*w+i).
 //   - ReadRegisters: register values are passed through unchanged, one entry
 //     each.
 //   - WriteCoil/WriteRegister: no read payload (values stays empty).

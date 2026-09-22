@@ -299,3 +299,22 @@ set_tests_properties(plc_hmi_009_fresh_confirm PROPERTIES
 set_tests_properties(operator_command_application plc_m112_d140_session serial_settings_application serial_settings_application_developer restricted_mode_routing restricted_routing_developer plc_hmi_005_authoritative_values plc_hmi_006_release_and_envelope plc_hmi_007_generation_rejection plc_hmi_007_cancelled_manual plc_hmi_007_cancelled_manual_developer plc_hmi_009_logout_clear plc_hmi_009_fresh_confirm PROPERTIES
     TIMEOUT 240
 )
+
+# 扫码结果文件接入 (user decision 2026-09-22): Application + the in-process
+# simulator + a real result file. QTEST_MAIN (widget surface), offscreen.
+add_executable(test_barcode_ingestion_developer barcode_ingestion_developer_test.cpp)
+target_link_libraries(test_barcode_ingestion_developer PRIVATE
+    hlm_app_core
+    hlm_simulator
+    hlm_sqlite
+    hlm_ui
+    Qt6::Test
+)
+add_test(NAME barcode_ingestion_developer COMMAND test_barcode_ingestion_developer)
+set_tests_properties(barcode_ingestion_developer PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"
+)
+
+set_tests_properties(barcode_ingestion_developer PROPERTIES
+    TIMEOUT 240
+)

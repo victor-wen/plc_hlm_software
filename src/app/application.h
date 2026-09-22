@@ -38,6 +38,7 @@
 
 #include "app/configuration.h"
 #include "application/control_coordinator.h"
+#include "domain/barcode_result.h"
 #include "domain/operator_command_status.h"
 #include "ports/iserial_port_discovery.h"
 #include "ports/repositories.h" // SettingRecord, UserRecord, SettingsBatchResult
@@ -52,6 +53,7 @@ class MainWindow;
 class IPlcGateway;
 class ControlCoordinator;
 class DatabaseService;
+class IBarcodeSource;
 class IVisionService;
 class LifecycleController;
 class UsersSettingsPage;
@@ -60,6 +62,7 @@ class ManualControlPage;
 class AlarmPage;
 class AuditLogPage;
 class DiagnosticsPage;
+class OverviewPage;
 
 class Application : public QObject
 {
@@ -93,6 +96,13 @@ private:
     void persistSerialSettings(const SerialConnectionSettings &settings);
     void handleSerialSettingsBatchSaved(const SettingsBatchResult &result);
     void handleEnumerationCompleted(const SerialEnumerationResult &result);
+    // 扫码 (user decision 2026-09-22): the result-file path is a persisted
+    // setting; the scan cycle is driven by the PLC's M15 扫码结束 coil, and the
+    // result file is read on the adapter's own worker thread.
+    void handleBarcodePathSave(const QString &path);
+    void handleBarcodePathSaved(bool ok, const QString &error);
+    void handleBarcodeResult(const BarcodeResult &result);
+    void failPendingBarcodePathSave(const QString &reason);
     void handleSettingLoaded(const std::optional<SettingRecord> &setting);
     void handleSubmissionCompleted(const SubmissionCompletion &completion);
     void handleParameterWrite(quint16 address, quint16 value);
@@ -133,6 +143,7 @@ private:
     AlarmPage *m_alarmPage = nullptr;
     AuditLogPage *m_auditPage = nullptr;
     DiagnosticsPage *m_diagPage = nullptr;
+    OverviewPage *m_overviewPage = nullptr;
 
     // Current session user id (for D204 re-verification, spec §11.3).
     qint64 m_currentUserId = -1;
@@ -146,8 +157,29 @@ private:
     quint64 m_nextSerialBatchId = 0;
     quint64 m_pendingSerialBatchId = 0;
     SerialConnectionSettings m_pendingSerialSettings;
-    int m_pendingSerialLoads = 0;
+    int m_pendingSettingLoads = 0;
     SerialConnectionSettings m_loadedSerialCfg;
+
+    // 扫码结果源 (user decision 2026-09-22). Owned, no parent: it moves to its
+    // own worker thread, exactly like DatabaseService/VisionService.
+    IBarcodeSource *m_barcodeSource = nullptr;
+    // Configured result-file path (empty = 未配置). Loaded from app_settings at
+    // startup and echoed to the settings page and the overview page.
+    QString m_barcodePath;
+    // Single-flight guard for the path save: the DB reports settingSaved()
+    // without echoing a key, so at most one save may be in flight for the
+    // correlation to be unambiguous (contract: never correlate only by FIFO
+    // position when overlapping requests can occur).
+    bool m_barcodePathSavePending = false;
+    // Value being saved (settingSaved() carries no key, so the single in-flight
+    // save's value is remembered here to render the confirmed echo).
+    QString m_pendingBarcodePath;
+    // M15 扫码结束 edge detection on the snapshot feed (rising edge only, and
+    // only from a fresh snapshot).
+    bool m_lastScanComplete = false;
+    // Latest barcode readback, rendered by the overview page. Never a
+    // machine-state value: the scanning program is the authoritative peer.
+    BarcodeResult m_lastBarcode;
 
     // Passive discovery boundary: injected or owned (created in createObjects).
     ISerialPortDiscovery *m_discovery = nullptr;

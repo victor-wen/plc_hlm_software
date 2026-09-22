@@ -144,12 +144,13 @@ void OverviewPage::buildLayout()
     m_alarmLabel->setMinimumHeight(48); // touch-target-height text line
     root->addWidget(m_alarmLabel);
 
-    // --- 条码/扫码 placeholder status (spec C-05/C-07, D1) ----------------------
-    // Display-only: the integration has no approved ingestion contract yet, so
-    // the surface must say 未配置 instead of implying a connection. No path
-    // input, no activation control, no file I/O and no scan event exists here.
-    m_barcodePlaceholder = new QLabel(
-        QStringLiteral("条码/扫码：未配置（预留）"), this);
+    // --- 条码/扫码 status line (user decision 2026-09-22) ----------------------
+    // Display-only. The scanning program is an external peer, so this surface
+    // only ever shows what the PLC coil M15 and the result file reported; it
+    // never claims a connection, and with no result path configured it stays
+    // the 未配置 placeholder (contract: keep barcode integration visibly
+    // not-configured until a path is set).
+    m_barcodePlaceholder = new QLabel(this);
     m_barcodePlaceholder->setObjectName(QStringLiteral("barcodePlaceholderStatus"));
     m_barcodePlaceholder->setMinimumHeight(48); // touch-target-height text line
     root->addWidget(m_barcodePlaceholder);
@@ -193,6 +194,28 @@ QLabel *OverviewPage::productionCountDisclosureLabel() const
 QLabel *OverviewPage::barcodePlaceholderLabel() const
 {
     return m_barcodePlaceholder;
+}
+
+void OverviewPage::setBarcodeResultPath(const QString &path)
+{
+    m_barcodePath = path.trimmed();
+    // A new path invalidates the previous readback: the value on screen must
+    // never be one the current path did not produce.
+    m_barcodeResult = BarcodeResult();
+    m_barcodeResultSet = false;
+    refresh();
+}
+
+void OverviewPage::setBarcodeResult(const BarcodeResult &result)
+{
+    m_barcodeResult = result;
+    m_barcodeResultSet = true;
+    refresh();
+}
+
+QString OverviewPage::barcodeText() const
+{
+    return m_barcodePlaceholder ? m_barcodePlaceholder->text() : QString();
 }
 
 QString OverviewPage::latestAlarmText() const
@@ -269,6 +292,40 @@ void OverviewPage::refresh()
 
     // Latest alarm line.
     m_alarmLabel->setText(m_pageModel.latestAlarmText());
+
+    // 条码/扫码 status line (user decision 2026-09-22). The text is a pure
+    // function of the configured path, the PLC's M11 相机触发中 coil and the
+    // last readback, so a page refresh (every snapshot) keeps it current
+    // without the composition root re-pushing anything.
+    m_barcodePlaceholder->setText(barcodeStatusText());
+}
+
+// Renders the 条码/扫码 line. Kept in one place so the "never claim a
+// connection" rule (contract: barcode integration stays visibly
+// not-configured) is enforced by construction: 未配置 appears whenever no
+// result path is configured, and no branch ever says 已连接/在线.
+QString OverviewPage::barcodeStatusText() const
+{
+    if (m_barcodePath.isEmpty())
+        return QStringLiteral("条码/扫码：未配置（预留）");
+
+    const bool scanning = m_pageModel.m11();
+    if (!m_barcodeResultSet)
+        return scanning ? QStringLiteral("条码：扫码中…")
+                        : QStringLiteral("条码：已配置，等待扫码");
+
+    switch (m_barcodeResult.state) {
+    case BarcodeState::NotConfigured:
+        // The path was cleared between the read and this render.
+        return QStringLiteral("条码/扫码：未配置（预留）");
+    case BarcodeState::Ok:
+        return QStringLiteral("条码：%1").arg(m_barcodeResult.line);
+    case BarcodeState::NoNewResult:
+        return QStringLiteral("条码：本轮未读到条码（结果文件未更新）");
+    case BarcodeState::Failed:
+        return QStringLiteral("条码：读取失败 — %1").arg(m_barcodeResult.detail);
+    }
+    return QStringLiteral("条码/扫码：未配置（预留）");
 }
 
 } // namespace hlm

@@ -16,12 +16,29 @@ namespace {
 // Poll block definitions (spec §8.3). 0-based protocol addresses.
 constexpr quint16 kFastStart = 100;    // D100
 constexpr quint16 kFastCount = 41;     // D100-D140
+// Home/scan coil block (function code 01). One transaction carries both the
+// M15 扫码结束 flag and the M50-M53 home-return bits: M15 is read as a coil
+// (user decision 2026-09-22), never from D100 bit15, so a second request would
+// share this block's cadence and evidence anyway while adding a second
+// transaction. M15 and M50 are 35 coils apart, hence the 39-coil span
+// (3 packed words).
+constexpr quint16 kScanStart = 15;     // M15 扫码结束 (block start)
 constexpr quint16 kHomeStart = 50;     // M50
 constexpr quint16 kHomeCount = 4;      // M50-M53
+constexpr quint16 kHomeBlockStart = kScanStart;
+constexpr quint16 kHomeBlockCount = kHomeStart + kHomeCount - kScanStart; // 39
 constexpr quint16 kCommandStart = 100; // M100
 constexpr quint16 kCommandCount = 12;  // M100-M111 (M112 removed, D3)
 constexpr quint16 kSlowStart = 204;    // D204
 constexpr quint16 kSlowCount = 20;     // D204-D223
+
+// Bit `index` of a packed coil block (word index/16, bit index%16).
+bool coilBit(const QList<quint16> &words, int index)
+{
+    const int word = index / 16;
+    return word < words.size()
+        && (words.at(word) & (quint16(1) << (index % 16))) != 0;
+}
 
 // D140 heartbeat freeze threshold (spec §8.4).
 constexpr qint64 kHeartbeatFreezeMs = 3000;
@@ -536,8 +553,8 @@ void ModbusGatewayWorker::onPollTick()
         m_lastHomeMs = now;
         ModbusRequest req;
         req.kind = ModbusRequest::Kind::ReadCoils;
-        req.address = kHomeStart;
-        req.count = kHomeCount;
+        req.address = kHomeBlockStart;
+        req.count = kHomeBlockCount;
         req.cls = RequestClass::HomePoll;
         req.retriesLeft = m_cfg.readRetries;
         m_queue.enqueuePoll(req);
@@ -942,6 +959,7 @@ void ModbusGatewayWorker::handleReadResult(const ModbusRequest &req, const Trans
                    | (quint32(1) << quint8(SnapshotField::WidthSpeed)));
             const quint16 homeBits = m_data.homeBits;
             const quint16 commandBits = m_data.commandBits;
+            const bool scanComplete = m_data.scanComplete;
             m_data = decodeFastBlock(raw, 0, true, ageMs, started, started,
                                      DataQuality::Valid);
             m_data.pulsePerMm = pulsePerMm;
@@ -949,6 +967,7 @@ void ModbusGatewayWorker::handleReadResult(const ModbusRequest &req, const Trans
             m_data.widthSpeed = widthSpeed;
             m_data.homeBits = homeBits;
             m_data.commandBits = commandBits;
+            m_data.scanComplete = scanComplete;
             m_data.invalidFields |= slowInvalid;
             m_fastEvidence = BlockEvidence::Valid;
             m_lastFastSuccessMs = now;
@@ -976,8 +995,18 @@ void ModbusGatewayWorker::handleReadResult(const ModbusRequest &req, const Trans
     // in place; the next fast poll publishes the recomputed quality/ages (no
     // extra snapshot per block — mirrors the original publication cadence).
     if (req.cls == RequestClass::HomePoll) {
-        if (!res.values.isEmpty())
-            m_data.homeBits = res.values.first();
+        if (res.values.size() >= (kHomeBlockCount + 15) / 16) {
+            // M15 扫码结束: block index 0 (user decision 2026-09-22).
+            m_data.scanComplete = coilBit(res.values, 0);
+            // M50-M53: block indices 35-38, re-packed into homeBits bits 0-3 so
+            // DeviceSnapshot's home accessors keep their meaning.
+            quint16 bits = 0;
+            for (int i = 0; i < kHomeCount; ++i) {
+                if (coilBit(res.values, (kHomeStart - kHomeBlockStart) + i))
+                    bits |= quint16(1) << i;
+            }
+            m_data.homeBits = bits;
+        }
         m_homeEvidence = BlockEvidence::Valid;
         m_lastHomeSuccessMs = now;
         return;

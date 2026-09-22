@@ -10,6 +10,7 @@
 #include <QThread>
 #include <QTimer>
 
+#include "adapters/barcode/barcode_file_source.h"
 #include "adapters/modbus/qt_modbus_plc_gateway.h"
 #include "adapters/modbus/qt_serial_port_discovery.h"
 #include "adapters/simulator/simulated_plc_gateway.h"
@@ -27,6 +28,7 @@
 #include "ui/pages/audit_log_page.h"
 #include "ui/pages/diagnostics_page.h"
 #include "ui/pages/manual_control_page.h"
+#include "ui/pages/overview_page.h"
 #include "ui/pages/recipe_width_page.h"
 #include "ui/pages/users_settings_page.h"
 #include "ui/shell/shell_model.h"
@@ -44,6 +46,10 @@ constexpr const char *kSerialStopBits = "serial.stopBits";
 constexpr const char *kSerialParity = "serial.parity";
 constexpr const char *kSerialTimeoutMs = "serial.timeoutMs";
 constexpr const char *kSerialReadRetries = "serial.readRetries";
+
+// 扫码结果文件路径 (user decision 2026-09-22): the external scanning program
+// writes its results here; an empty value keeps the feature visibly 未配置.
+constexpr const char *kBarcodeResultPath = "barcode.resultPath";
 
 constexpr quint16 kD122 = 122; // 皮带速度
 constexpr quint16 kD204 = 204; // 脉冲当量
@@ -97,6 +103,8 @@ Application::~Application()
     // other application objects which the window still references.
     delete m_window;
     m_window = nullptr;
+    delete m_barcodeSource;
+    m_barcodeSource = nullptr;
     delete m_vision;
     m_vision = nullptr;
     delete m_db;
@@ -119,6 +127,7 @@ void Application::createObjects()
     m_alarmPage = m_window->findChild<AlarmPage *>();
     m_auditPage = m_window->findChild<AuditLogPage *>();
     m_diagPage = m_window->findChild<DiagnosticsPage *>();
+    m_overviewPage = m_window->findChild<OverviewPage *>();
 
     // Passive serial discovery (spec §8.1, C-11): the configuration carries
     // only the port pointer; the real adapter is composed here unless an
@@ -155,6 +164,12 @@ void Application::createObjects()
         if (auto *sim = qobject_cast<SimulatedPlcGateway *>(m_gw))
             sim->tick();
     });
+
+    // 扫码结果源 (user decision 2026-09-22): created WITHOUT a parent so it can
+    // move to its own worker thread; the path arrives from app_settings after
+    // the database is ready. It is never given the PLC gateway: reading the
+    // result file must not share the HMI's single H3U RTU control channel.
+    m_barcodeSource = new BarcodeFileSource(nullptr);
 
     // Coordinator: PulseTransport routes into the revised submission port
     // (spec §8.5, PLC-HMI-003 D1/D5). Every callback returns the structured
@@ -310,6 +325,19 @@ void Application::wireSignals()
             &Application::handleParameterWrite);
     connect(m_usersPage, &UsersSettingsPage::d204WriteRequested, this,
             &Application::handleD204Write);
+    connect(m_usersPage, &UsersSettingsPage::saveBarcodePathRequested, this,
+            &Application::handleBarcodePathSave);
+    connect(m_barcodeSource, &IBarcodeSource::resultReady, this,
+            &Application::handleBarcodeResult);
+    // settingSaved() carries no key: the barcode path save is the only
+    // production user of DatabaseService::setSetting and is single-flight, so
+    // an arrival while none is pending is not ours and is ignored.
+    connect(m_db, &DatabaseService::settingSaved, this,
+            [this](bool ok, const QString &error) {
+                if (!m_barcodePathSavePending)
+                    return;
+                handleBarcodePathSaved(ok, error);
+            });
 
     // --- RecipeWidthPage -> coordinator / database ---------------------------
     connect(m_recipePage, &RecipeWidthPage::applyAdjustRequested, m_coordinator,
@@ -482,6 +510,14 @@ void Application::wireGateway(IPlcGateway *gw)
                     return; // obsolete gateway generation: rejected
                 m_coordinator->onSnapshot(s);
                 m_shell->updateSnapshot(s);
+                // M15 扫码结束 rising edge (user decision 2026-09-22): the scan
+                // cycle ended, so read the result file. Gated on a fresh
+                // snapshot so a stale M15 readback can never trigger a read,
+                // and edge-only so a held M15 does not re-read every poll.
+                const bool scanComplete = m_shell->snapshotFresh() && s.m15();
+                if (scanComplete && !m_lastScanComplete)
+                    m_barcodeSource->requestRead();
+                m_lastScanComplete = scanComplete;
                 m_db->feedPlcAlarmSnapshot(s.faultCode(), s.m14(), s.m4(),
                                            s.sequence());
             });
@@ -539,6 +575,10 @@ void Application::start()
         startGatewayIfNeeded();
     if (m_vision)
         m_vision->start();
+    // 扫码结果源 worker thread (user decision 2026-09-22): started after the
+    // database load so the configured path is already in place.
+    if (m_barcodeSource)
+        m_barcodeSource->start();
     m_lifecycle->startSessionTimer();
     m_window->show();
 }
@@ -589,6 +629,10 @@ void Application::shutdown()
     m_gatewayStarted = false;
     if (m_db)
         m_db->stop();
+    // 扫码结果源: converge a pending path save, then stop the worker thread.
+    failPendingBarcodePathSave(QStringLiteral("通讯中断"));
+    if (m_barcodeSource)
+        m_barcodeSource->stop();
     if (m_vision)
         m_vision->stop();
 }
@@ -601,8 +645,10 @@ void Application::onReady()
     m_db->listUsers();
     m_db->listRecipes();
     m_db->runRetentionCleanup();
-    // Load the persisted serial config for echo (spec §8.1).
-    m_pendingSerialLoads = 7;
+    // Load the persisted settings for echo (spec §8.1): the seven serial keys
+    // plus the 扫码结果文件路径 (user decision 2026-09-22).
+    m_pendingSettingLoads = 8;
+    m_db->getSetting(QString::fromLatin1(kBarcodeResultPath));
     m_db->getSetting(QString::fromLatin1(kSerialComPort));
     m_db->getSetting(QString::fromLatin1(kSerialStation));
     m_db->getSetting(QString::fromLatin1(kSerialBaudRate));
@@ -684,15 +730,26 @@ void Application::handleEnumerationCompleted(const SerialEnumerationResult &resu
 
 void Application::handleSettingLoaded(const std::optional<SettingRecord> &setting)
 {
-    if (m_pendingSerialLoads <= 0)
+    if (m_pendingSettingLoads <= 0)
         return;
     // Count every load (including a missing key) so first run uses defaults.
-    --m_pendingSerialLoads;
+    --m_pendingSettingLoads;
     if (setting) {
         const QString &key = setting->key;
         const QString &value = setting->typedValue;
         bool ok = false;
-        if (key == QString::fromLatin1(kSerialComPort)) {
+        if (key == QString::fromLatin1(kBarcodeResultPath)) {
+            // 扫码结果文件路径 (user decision 2026-09-22): an empty value keeps
+            // the feature visibly 未配置 rather than pretending it works.
+            m_barcodePath = value;
+            if (m_barcodeSource != nullptr)
+                m_barcodeSource->setResultPath(m_barcodePath);
+            m_usersPage->setBarcodeResultPath(m_barcodePath);
+            // The overview surface must reflect a persisted path at startup,
+            // not only after the first scan cycle.
+            if (m_overviewPage != nullptr)
+                m_overviewPage->setBarcodeResultPath(m_barcodePath);
+        } else if (key == QString::fromLatin1(kSerialComPort)) {
             m_loadedSerialCfg.port_name = value;
         } else if (key == QString::fromLatin1(kSerialStation)) {
             const int v = value.toInt(&ok);
@@ -719,10 +776,10 @@ void Application::handleSettingLoaded(const std::optional<SettingRecord> &settin
         }
     }
 
-    if (m_pendingSerialLoads > 0)
+    if (m_pendingSettingLoads > 0)
         return;
 
-    m_pendingSerialLoads = 0;
+    m_pendingSettingLoads = 0;
     m_usersPage->setSerialSettings(m_loadedSerialCfg);
     // An injected gateway (S-INJECT, PLC-HMI-007 D7) is caller-owned: the
     // persisted serial settings must not replace it.
@@ -955,6 +1012,94 @@ void Application::handleManualWidthSpeedWrite(quint16 value)
         return;
     }
     submitParameterWrite(kD220, value, ParamWriteSink::Manual);
+}
+
+// --- 扫码结果文件路径 (user decision 2026-09-22) -------------------------------
+
+void Application::handleBarcodePathSave(const QString &path)
+{
+    // Same single restricted-mode verdict as every other user-initiated write
+    // (PLC-HMI-008 D1).
+    if (m_lifecycle != nullptr
+        && !m_lifecycle->commandAllowed(Command::ParameterChange)) {
+        m_usersPage->setBarcodePathSaveResult(
+            false, m_lifecycle->commandRejectionReason());
+        return;
+    }
+    if (m_barcodePathSavePending) {
+        // Immediate visible rejection: the accepted request owns the save and
+        // the duplicate is never queued or silently dropped. Single-flight is
+        // also what makes the key-less settingSaved() signal unambiguous.
+        m_usersPage->setBarcodePathSaveResult(
+            false, QStringLiteral("已有路径保存请求正在处理中，本次请求未提交"));
+        return;
+    }
+    const QString trimmed = path.trimmed();
+    if (trimmed.contains(QLatin1Char('\n')) || trimmed.contains(QLatin1Char('\r'))) {
+        m_usersPage->setBarcodePathSaveResult(
+            false, QStringLiteral("路径不能包含换行符"));
+        return;
+    }
+
+    m_barcodePathSavePending = true;
+    m_pendingBarcodePath = trimmed;
+    SettingRecord record;
+    record.key = QString::fromLatin1(kBarcodeResultPath);
+    record.typedValue = trimmed;
+    record.updatedBy = m_lifecycle ? m_lifecycle->currentUsername()
+                                   : QStringLiteral("anonymous");
+    record.updatedAt = QDateTime::currentDateTime();
+    m_db->setSetting(record);
+
+    // Defensive timeout: a lost database completion must never leave the page
+    // pending (contract: never leave an accepted write pending indefinitely).
+    QTimer::singleShot(kParamWriteTimeoutMs, this, [this]() {
+        if (m_barcodePathSavePending) {
+            failPendingBarcodePathSave(
+                QStringLiteral("扫码路径保存确认超时"));
+        }
+    });
+}
+
+void Application::handleBarcodePathSaved(bool ok, const QString &error)
+{
+    m_barcodePathSavePending = false;
+    if (!ok) {
+        m_usersPage->setBarcodePathSaveResult(
+            false, error.isEmpty() ? QStringLiteral("扫码路径保存失败") : error);
+        return;
+    }
+    m_barcodePath = m_pendingBarcodePath;
+    m_pendingBarcodePath.clear();
+    if (m_barcodeSource != nullptr)
+        m_barcodeSource->setResultPath(m_barcodePath);
+    m_usersPage->setBarcodeResultPath(m_barcodePath);
+    m_usersPage->setBarcodePathSaveResult(true, QString());
+    // The displayed barcode belonged to the previous path: drop it back to the
+    // not-configured/awaiting state until the next scan cycle reads the new
+    // file (never show a value that the current path did not produce).
+    m_lastBarcode = BarcodeResult();
+    if (m_overviewPage != nullptr)
+        m_overviewPage->setBarcodeResultPath(m_barcodePath);
+}
+
+void Application::failPendingBarcodePathSave(const QString &reason)
+{
+    if (!m_barcodePathSavePending)
+        return;
+    m_barcodePathSavePending = false;
+    m_pendingBarcodePath.clear();
+    m_usersPage->setBarcodePathSaveResult(false, reason);
+}
+
+void Application::handleBarcodeResult(const BarcodeResult &result)
+{
+    // Readback only: the scanning program is the authoritative peer, so the
+    // outcome is displayed exactly as reported (Ok/NoNewResult/Failed), never
+    // turned into a success claim. The full barcode value is never logged.
+    m_lastBarcode = result;
+    if (m_overviewPage != nullptr)
+        m_overviewPage->setBarcodeResult(result);
 }
 
 void Application::handleSubmissionCompleted(const SubmissionCompletion &completion)

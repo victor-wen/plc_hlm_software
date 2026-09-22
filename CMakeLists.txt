@@ -62,6 +62,7 @@ add_library(hlm_core STATIC
     # Header-only Q_OBJECT boundary; listed so AUTOMOC emits its meta-object
     # into hlm_core (same pattern as iplc_gateway.h/ivision_service.h).
     src/ports/iserial_port_discovery.h
+    src/ports/ibarcode_source.h
     src/ports/ivision_service.cpp
 )
 target_include_directories(hlm_core PUBLIC src)
@@ -138,6 +139,18 @@ if(HLM_ENABLE_VISION)
         opencv_core
     )
 endif()
+
+# hlm_barcode: IBarcodeSource file adapter (user decision 2026-09-22). The
+# scanning program is external; the only I/O here is reading one text file on
+# the adapter's own worker thread. No scanner SDK, no camera, no Qt Widgets.
+add_library(hlm_barcode STATIC
+    src/adapters/barcode/barcode_file_source.cpp
+)
+target_include_directories(hlm_barcode PUBLIC src)
+target_link_libraries(hlm_barcode PUBLIC
+    hlm_core
+    Qt6::Core
+)
 
 # hlm_ui: Qt Widgets UI shell and shared industrial widgets (spec §6, §11).
 # UI never touches Modbus or SQL directly; it binds to ShellModel which the
@@ -227,6 +240,7 @@ target_link_libraries(hlm_app_core PUBLIC
     hlm_modbus
     hlm_sqlite
     hlm_simulator
+    hlm_barcode
     hlm_ui
     Qt6::Widgets
 )

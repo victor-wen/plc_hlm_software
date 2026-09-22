@@ -79,6 +79,9 @@ private slots:
     void pageShowsLatestAlarm();
     void pageFullSnapshotUpdateReplacesAllFields();
 
+    // --- 条码/扫码 status line (user decision 2026-09-22) ----------------------
+    void barcodeStatusLineFollowsPathAndResult();
+
     // --- read-only page (no write intents) ------------------------------------
     void pageDeclaresNoSignals();
     void pageNeverSendsWriteIntents();
@@ -285,6 +288,62 @@ void OverviewPageTest::pageFullSnapshotUpdateReplacesAllFields()
              QStringLiteral("1200 Hz"));
     QCOMPARE(page.fieldDisplay(QStringLiteral("productionCount"))->text(),
              QStringLiteral("1000 件"));
+}
+
+// --- 条码/扫码 status line ------------------------------------------------------
+
+void OverviewPageTest::barcodeStatusLineFollowsPathAndResult()
+{
+    ShellModel model;
+    OverviewPage page(model);
+
+    // No result path configured: the surface stays the 未配置 placeholder and
+    // never claims a connection (contract: visibly not-configured).
+    QVERIFY(page.barcodeText().contains(QStringLiteral("未配置")));
+    QVERIFY(!page.barcodeText().contains(QStringLiteral("已连接")));
+    QVERIFY(!page.barcodeText().contains(QStringLiteral("在线")));
+
+    // Path configured, no scan cycle read yet.
+    page.setBarcodeResultPath(QStringLiteral("D:/扫码/Barcode.txt"));
+    QVERIFY(page.barcodeText().contains(QStringLiteral("等待扫码")));
+    QVERIFY(!page.barcodeText().contains(QStringLiteral("已连接")));
+
+    // The PLC's M11 相机触发中 coil drives the 扫码中 indication: the HMI only
+    // observes it (user decision 2026-09-22).
+    model.setUser(QStringLiteral("admin"), Role::Admin);
+    DeviceSnapshotData scanning = validSnapshotData();
+    scanning.statusWord1 |= (quint16(1) << 11); // M11
+    model.updateSnapshot(DeviceSnapshot(scanning));
+    QVERIFY(page.barcodeText().contains(QStringLiteral("扫码中")));
+
+    // A successful read shows the raw line exactly as the scanning program
+    // wrote it.
+    BarcodeResult ok;
+    ok.state = BarcodeState::Ok;
+    ok.line = QStringLiteral("C3003090^M10^260224^002700");
+    page.setBarcodeResult(ok);
+    QVERIFY(page.barcodeText().contains(QStringLiteral("C3003090^M10^260224^002700")));
+
+    // An unchanged file is reported as such, never as this cycle's barcode.
+    BarcodeResult unchanged;
+    unchanged.state = BarcodeState::NoNewResult;
+    unchanged.detail = QStringLiteral("本轮未读到条码（结果文件未更新）");
+    page.setBarcodeResult(unchanged);
+    QVERIFY(page.barcodeText().contains(QStringLiteral("本轮未读到条码")));
+    QVERIFY(!page.barcodeText().contains(QStringLiteral("C3003090")));
+
+    // A read failure carries its reason.
+    BarcodeResult failed;
+    failed.state = BarcodeState::Failed;
+    failed.detail = QStringLiteral("扫码结果文件不存在");
+    page.setBarcodeResult(failed);
+    QVERIFY(page.barcodeText().contains(QStringLiteral("读取失败")));
+    QVERIFY(page.barcodeText().contains(QStringLiteral("扫码结果文件不存在")));
+
+    // Clearing the path goes back to the placeholder even with a stale result.
+    page.setBarcodeResultPath(QString());
+    QVERIFY(page.barcodeText().contains(QStringLiteral("未配置")));
+    QVERIFY(!page.barcodeText().contains(QStringLiteral("已连接")));
 }
 
 // --- read-only page (no write intents) -----------------------------------------

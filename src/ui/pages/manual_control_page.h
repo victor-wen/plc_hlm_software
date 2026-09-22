@@ -16,9 +16,10 @@ class PermissionButton;
 class ValueDisplay;
 class ShellModel;
 
-// 手动控制 page (spec §11.3): 皮带点动、调宽正反转、挡停、D220、M42、M105、
-// M110、M111; 机器命令操作员只读 (spec §11.4), 调宽速度 D220 由管理员在此页
-// 直接配置 (user decision 2026-09-22).
+// 手动控制 page (spec §11.3): 皮带点动、调宽正反转、挡停、D220、M42、M105;
+// 机器命令操作员只读 (spec §11.4), 调宽速度 D220 由管理员在此页直接配置
+// (user decision 2026-09-22). 安全光栅 (M110) 与门磁 (M111) 已从此页移除
+// (user decision 2026-09-22).
 //
 // The page binds ManualControlModel to widgets. It never touches Modbus or
 // SQL: manualHoldRequested / manualLatchRequested / bypassRequested intents
@@ -31,9 +32,11 @@ class ShellModel;
 // deactivation cancel the active hold (spec §10.7). The page forwards
 // holdChanged to manualHoldRequested.
 //
-// 安全屏蔽 (M110/M111) is two-step: the first click arms a "确认屏蔽?" state,
-// the second dispatches (spec §10.8 二次确认). While a shield is active
-// (readback m110()/m111()=1) the page shows a persistent amber banner.
+// 安全屏蔽 (M110/M111) is NOT surfaced on this page (user decision
+// 2026-09-22: 手动界面去掉安全光栅和门磁): no two-step confirm buttons and no
+// 安全屏蔽生效 banner. ManualControlModel keeps the shield API and the
+// coordinator keeps M110/M111 writable, so nothing else in the interlock chain
+// changes.
 class ManualControlPage : public QWidget
 {
     Q_OBJECT
@@ -48,8 +51,6 @@ public:
     PermissionButton *stopGateButton() const { return m_stopGate; }
     PermissionButton *passthroughButton() const { return m_passthrough; }
     PermissionButton *beltContinuousButton() const { return m_beltContinuous; }
-    PermissionButton *curtainShieldButton() const { return m_curtainShield; }
-    PermissionButton *doorShieldButton() const { return m_doorShield; }
     // 测试信号 M114-M117 (user decision 2026-09-22), keyed by protocol address.
     PermissionButton *simSignalButton(quint16 address) const
     {
@@ -62,8 +63,6 @@ public:
     QSpinBox *widthSpeedSpin() const { return m_widthSpeedSpin; }
     PermissionButton *writeWidthSpeedButton() const { return m_writeWidthSpeed; }
     QString widthSpeedResultText() const;
-    QLabel *shieldBanner() const { return m_shieldBanner; }
-    QString shieldBannerText() const;
     QLabel *statusLabel() const { return m_statusLabel; }
     QLabel *widthReasonLabel() const { return m_widthReason; }
     QString statusText() const;
@@ -90,8 +89,10 @@ signals:
     void widthSpeedWriteRequested(quint16 value);
 
 protected:
-    // Page switch (QStackedWidget hides the page) clears the armed shield
-    // confirmation (spec §10.8 二次确认, §11.1-§11.2 页面切换清零意图).
+    // Page switch (QStackedWidget hides the page) clears any armed shield
+    // confirmation still held by the model (spec §10.8 二次确认, §11.1-§11.2
+    // 页面切换清零意图). The page no longer renders the M110/M111 shield
+    // controls (user decision 2026-09-22), so nothing is re-labelled here.
     void hideEvent(QHideEvent *event) override;
 
 private:
@@ -99,8 +100,6 @@ private:
     QWidget *addField(const QString &key, const QString &title);
     void onStopGateClicked();
     void onWriteWidthSpeedClicked();
-    void onShieldClicked(PermissionButton *button, quint16 address);
-    void disarmShield(PermissionButton *button, quint16 address);
 
     ShellModel &m_model;
     ManualControlModel m_pageModel;
@@ -118,10 +117,7 @@ private:
     QLabel *m_widthRevReason = nullptr;
     PermissionButton *m_passthrough = nullptr;   // M105 直通
     PermissionButton *m_beltContinuous = nullptr; // M42 皮带常转
-    PermissionButton *m_curtainShield = nullptr; // M110 光栅屏蔽
-    PermissionButton *m_doorShield = nullptr;
-    QHash<quint16, PermissionButton *> m_simSignalButtons;    // M111 门磁屏蔽
-    QLabel *m_shieldBanner = nullptr;
+    QHash<quint16, PermissionButton *> m_simSignalButtons; // M114-M117 测试信号
     QLabel *m_statusLabel = nullptr;
     QHash<QString, ValueDisplay *> m_displays;
     // 调宽速度 D220 editor (user decision 2026-09-22): configurable from the

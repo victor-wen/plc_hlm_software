@@ -104,6 +104,7 @@ private slots:
     void writeRejectedUntilFirstSnapshotAfterReconnect();
     void slowPollOutOfRangeMarksFieldsInvalid();
     void fastPollPreservesHomeAndCommandBits();
+    void scanCompleteBitIsReadFromTheHomeBlock();
     void packCoilBitsPacksLsbFirst();
     void makeTransferResultConvertsByKind();
     // Task 20: pulse state machine, comm stats.
@@ -758,7 +759,10 @@ void GatewayTest::fastPollPreservesHomeAndCommandBits()
     m_worker->onPollTick();
     m_transport->completeOk(fastBlock(2)); // in-flight fast poll first
     QCOMPARE(m_transport->sent.last().cls, RequestClass::HomePoll);
-    m_transport->completeOk({0x000A}); // M51 + M53
+    // The home/scan block is M15-M53 (39 coils = 3 words): word0 bit0 = M15,
+    // M50-M53 = block indices 35-38 -> word2 bits 3-6. This reply sets
+    // M51 + M53 (word2 bits 4 and 6) and leaves M15 clear.
+    m_transport->completeOk({0x0000, 0x0000, 0x0050});
     QCOMPARE(m_transport->sent.last().cls, RequestClass::CommandPoll);
     m_transport->completeOk({0x0801}); // M100 + M111 (M112 removed)
 
@@ -774,6 +778,57 @@ void GatewayTest::fastPollPreservesHomeAndCommandBits()
     QVERIFY(m_lastSnapshot.m111());
     QVERIFY(!m_lastSnapshot.m50());
     QVERIFY(!m_lastSnapshot.m101());
+}
+
+void GatewayTest::scanCompleteBitIsReadFromTheHomeBlock()
+{
+    // M15 扫码结束 is read as a coil in the home/scan block (user decision
+    // 2026-09-22), not from D100 bit15. Block layout: M15-M53 (39 coils = 3
+    // words), word0 bit0 = M15, M50-M53 = word2 bits 3-6.
+    m_transport->completeOk(fastBlock(1)); // first fast poll -> online
+    QVERIFY(m_worker->isOnline());
+    QVERIFY(!m_lastSnapshot.m15()); // default: scan not complete
+
+    // Enable home + command polls; at 300 ms they enqueue alongside fast.
+    m_worker->setPollIntervals(250, 250, 250, 1000000);
+    m_now = 300;
+    m_worker->onPollTick();
+    m_transport->completeOk(fastBlock(2)); // in-flight fast poll first
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::HomePoll);
+    // M15 set (word0 bit0) and M50 set (block index 35 -> word2 bit3).
+    m_transport->completeOk({0x0001, 0x0000, 0x0008});
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::CommandPoll);
+    m_transport->completeOk({0x0000});
+
+    // The next fast poll publishes the snapshot carrying the scan flag.
+    m_now = 600;
+    m_worker->onPollTick();
+    m_transport->completeOk(fastBlock(3));
+    QCOMPARE(m_snapshots, 3);
+    QVERIFY(m_lastSnapshot.m15());
+    QVERIFY(m_lastSnapshot.m50());
+    QVERIFY(!m_lastSnapshot.m51());
+    // Drain the home/command polls enqueued on this tick so the next phase
+    // starts from an empty queue.
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::HomePoll);
+    m_transport->completeOk({0x0001, 0x0000, 0x0008});
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::CommandPoll);
+    m_transport->completeOk({0x0000});
+
+    // A reply too short to hold the whole 3-word block is not decoded at all:
+    // the previous M15/M50-M53 values survive instead of a partial update.
+    m_now = 900;
+    m_worker->onPollTick();
+    m_transport->completeOk(fastBlock(4));
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::HomePoll);
+    m_transport->completeOk({0x0000}); // truncated: no word 2
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::CommandPoll);
+    m_transport->completeOk({0x0000});
+    m_now = 1200;
+    m_worker->onPollTick();
+    m_transport->completeOk(fastBlock(5));
+    QVERIFY(m_lastSnapshot.m15());  // unchanged
+    QVERIFY(m_lastSnapshot.m50());  // unchanged
 }
 
 // ---------------------------------------------------------------------------
@@ -950,7 +1005,7 @@ void GatewayTest::commStatsEmitted()
 void GatewayTest::packCoilBitsPacksLsbFirst()
 {
     // Contract (modbus_transport.h): a ReadCoils result packs one bit per coil
-    // into values[0], bit i = coil i.
+    // into word i/16, bit i%16 = coil i.
 
     // Generic 13-coil response fixture (bit0 + bit12, arbitrary positions):
     // packCoilBits is block-size agnostic. The live command poll block is
@@ -958,18 +1013,29 @@ void GatewayTest::packCoilBitsPacksLsbFirst()
     QList<quint16> command(13, 0);
     command[0] = 1;
     command[12] = 1;
-    QCOMPARE(packCoilBits(command), quint16((1 << 0) | (1 << 12)));
+    QCOMPARE(packCoilBits(command), QList<quint16>{quint16((1 << 0) | (1 << 12))});
 
     // Home block (4 coils): M51 + M53.
-    QCOMPARE(packCoilBits({0, 1, 0, 1}), quint16((1 << 1) | (1 << 3)));
+    QCOMPARE(packCoilBits({0, 1, 0, 1}), QList<quint16>{quint16((1 << 1) | (1 << 3))});
 
     // Single-coil readback: bit0 == the coil value (count == 1).
-    QCOMPARE(packCoilBits({1}), quint16(1));
-    QCOMPARE(packCoilBits({0}), quint16(0));
+    QCOMPARE(packCoilBits({1}), QList<quint16>{quint16(1)});
+    QCOMPARE(packCoilBits({0}), QList<quint16>{quint16(0)});
 
-    // Empty / all-zero.
-    QCOMPARE(packCoilBits({}), quint16(0));
-    QCOMPARE(packCoilBits(QList<quint16>(13, 0)), quint16(0));
+    // Empty / all-zero: a coil read always yields at least one word so callers
+    // can index values[0].
+    QCOMPARE(packCoilBits({}), QList<quint16>{quint16(0)});
+    QCOMPARE(packCoilBits(QList<quint16>(13, 0)), QList<quint16>{quint16(0)});
+
+    // The home/scan block is M15-M53 (39 coils = 3 words). Word 0 bit 0 = M15,
+    // M50 = block index 35 -> word 2 bit 3. A >16-coil block must not be
+    // truncated to one word.
+    QList<quint16> homeScan(39, 0);
+    homeScan[0] = 1;  // M15
+    homeScan[35] = 1; // M50
+    homeScan[38] = 1; // M53
+    QCOMPARE(packCoilBits(homeScan),
+             QList<quint16>({quint16(0x0001), quint16(0x0000), quint16(0x0048)}));
 }
 
 void GatewayTest::makeTransferResultConvertsByKind()
@@ -986,6 +1052,18 @@ void GatewayTest::makeTransferResultConvertsByKind()
     QVERIFY(four.ok);
     QCOMPARE(four.values.size(), 1); // guards against per-coil append
     QCOMPARE(four.values.first(), quint16(0b0101));
+
+    // A >16-coil block yields one word per 16 coils (the home/scan block is
+    // 39 coils = 3 words) instead of being truncated.
+    QList<quint16> homeScan(39, 0);
+    homeScan[0] = 1;  // M15
+    homeScan[35] = 1; // M50
+    const TransferResult scan =
+        makeTransferResult(coils, true, QString(), homeScan);
+    QVERIFY(scan.ok);
+    QCOMPARE(scan.values.size(), 3);
+    QCOMPARE(scan.values.at(0), quint16(0x0001)); // M15
+    QCOMPARE(scan.values.at(2), quint16(0x0008)); // M50
 
     // Generic 13-coil response (bit0 + bit12, arbitrary positions): the
     // conversion packs any coil block, not just the live 12-coil M100-M111

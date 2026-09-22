@@ -124,14 +124,6 @@ private slots:
 
     void passthroughRequiresSecondConfirmation();
     void bypassStateFromReadbackNotButton();
-    void shieldRequiresSecondConfirmation();
-    void shieldArmedResetOnPageSwitch();
-    void shieldArmedResetOnGateChange();
-
-    // --- page: amber banner (spec §10.8) ----------------------------------------
-    void amberBannerShownWhileShieldActive();
-    void amberBannerHiddenWhenNoShield();
-
     // --- page: no optimistic success (spec §11.2) --------------------------------
     void pressNeverShowsSuccess();
 
@@ -672,134 +664,6 @@ void ManualControlPageTest::bypassStateFromReadbackNotButton()
     QCOMPARE(page.beltContinuousButton()->text(), QStringLiteral("常转生效"));
 }
 
-void ManualControlPageTest::shieldRequiresSecondConfirmation()
-{
-    ShellModel model;
-    ManualControlPage page(model);
-    model.setUser(QStringLiteral("admin"), Role::Admin);
-    model.updateSnapshot(DeviceSnapshot(validSnapshotData()));
-    QSignalSpy spy(&page, &ManualControlPage::bypassRequested);
-
-    // First click arms; nothing is sent.
-    clickAt(page.curtainShieldButton());
-    QCOMPARE(spy.count(), 0);
-    QCOMPARE(page.curtainShieldButton()->text(), QStringLiteral("确认屏蔽?"));
-
-    // Second click confirms and dispatches 屏蔽 (M110=1).
-    clickAt(page.curtainShieldButton());
-    QCOMPARE(spy.count(), 1);
-    QCOMPARE(spy.at(0).at(0).toUInt(), quint16(110));
-    QCOMPARE(spy.at(0).at(1).toBool(), true);
-    QCOMPARE(page.curtainShieldButton()->text(), QStringLiteral("光栅屏蔽"));
-}
-
-void ManualControlPageTest::shieldArmedResetOnPageSwitch()
-{
-    MainWindow w;
-    w.resize(1920, 1080);
-    w.show();
-    ManualControlPage *page = w.findChild<ManualControlPage *>();
-    QVERIFY(page != nullptr);
-    w.shellModel()->setUser(QStringLiteral("admin"), Role::Admin);
-    w.shellModel()->updateSnapshot(DeviceSnapshot(validSnapshotData()));
-    QApplication::processEvents();
-
-    w.setCurrentPage(2);
-    QVERIFY(page->isVisible());
-    clickAt(page->curtainShieldButton()); // arm
-    QCOMPARE(page->curtainShieldButton()->text(), QStringLiteral("确认屏蔽?"));
-
-    // Switching away and back clears the armed confirmation (spec §10.8,
-    // §11.1-§11.2 页面切换清零意图): the next click re-arms instead of
-    // dispatching.
-    w.setCurrentPage(0);
-    QVERIFY(!page->isVisible());
-    w.setCurrentPage(2);
-    QVERIFY(page->isVisible());
-    QCOMPARE(page->curtainShieldButton()->text(), QStringLiteral("光栅屏蔽"));
-
-    QSignalSpy spy(page, &ManualControlPage::bypassRequested);
-    clickAt(page->curtainShieldButton());
-    QCOMPARE(spy.count(), 0); // re-armed, nothing dispatched
-    QCOMPARE(page->curtainShieldButton()->text(), QStringLiteral("确认屏蔽?"));
-}
-
-void ManualControlPageTest::shieldArmedResetOnGateChange()
-{
-    ShellModel model;
-    ManualControlPage page(model);
-    model.setUser(QStringLiteral("admin"), Role::Admin);
-    model.updateSnapshot(DeviceSnapshot(validSnapshotData()));
-
-    clickAt(page.doorShieldButton()); // arm
-    QCOMPARE(page.doorShieldButton()->text(), QStringLiteral("确认屏蔽?"));
-
-    // Going offline disables the shield button and resets the armed
-    // confirmation; re-enabling later requires a fresh confirm.
-    model.setOnline(false);
-    QVERIFY(!page.doorShieldButton()->isEnabled());
-    QCOMPARE(page.doorShieldButton()->text(), QStringLiteral("门磁屏蔽"));
-
-    model.setOnline(true);
-    QVERIFY(page.doorShieldButton()->isEnabled());
-    QSignalSpy spy(&page, &ManualControlPage::bypassRequested);
-    clickAt(page.doorShieldButton());
-    QCOMPARE(spy.count(), 0); // re-armed, nothing dispatched
-    QCOMPARE(page.doorShieldButton()->text(), QStringLiteral("确认屏蔽?"));
-}
-
-// --- page: amber banner ----------------------------------------------------------------
-
-void ManualControlPageTest::amberBannerShownWhileShieldActive()
-{
-    ShellModel model;
-    ManualControlPage page(model);
-    page.show();
-    QApplication::processEvents();
-    model.setUser(QStringLiteral("admin"), Role::Admin);
-    model.updateSnapshot(DeviceSnapshot(validSnapshotData()));
-
-    // No shield: banner hidden.
-    QVERIFY(!page.shieldBanner()->isVisible());
-
-    // M110 readback=1: persistent amber banner (spec §10.8).
-    DeviceSnapshotData d = validSnapshotData();
-    d.commandBits = (quint16(1) << 10); // M110
-    model.updateSnapshot(DeviceSnapshot(d));
-    QVERIFY(page.shieldBanner()->isVisible());
-    QVERIFY(page.shieldBannerText().contains(QStringLiteral("光栅")));
-    QVERIFY(page.shieldBannerText().contains(QStringLiteral("安全屏蔽生效")));
-
-    // M111 readback=1: banner lists 门磁.
-    d.commandBits = (quint16(1) << 11); // M111
-    model.updateSnapshot(DeviceSnapshot(d));
-    QVERIFY(page.shieldBannerText().contains(QStringLiteral("门磁")));
-
-    // Both active.
-    d.commandBits = (quint16(1) << 10) | (quint16(1) << 11);
-    model.updateSnapshot(DeviceSnapshot(d));
-    QVERIFY(page.shieldBannerText().contains(QStringLiteral("光栅")));
-    QVERIFY(page.shieldBannerText().contains(QStringLiteral("门磁")));
-}
-
-void ManualControlPageTest::amberBannerHiddenWhenNoShield()
-{
-    ShellModel model;
-    ManualControlPage page(model);
-    page.show();
-    QApplication::processEvents();
-    model.setUser(QStringLiteral("admin"), Role::Admin);
-    DeviceSnapshotData d = validSnapshotData();
-    d.commandBits = (quint16(1) << 10); // M110
-    model.updateSnapshot(DeviceSnapshot(d));
-    QVERIFY(page.shieldBanner()->isVisible());
-
-    // Shield cleared by the PLC: banner disappears (readback-driven).
-    d.commandBits = 0;
-    model.updateSnapshot(DeviceSnapshot(d));
-    QVERIFY(!page.shieldBanner()->isVisible());
-}
-
 // --- page: no optimistic success ---------------------------------------------------------
 
 void ManualControlPageTest::pressNeverShowsSuccess()
@@ -816,10 +680,11 @@ void ManualControlPageTest::pressNeverShowsSuccess()
     QVERIFY(!page.statusText().contains(QStringLiteral("执行")));
     clickAt(page.jogButton());
 
-    // Confirming a shield dispatch must not show success either.
-    clickAt(page.curtainShieldButton()); // arm
-    clickAt(page.curtainShieldButton()); // confirm -> dispatched
+    // The same holds for the bypass toggles: clicking 直通模式 only emits the
+    // intent, and the label keeps following the readback (M105 = 0).
+    clickAt(page.passthroughButton());
     QVERIFY(!page.statusText().contains(QStringLiteral("成功")));
+    QCOMPARE(page.passthroughButton()->text(), QStringLiteral("直通模式"));
 }
 
 // --- page: rendering ----------------------------------------------------------------------
@@ -866,10 +731,8 @@ void ManualControlPageTest::operatorSeesDisabledControlsWithReason()
     QVERIFY(!page.passthroughButton()->visibleReasonText().isEmpty());
     QVERIFY(!page.beltContinuousButton()->isEnabled());
     QVERIFY(!page.beltContinuousButton()->visibleReasonText().isEmpty());
-    QVERIFY(!page.curtainShieldButton()->isEnabled());
-    QVERIFY(!page.curtainShieldButton()->visibleReasonText().isEmpty());
-    QVERIFY(!page.doorShieldButton()->isEnabled());
-    QVERIFY(!page.doorShieldButton()->visibleReasonText().isEmpty());
+    // 安全光栅/门磁 (M110/M111) are no longer surfaced on this page (user
+    // decision 2026-09-22), so there is no shield control left to assert on.
 }
 
 void ManualControlPageTest::controlsMeetTouchTargetSize()
@@ -885,8 +748,7 @@ void ManualControlPageTest::controlsMeetTouchTargetSize()
     QVERIFY(page.stopGateButton()->minimumHeight() >= 48);
     QVERIFY(page.passthroughButton()->minimumHeight() >= 48);
     QVERIFY(page.beltContinuousButton()->minimumHeight() >= 48);
-    QVERIFY(page.curtainShieldButton()->minimumHeight() >= 48);
-    QVERIFY(page.doorShieldButton()->minimumHeight() >= 48);
+    QVERIFY(page.writeWidthSpeedButton()->minimumHeight() >= 48);
 }
 
 // --- MainWindow integration ----------------------------------------------------------------

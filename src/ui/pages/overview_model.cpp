@@ -98,6 +98,13 @@ bool OverviewModel::isFaulted() const
     return m_model.isFaulted();
 }
 
+bool OverviewModel::m11() const
+{
+    // Same freshness rule as every other status flag: a stale snapshot must
+    // never drive the displayed scan state.
+    return m_model.snapshotFresh() && m_model.snapshot().m11();
+}
+
 QString OverviewModel::latestAlarmText() const
 {
     const QString alarm = m_model.activeAlarmText();

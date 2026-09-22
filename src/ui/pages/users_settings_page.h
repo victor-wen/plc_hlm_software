@@ -112,6 +112,11 @@ public:
     QLabel *d204WarningLabel() const { return m_d204Warning; }
     ValueDisplay *paramDisplay(const QString &key) const;
     QString paramStatusText() const;
+    // 扫码结果文件路径 (user decision 2026-09-22): the external scanning
+    // program writes its results here. Empty = 未配置.
+    QLineEdit *barcodePathEdit() const { return m_barcodePathEdit; }
+    QPushButton *saveBarcodePathButton() const { return m_saveBarcodePath; }
+    QString barcodePathStatusText() const;
 
     // --- data feeds (wired by the app shell, Task 20) --------------------------
     void setNeedsInitialAdmin(bool needs);
@@ -128,6 +133,10 @@ public:
     void setSerialConfig(const SerialConnectionSettings &config);
     // 串口配置保存结果, 兼容旧调用方; 等价于 setSerialSettingsSaveResult.
     void setSerialSaveResult(bool ok, const QString &detail);
+    // 扫码结果文件路径回显 (empty = 未配置) 与保存结果.
+    void setBarcodeResultPath(const QString &path);
+    void setBarcodePathSavePending();
+    void setBarcodePathSaveResult(bool ok, const QString &detail);
 
 public slots:
     // Re-renders every widget from the model's current state.
@@ -156,6 +165,9 @@ signals:
     void writeParameterRequested(quint16 address, quint16 value);
     // D204 写请求, 携带管理员密码供 Task 20 二次验证 (spec §11.3).
     void d204WriteRequested(quint16 value, const QString &adminPassword);
+    // 扫码结果文件路径保存请求 (user decision 2026-09-22). Never optimistic:
+    // the app shell reports the outcome through setBarcodePathSaveResult.
+    void saveBarcodePathRequested(const QString &path);
 
 private:
     void buildLayout();
@@ -175,6 +187,7 @@ private:
     void onWriteD122();
     void onWriteD204();
     void onWriteD220();
+    void onSaveBarcodePathClicked();
     void onD204PasswordEntered(const QString &password);
     void onAddUserClicked();
     void onDeleteUserClicked();
@@ -244,6 +257,11 @@ private:
     QPushButton *m_writeD122 = nullptr;
     QPushButton *m_writeD204 = nullptr;
     QPushButton *m_writeD220 = nullptr;
+    // 扫码结果文件路径 editor + its page-local result line.
+    QLineEdit *m_barcodePathEdit = nullptr;
+    QPushButton *m_saveBarcodePath = nullptr;
+    QLabel *m_barcodePathStatus = nullptr;
+    bool m_barcodePathSavePending = false;
     QLabel *m_d204Warning = nullptr;
     QLabel *m_paramStatus = nullptr;
     QPushButton *m_logout = nullptr;

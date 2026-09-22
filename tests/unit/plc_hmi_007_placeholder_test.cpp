@@ -1,6 +1,7 @@
-// PLC-HMI-007 black-box unit tests: the barcode placeholder is visibly
-// not-configured and the barcode integration stays strictly inert (brief OB-1,
-// OB-2).
+// PLC-HMI-007 black-box unit tests: the barcode surface is visibly
+// not-configured while no result path is set, and its activation surface is
+// exactly the approved result-file path editor (brief OB-1, OB-2 — OB-2 revised
+// 2026-09-22 when the file contract was supplied, see the case below).
 //
 // Authored only from .ai/test-briefs/PLC-HMI-007.yaml (brief_version 2), the
 // approved .ai/project-contract.yaml (F-05, F-06, C-05, C-07 and the
@@ -171,7 +172,7 @@ private slots:
     void barcodePlaceholderIsVisiblyNotConfigured();
 
     // --- OB-2: strictly inert --------------------------------------------------
-    void barcodeIntegrationIsStrictlyInert();
+    void barcodeActivationSurfaceIsExactlyTheResultPathEditor();
 
     // --- OB-1 edge (verify phase): inertness is role/snapshot independent -------
     void placeholderRemainsNotConfiguredAcrossRoleAndSnapshotChanges();
@@ -217,9 +218,24 @@ void PlcHmi007PlaceholderTest::barcodePlaceholderIsVisiblyNotConfigured()
                             .arg(text)));
 }
 
-// --- OB-2 ---------------------------------------------------------------------
-
-void PlcHmi007PlaceholderTest::barcodeIntegrationIsStrictlyInert()
+// --- OB-2 (revised: approved activation, user decision 2026-09-22) -------------
+//
+// The brief's OB-2 pinned the integration as strictly inert "until a file
+// contract is supplied". The file contract WAS supplied — the reference result
+// file 需求/扫码相关/Barcode.txt — so the integration is now active and this case
+// pins the new guarantee instead of the old one:
+//
+//   the ONLY barcode surfaces are the configured result-file path editor
+//   (barcodePathEdit + saveBarcodePathButton + barcodePathStatus) and the
+//   display-only status label (barcodePlaceholderStatus).
+//
+// Every other inertness guarantee is preserved and still enforced below: no
+// connection/endpoint/transport control, no scan-trigger or scanner-SDK
+// control (the scanning program is external and automatic), no second path
+// input, and no path input outside the approved one. OB-1 (the status line must
+// say 未配置 while no path is configured and must never claim 已连接/在线) is
+// unchanged in the case above and in the verify-phase case below.
+void PlcHmi007PlaceholderTest::barcodeActivationSurfaceIsExactlyTheResultPathEditor()
 {
     MainWindow window;
     window.resize(1920, 1080);
@@ -239,8 +255,17 @@ void PlcHmi007PlaceholderTest::barcodeIntegrationIsStrictlyInert()
 
     const QStringList tokens = barcodeOrStationTokens();
 
-    // 1. No path input, activation control, endpoint field or connection-state
-    //    selector may carry a barcode/station objectName (OB-2, OB-3).
+    // The approved activation surface (user decision 2026-09-22). Anything else
+    // carrying a barcode/station token is still a violation.
+    const QStringList approved{
+        QString::fromLatin1(kBarcodeStatusObjectName), // display-only status line
+        QStringLiteral("barcodePathEdit"),             // result-file path input
+        QStringLiteral("saveBarcodePathButton"),       // its save button
+        QStringLiteral("barcodePathStatus"),           // its save-result line
+    };
+
+    // 1. No endpoint field, connection-state selector, scan-trigger control or
+    //    extra path input may carry a barcode/station objectName (OB-2, OB-3).
     QStringList interactiveViolations;
     QStringList namedWidgets;
     for (QWidget *widget : window.findChildren<QWidget *>()) {
@@ -248,7 +273,7 @@ void PlcHmi007PlaceholderTest::barcodeIntegrationIsStrictlyInert()
         if (name.isEmpty() || !carriesToken(name, tokens))
             continue;
         namedWidgets.append(describeWidget(widget));
-        if (widget == status)
+        if (widget == status || approved.contains(name))
             continue;
         if (isInteractive(widget))
             interactiveViolations.append(describeWidget(widget));
@@ -256,10 +281,22 @@ void PlcHmi007PlaceholderTest::barcodeIntegrationIsStrictlyInert()
     QVERIFY2(interactiveViolations.isEmpty(),
              qPrintable(QStringLiteral(
                             "barcode/station-named interactive controls present an "
-                            "endpoint or activation surface although the integration "
-                            "must stay inert: %1 (all barcode/station-named widgets: %2)")
+                            "endpoint or activation surface outside the approved "
+                            "result-path editor: %1 (all barcode/station-named "
+                            "widgets: %2)")
                             .arg(interactiveViolations.join(QStringLiteral("; ")),
                                  namedWidgets.join(QStringLiteral("; ")))));
+
+    // 1b. The approved surface must be exactly the four widgets above — no
+    //     second path editor, no trigger button, no connection field.
+    for (const QString &name : approved) {
+        QVERIFY2(window.findChild<QWidget *>(name) != nullptr,
+                 qPrintable(QStringLiteral(
+                                "the approved barcode surface '%1' is missing, so the "
+                                "activation is not the surface this test pins")
+                                .arg(name)));
+    }
+    QVERIFY(window.findChildren<QLineEdit *>(QStringLiteral("barcodePathEdit")).size() == 1);
 
     // 2. No QLineEdit may present a barcode folder/inbox path, whether by
     //    objectName, placeholder, content or accessible name.
@@ -269,6 +306,12 @@ void PlcHmi007PlaceholderTest::barcodeIntegrationIsStrictlyInert()
                                   QStringLiteral("文件夹"),  QStringLiteral("inbox path")};
     QStringList lineEditViolations;
     for (QLineEdit *edit : window.findChildren<QLineEdit *>()) {
+        // The one approved path input (user decision 2026-09-22): the result
+        // file the external scanning program writes. It is not a connection,
+        // endpoint or activation surface, and the transport it feeds is a plain
+        // file read on the adapter's own worker thread.
+        if (edit->objectName() == QStringLiteral("barcodePathEdit"))
+            continue;
         // Qt-private widgets are not application surfaces and must not be
         // treated as barcode inbox/folder inputs: Qt's private spin-box editor
         // is named "qt_spinbox_lineedit", and "spinbox" contains the generic
@@ -289,8 +332,8 @@ void PlcHmi007PlaceholderTest::barcodeIntegrationIsStrictlyInert()
     }
     QVERIFY2(lineEditViolations.isEmpty(),
              qPrintable(QStringLiteral(
-                            "a QLineEdit presents a barcode inbox/folder path although "
-                            "no file contract exists: %1")
+                            "a QLineEdit outside the approved result-path editor "
+                            "presents a barcode inbox/folder path: %1")
                             .arg(lineEditViolations.join(QStringLiteral("; ")))));
 }
 

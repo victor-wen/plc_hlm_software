@@ -6,15 +6,22 @@
 
 namespace hlm {
 
-quint16 packCoilBits(const QList<quint16> &coilValues)
+QList<quint16> packCoilBits(const QList<quint16> &coilValues)
 {
-    quint16 packed = 0;
-    const int count = qMin(coilValues.size(), 16);
-    for (int i = 0; i < count; ++i) {
+    QList<quint16> words;
+    words.reserve((coilValues.size() + 15) / 16);
+    for (int i = 0; i < coilValues.size(); ++i) {
+        const int word = i / 16;
+        if (word >= words.size())
+            words.append(0);
         if (coilValues.at(i) != 0)
-            packed |= quint16(1) << i;
+            words[word] = quint16(words.at(word) | (quint16(1) << (i % 16)));
     }
-    return packed;
+    // A coil read always yields at least one word, even for an empty payload:
+    // callers index values[0] for the single-coil readback path.
+    if (words.isEmpty())
+        words.append(0);
+    return words;
 }
 
 TransferResult makeTransferResult(const ModbusRequest &req, bool ok,
@@ -29,8 +36,8 @@ TransferResult makeTransferResult(const ModbusRequest &req, bool ok,
 
     switch (req.kind) {
     case ModbusRequest::Kind::ReadCoils:
-        // One 0/non-0 entry per coil -> single packed word.
-        res.values.append(packCoilBits(rawValues));
+        // One 0/non-0 entry per coil -> packed words (one per 16 coils).
+        res.values = packCoilBits(rawValues);
         break;
     case ModbusRequest::Kind::ReadRegisters:
         for (quint16 value : rawValues)

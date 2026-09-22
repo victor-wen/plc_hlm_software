@@ -50,22 +50,16 @@ void ManualControlPage::buildLayout()
 {
     // Qt Layout only, no absolute coordinates (spec §11.1). Structure follows
     // 需求/PLC上位机地址及要求.txt: 手动调宽 (M106/M107)、皮带点动 (M108)、
-    // 挡停 (M109)、调宽速度 (D220)、直通 (M105)、皮带常转 (M42)、
-    // 光栅屏蔽 (M110)、门磁屏蔽 (M111).
+    // 挡停 (M109)、调宽速度 (D220)、直通 (M105)、皮带常转 (M42).
+    //
+    // 安全屏蔽 (M110 光栅 / M111 门磁) is not surfaced here (user decision
+    // 2026-09-22: 手动界面去掉安全光栅和门磁): neither the two-step confirm
+    // buttons nor the 安全屏蔽生效 banner. The model/coordinator support for
+    // M110/M111 is untouched, so the addresses stay writable through
+    // ControlCoordinator::bypass and nothing else in the interlock chain moves.
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(16, 16, 16, 16);
     root->setSpacing(12);
-
-    // --- 安全屏蔽生效横幅 (spec §10.8: 生效期间顶部持续显示琥珀色横幅) --------
-    m_shieldBanner = new QLabel(this);
-    m_shieldBanner->setObjectName(QStringLiteral("shieldBanner"));
-    m_shieldBanner->setMinimumHeight(40);
-    m_shieldBanner->setAlignment(Qt::AlignCenter);
-    m_shieldBanner->setStyleSheet(
-        QStringLiteral("QLabel#shieldBanner { background-color: #e6a23c;"
-                       " color: #3a2a00; font-size: 18px; font-weight: bold;"
-                       " border-radius: 4px; }"));
-    root->addWidget(m_shieldBanner);
 
     // --- 手动操作区 (M106/M107/M108/M109) --------------------------------------
     auto *manualBox = new QFrame(this);
@@ -118,13 +112,13 @@ void ManualControlPage::buildLayout()
     manualRow->addWidget(m_stopGate);
     manualLayout->addLayout(manualRow);
 
-    // --- 直通 / 常转 / 安全屏蔽区 (M105/M42/M110/M111) --------------------------
+    // --- 直通 / 常转区 (M105/M42) ------------------------------------------------
     auto *bypassBox = new QFrame(this);
     bypassBox->setObjectName(QStringLiteral("bypassPanel"));
     bypassBox->setFrameShape(QFrame::StyledPanel);
     auto *bypassLayout = new QVBoxLayout(bypassBox);
     bypassLayout->setSpacing(8);
-    auto *bypassTitle = new QLabel(QStringLiteral("直通 / 常转 / 安全屏蔽"), bypassBox);
+    auto *bypassTitle = new QLabel(QStringLiteral("直通 / 常转"), bypassBox);
     bypassLayout->addWidget(bypassTitle);
 
     auto *bypassRow = new QHBoxLayout();
@@ -137,14 +131,6 @@ void ManualControlPage::buildLayout()
     m_beltContinuous->setObjectName(QStringLiteral("beltContinuousButton"));
     m_beltContinuous->setMinimumHeight(64);
     bypassRow->addWidget(m_beltContinuous);
-    m_curtainShield = new PermissionButton(QStringLiteral("光栅屏蔽"), bypassBox);
-    m_curtainShield->setObjectName(QStringLiteral("curtainShieldButton"));
-    m_curtainShield->setMinimumHeight(64);
-    bypassRow->addWidget(m_curtainShield);
-    m_doorShield = new PermissionButton(QStringLiteral("门磁屏蔽"), bypassBox);
-    m_doorShield->setObjectName(QStringLiteral("doorShieldButton"));
-    m_doorShield->setMinimumHeight(64);
-    bypassRow->addWidget(m_doorShield);
     bypassLayout->addLayout(bypassRow);
 
     // --- 测试信号 (M114-M117, user decision 2026-09-22) -------------------------
@@ -269,10 +255,6 @@ void ManualControlPage::buildLayout()
                 // M42 皮带常转: 仅管理员, 目标来自当前回读位 (spec §10.8, §11.2).
                 emit bypassRequested(kM42, !m_pageModel.m42());
             });
-    connect(m_curtainShield, &QPushButton::clicked, this,
-            [this] { onShieldClicked(m_curtainShield, kM110); });
-    connect(m_doorShield, &QPushButton::clicked, this,
-            [this] { onShieldClicked(m_doorShield, kM111); });
 }
 
 QWidget *ManualControlPage::addField(const QString &key, const QString &title)
@@ -331,11 +313,6 @@ QString ManualControlPage::widthSpeedResultText() const
     return m_widthSpeedResult ? m_widthSpeedResult->text() : QString();
 }
 
-QString ManualControlPage::shieldBannerText() const
-{
-    return m_shieldBanner ? m_shieldBanner->text() : QString();
-}
-
 QString ManualControlPage::statusText() const
 {
     return m_statusLabel ? m_statusLabel->text() : QString();
@@ -349,35 +326,14 @@ void ManualControlPage::onStopGateClicked()
     emit manualLatchRequested(kM109, target);
 }
 
-void ManualControlPage::onShieldClicked(PermissionButton *button, quint16 address)
-{
-    // 安全屏蔽二次确认 (spec §10.8): first click arms, second dispatches.
-    if (!m_pageModel.shieldArmed(address)) {
-        m_pageModel.armShield(address);
-        button->setText(QStringLiteral("确认屏蔽?"));
-        return;
-    }
-    const std::optional<bool> target = m_pageModel.shieldTarget(address);
-    m_pageModel.disarmShield(address);
-    button->setText(QStringLiteral("光栅屏蔽"));
-    if (!target.has_value())
-        return;
-    emit bypassRequested(address, *target);
-}
-
-void ManualControlPage::disarmShield(PermissionButton *button, quint16 address)
-{
-    m_pageModel.disarmShield(address);
-    button->setText(QStringLiteral("光栅屏蔽"));
-}
-
 void ManualControlPage::hideEvent(QHideEvent *event)
 {
-    // Page switch (QStackedWidget hides the page) clears the armed shield
-    // confirmation (spec §10.8 二次确认, §11.1-§11.2 页面切换清零意图).
+    // Page switch (QStackedWidget hides the page) clears any armed shield
+    // confirmation still held by the model (spec §10.8 二次确认, §11.1-§11.2
+    // 页面切换清零意图). The page no longer renders the shield controls
+    // (user decision 2026-09-22), but the model can still be armed by a caller,
+    // so the reset stays here.
     m_pageModel.disarmAllShields();
-    m_curtainShield->setText(QStringLiteral("光栅屏蔽"));
-    m_doorShield->setText(QStringLiteral("门磁屏蔽"));
     QWidget::hideEvent(event);
 }
 
@@ -415,20 +371,6 @@ void ManualControlPage::refresh()
         canWriteSpeed,
         m_pageModel.widthSpeedWriteUnmetReasons().join(QStringLiteral("；")));
 
-    // 安全屏蔽生效期间持续显示琥珀色横幅 (spec §10.8).
-    if (m_pageModel.shieldActive()) {
-        QStringList active;
-        if (m_pageModel.m110())
-            active.append(QStringLiteral("光栅"));
-        if (m_pageModel.m111())
-            active.append(QStringLiteral("门磁"));
-        m_shieldBanner->setText(
-            QStringLiteral("安全屏蔽生效: %1").arg(active.join(QStringLiteral("、"))));
-        m_shieldBanner->show();
-    } else {
-        m_shieldBanner->hide();
-    }
-
     // Manual gating: permission + interlock reasons (spec §11.4). PLC-HMI-011 D5
     // splits the manual gate per command: the width jogs (M106/M107) still
     // require homing completion (M61=1) and no homing in progress (M50=0), the
@@ -461,31 +403,14 @@ void ManualControlPage::refresh()
     const QString bypassReason = bypassReasons.join(QStringLiteral("；"));
     m_passthrough->setEnabledWithReason(canBypass, bypassReason);
     m_beltContinuous->setEnabledWithReason(canBypass, bypassReason);
-    m_curtainShield->setEnabledWithReason(canBypass, bypassReason);
-    m_doorShield->setEnabledWithReason(canBypass, bypassReason);
 
-    // A gate change that disables the shield buttons must not leave a stale
-    // armed confirmation (spec §10.8, §11.1-§11.2 门控变化清零意图). The model
-    // already disarms on gate change; re-sync the button labels here.
-    if (!m_curtainShield->isEnabled() && m_pageModel.shieldArmed(kM110))
-        disarmShield(m_curtainShield, kM110);
-    if (!m_doorShield->isEnabled() && m_pageModel.shieldArmed(kM111))
-        disarmShield(m_doorShield, kM111);
-
-    // Readback state (spec §11.2: 状态来自回读位, 不是按钮状态). The armed
-    // shield confirmation label is preserved until dispatch or reset.
+    // Readback state (spec §11.2: 状态来自回读位, 不是按钮状态).
     m_stopGate->setText(m_pageModel.m109() ? QStringLiteral("挡停缩回")
                                            : QStringLiteral("挡停伸出"));
     m_passthrough->setText(m_pageModel.m105() ? QStringLiteral("直通生效")
                                               : QStringLiteral("直通模式"));
     m_beltContinuous->setText(m_pageModel.m42() ? QStringLiteral("常转生效")
                                                 : QStringLiteral("皮带常转"));
-    if (!m_pageModel.shieldArmed(kM110))
-        m_curtainShield->setText(m_pageModel.m110() ? QStringLiteral("屏蔽生效")
-                                                    : QStringLiteral("光栅屏蔽"));
-    if (!m_pageModel.shieldArmed(kM111))
-        m_doorShield->setText(m_pageModel.m111() ? QStringLiteral("屏蔽生效")
-                                                 : QStringLiteral("门磁屏蔽"));
 
     // 测试信号 gating (user decision 2026-09-22): 仅管理员 + 在线, 无机器状态
     // 前置条件, 因此在自动流程运行中依然可注入. 每个按钮的禁用原因必须是可见

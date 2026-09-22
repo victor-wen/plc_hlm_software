@@ -4,6 +4,7 @@
 #include <QVector>
 #include <QPair>
 
+#include "domain/barcode_result.h"
 #include "ui/pages/overview_model.h"
 #include "ui/widgets/status_light.h"
 
@@ -36,16 +37,28 @@ public:
     QString latestAlarmText() const;
     // Visible reliability disclosure for the D138/D139 production count.
     QLabel *productionCountDisclosureLabel() const;
-    // 条码/扫码 placeholder status: visibly not-configured, never a connection.
+    // 条码/扫码 status line. With no result path configured it stays the
+    // 未配置 placeholder and never implies a connection; with a path
+    // configured it shows the last readback (user decision 2026-09-22).
     QLabel *barcodePlaceholderLabel() const;
+    QString barcodeText() const;
 
 public slots:
     // Re-renders every field from the model's current snapshot.
     void refresh();
+    // The configured result path (empty = 未配置) and the terminal outcome of
+    // one scan-cycle read (user decision 2026-09-22). Display-only: the
+    // scanning program is the authoritative peer, so the value shown is always
+    // a readback, never an optimistic success.
+    void setBarcodeResultPath(const QString &path);
+    void setBarcodeResult(const BarcodeResult &result);
 
 private:
     void buildLayout();
     QWidget *addField(const QString &key, const QString &title);
+    // Composes the 条码/扫码 line from the configured path, M11 and the last
+    // readback (never claims a connection).
+    QString barcodeStatusText() const;
 
     ShellModel &m_model;
     OverviewModel m_pageModel;
@@ -54,6 +67,11 @@ private:
     QLabel *m_productionCountLabel = nullptr;
     QLabel *m_productionDisclosure = nullptr;
     QLabel *m_barcodePlaceholder = nullptr;
+    // Configured result path echoed by the settings page (empty = 未配置).
+    QString m_barcodePath;
+    // Latest scan readback, rendered by refresh()/setBarcodeResult().
+    BarcodeResult m_barcodeResult;
+    bool m_barcodeResultSet = false;
     QVector<StatusLight *> m_statusLights; // online, mode, running, fault
     QHash<QString, ValueDisplay *> m_displays;
 };

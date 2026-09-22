@@ -59,6 +59,10 @@ struct DeviceSnapshotData {
 
     // M50-M53 home-return bits (function code 01).
     quint16 homeBits = 0;
+    // M15 扫码结束 (user decision 2026-09-22): read as a coil (function code
+    // 01) in the same block as the home bits, never from D100 bit15. The PLC
+    // program does not drive M15 yet — the scan program / PLC engineer adds it.
+    bool scanComplete = false;
     // M100-M111 command readback bits (function code 01). M112 is not part of
     // the live path (PLC-HMI-003 D3).
     quint16 commandBits = 0;
@@ -211,6 +215,11 @@ public:
     bool m52() const { return m_m52; }
     bool m53() const { return m_m53; }
 
+    // --- M15 扫码结束 (coil, user decision 2026-09-22) ------------------------
+    // The scan program is external: the PLC raises M15 when a scan cycle ends,
+    // and the HMI reads the barcode result file on its rising edge.
+    bool m15() const { return m_scanComplete; }
+
     // --- M100-M111 command readback (M112 removed, PLC-HMI-003 D3) ----------
     bool m100() const { return m_m100; }
     bool m101() const { return m_m101; }
@@ -298,6 +307,7 @@ private:
     bool m_m51 = false;
     bool m_m52 = false;
     bool m_m53 = false;
+    bool m_scanComplete = false; // M15 (coil, not a D100 bit)
 
     bool m_m100 = false;
     bool m_m101 = false;

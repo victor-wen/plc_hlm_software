@@ -9,6 +9,9 @@ namespace {
 // Poll block definitions (spec §8.3), mirroring the real gateway's plan.
 constexpr quint16 kFastStart = 100;    // D100
 constexpr quint16 kFastCount = 41;     // D100-D140
+// Home/scan coil block, mirroring the real gateway: one transaction covers the
+// M15 扫码结束 coil and the M50-M53 home bits (user decision 2026-09-22).
+constexpr quint16 kScanStart = 15;     // M15 扫码结束
 constexpr quint16 kHomeStart = 50;     // M50
 constexpr quint16 kHomeCount = 4;      // M50-M53
 constexpr quint16 kCommandStart = 100; // M100
@@ -250,6 +253,9 @@ void SimulatedPlcGateway::publishSnapshot()
     // Home bits M50-M53 and command bits M100-M111 (function code 01).
     d.homeBits = packHomeBits(m_model);
     d.commandBits = packCommandBits(m_model);
+    // M15 扫码结束: read as a coil in the same block as the home bits (user
+    // decision 2026-09-22), never from D100 bit15.
+    d.scanComplete = m_model.readCoil(kScanStart);
     // The in-process model completes every poll inline, so each block was
     // refreshed now: real zero ages and Valid quality (no hard-coded overall
     // age; recomputeDerivedQuality derives the maximum).

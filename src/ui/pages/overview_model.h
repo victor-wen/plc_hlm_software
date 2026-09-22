@@ -52,6 +52,9 @@ public:
     bool isAutoMode() const;
     bool isRunning() const;
     bool isFaulted() const;
+    // M11 相机触发中 (D100 bit11): the PLC's own scan-in-progress indication.
+    // The HMI only observes it (user decision 2026-09-22: 扫码程序自动的).
+    bool m11() const;
 
     // Latest alarm line for the page (same priority as the shell banner):
     // estop > latched fault > fault > offline notice; 无报警 when healthy.
