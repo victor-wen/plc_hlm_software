@@ -139,7 +139,14 @@ struct StartedApp
 
     void start()
     {
-        // The adapter is constructed here with the fake SDK, and injected into
+        // A restart (persistedPathIsRestoredAtStartup) must not leak the
+        // previous adapter, and the new one must be stopped before it dies.
+        if (source != nullptr) {
+            source->stop();
+            delete source;
+            source = nullptr;
+        }
+        // The adapter is constructed here with the fake SDK and injected into
         // the composition root, which then never builds its own.
         source = new BarcodeReaderSdkSource(&sdk);
         cfg.barcodeSource = source;
@@ -152,8 +159,14 @@ struct StartedApp
 
     ~StartedApp()
     {
+        // ORDER MATTERS: Application holds this source and touches it in
+        // shutdown(), so the Application must be gone before the adapter is.
         // Application neither deletes nor reparents an injected source, so the
-        // rig owns it — and the adapter must be stopped before it dies.
+        // rig owns it.
+        if (app) {
+            app->shutdown();
+            app.reset();
+        }
         if (source != nullptr) {
             source->stop();
             delete source;
@@ -437,7 +450,7 @@ void BarcodeIngestionDeveloperTest::persistedPathIsRestoredAtStartup()
 
     // Restart against the same database: the persisted path must be restored,
     // so the operator does not see 未配置 for a path that is configured.
-    rig.app.reset();
+    rig.app.reset(); // the shutdown() in ~StartedApp guards on a live app
     rig.start();
     rig.advanceUntilOnline();
     QTRY_COMPARE_WITH_TIMEOUT(rig.settings->barcodePathEdit()->text(), path, 5000);
