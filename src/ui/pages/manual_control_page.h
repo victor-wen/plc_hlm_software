@@ -65,6 +65,8 @@ public:
     QString widthSpeedResultText() const;
     QLabel *statusLabel() const { return m_statusLabel; }
     QLabel *widthReasonLabel() const { return m_widthReason; }
+    // Visible inline reason for the disabled 皮带点动 (M108) button.
+    QLabel *beltJogReasonLabel() const { return m_jogReason; }
     QString statusText() const;
 
 public slots:
@@ -115,6 +117,7 @@ private:
     // button owns its own label so the reason stays adjacent to its control.
     QLabel *m_widthReason = nullptr;
     QLabel *m_widthRevReason = nullptr;
+    QLabel *m_jogReason = nullptr; // 皮带点动 (M108) disabled reason
     PermissionButton *m_passthrough = nullptr;   // M105 直通
     PermissionButton *m_beltContinuous = nullptr; // M42 皮带常转
     QHash<quint16, PermissionButton *> m_simSignalButtons; // M114-M117 测试信号

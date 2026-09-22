@@ -27,6 +27,13 @@ enum class Command {
     SimDownstreamBoardRequest,// M115 模拟后站要板信号
     SimUpstreamBoardRequest,  // M116 模拟前站要板请求信号
     SimDownstreamExitRequest, // M117 模拟后站出站请求信号
+    // M15 模拟拍照结束信号 (user decision 2026-09-22): the coil the HMI itself
+    // reads as the scan cycle's end (DeviceSnapshot::m15). Pulsing it from the
+    // HMI is the bench injection that makes the whole barcode path run end to
+    // end: the HMI's own rising-edge detection then reads the result file. On
+    // the machine the scan program owns this coil (the PLC engineer adds the
+    // rung), so the write must stay a test-only, bench-mode signal.
+    SimScanComplete,          // M15 模拟拍照结束信号 (扫码结束)
     ParameterChange,// 用户/通讯/参数设置
     LogoutClear,    // 注销时清除 M42/M106-M111 (internal, not gated)
     Count           // "no command" sentinel (idle status)

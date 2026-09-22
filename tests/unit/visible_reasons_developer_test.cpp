@@ -13,6 +13,7 @@
 
 #include <QApplication>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMouseEvent>
 #include <QPoint>
 #include <QSignalSpy>
@@ -153,6 +154,7 @@ private slots:
     void recipeApplyReasonTracksRoleTransitions();
     void inlineReasonDoesNotMakeDisabledRecipeControlClickable();
     void actionBarKeepsSafetyControlsUsableAtCompactSize();
+    void hoverHintExplainsEveryDisabledControl();
 };
 
 void VisibleReasonsDeveloperTest::permissionButtonShowsReasonInlineAndClearsOnAllow()
@@ -237,6 +239,10 @@ void VisibleReasonsDeveloperTest::manualPageReasonFollowsGateAndDistinguishesCau
     QVERIFY(!interlockPage.stopGateButton()->isEnabled());
     verifyInlineHoldReason(&interlockPage, interlockPage.widthFwdButton(),
                            interlockPage.widthReasonLabel());
+    // 皮带点动 shares the same common gates and used to go dead silently; it
+    // now carries its own inline reason too (user decision 2026-09-22).
+    verifyInlineHoldReason(&interlockPage, interlockPage.jogButton(),
+                           interlockPage.beltJogReasonLabel());
     const QString interlockText = interlockPage.widthReasonLabel()->text();
     QVERIFY(interlockText.contains(QStringLiteral("锁存故障")));
     QVERIFY(interlockText != permissionText);
@@ -326,6 +332,69 @@ void VisibleReasonsDeveloperTest::inlineReasonDoesNotMakeDisabledRecipeControlCl
     QCOMPARE(applySpy.count(), 0);
     QVERIFY(!page.applyButton()->isEnabled());
     verifyInlineReason(&page, page.applyButton());
+}
+
+// User decision 2026-09-22: a control that is unavailable must also explain
+// itself on hover (鼠标放上去就显示出来). Qt does deliver QEvent::ToolTip to a
+// disabled widget, so the hint is real; the inline text stays mandatory and is
+// still the primary explanation (spec §11.4).
+void VisibleReasonsDeveloperTest::hoverHintExplainsEveryDisabledControl()
+{
+    // Interlock cause: administrator, connected data, latched fault.
+    ShellModel manualModel;
+    ManualControlPage manual(manualModel);
+    manualModel.setUser(QStringLiteral("admin"), Role::Admin);
+    manualModel.updateSnapshot(DeviceSnapshot(latchedFaultData()));
+    manual.resize(1280, 720);
+    manual.show();
+    QApplication::processEvents();
+
+    // 皮带点动 (HoldButton): the hover hint mirrors the inline reason.
+    verifyInlineHoldReason(&manual, manual.jogButton(), manual.beltJogReasonLabel());
+    QVERIFY(manual.jogButton()->toolTip().contains(QStringLiteral("锁存故障")));
+
+    // Permission cause: anonymous. The D220 editor carries no reason text of its
+    // own, so its hover hint mirrors the write button's declared reason.
+    ShellModel anonModel;
+    ManualControlPage anon(anonModel);
+    anonModel.setUser(QString(), Role::Anonymous);
+    anonModel.updateSnapshot(DeviceSnapshot(readyManualData()));
+    anon.resize(1280, 720);
+    anon.show();
+    QApplication::processEvents();
+    QVERIFY(!anon.widthSpeedSpin()->isEnabled());
+    QVERIFY2(!anon.widthSpeedSpin()->toolTip().isEmpty(),
+             "a disabled D220 editor must explain itself on hover");
+    QCOMPARE(anon.widthSpeedSpin()->toolTip(),
+             anon.writeWidthSpeedButton()->disabledReason());
+
+    // Allowed: every hint clears with its gate.
+    ShellModel readyModel;
+    ManualControlPage ready(readyModel);
+    readyModel.setUser(QStringLiteral("admin"), Role::Admin);
+    readyModel.updateSnapshot(DeviceSnapshot(readyManualData()));
+    ready.resize(1280, 720);
+    ready.show();
+    QApplication::processEvents();
+    QVERIFY(ready.jogButton()->isEnabled());
+    QVERIFY(ready.jogButton()->toolTip().isEmpty());
+    QVERIFY(ready.widthSpeedSpin()->isEnabled());
+    QVERIFY(ready.widthSpeedSpin()->toolTip().isEmpty());
+
+    // Recipe editors: the shared inline reason is repeated on hover.
+    ShellModel recipeModel;
+    RecipeWidthPage recipe(recipeModel);
+    recipeModel.setUser(QString(), Role::Anonymous);
+    recipeModel.updateSnapshot(DeviceSnapshot(readyManualData()));
+    recipe.resize(1280, 720);
+    recipe.show();
+    QApplication::processEvents();
+    QVERIFY(!recipe.nameEdit()->isEnabled());
+    QVERIFY(!recipe.widthSpin()->isEnabled());
+    QVERIFY2(!recipe.nameEdit()->toolTip().isEmpty(),
+             "a disabled recipe editor must explain itself on hover");
+    QCOMPARE(recipe.nameEdit()->toolTip(), recipe.widthSpin()->toolTip());
+    QVERIFY(recipe.nameEdit()->toolTip().contains(QStringLiteral("管理员")));
 }
 
 void VisibleReasonsDeveloperTest::actionBarKeepsSafetyControlsUsableAtCompactSize()

@@ -511,13 +511,16 @@ void ManualControlPageTest::stopGateTogglesFromReadback()
 
 // --- page: bypass two-step confirm + readback state ----------------------------------
 
-// --- 测试信号 M114-M117 (user decision 2026-09-22) -----------------------------
+// --- 测试信号 M15/M114-M117 (user decision 2026-09-22) ------------------------
 
 void ManualControlPageTest::simSignalPulsesAreAdminOnlyAndCarryTheAddress()
 {
     ShellModel model;
     ManualControlPage page(model);
-    const quint16 addresses[] = {114, 115, 116, 117};
+    // M15 拍照结束 is the scan-complete coil the HMI itself reads, so its button
+    // is the bench injection for the whole barcode path; M114-M117 simulate the
+    // neighbouring-station handshake.
+    const quint16 addresses[] = {114, 115, 116, 117, 15};
 
     // Offline: every test-signal button is disabled with a visible reason.
     for (const quint16 address : addresses) {
@@ -545,8 +548,8 @@ void ManualControlPageTest::simSignalPulsesAreAdminOnlyAndCarryTheAddress()
         QVERIFY(button->isEnabled());
         clickAt(button);
     }
-    QCOMPARE(spy.count(), 4);
-    for (int i = 0; i < 4; ++i)
+    QCOMPARE(spy.count(), 5);
+    for (int i = 0; i < 5; ++i)
         QCOMPARE(spy.at(i).at(0).toUInt(), quint16(addresses[i]));
 }
 

@@ -57,6 +57,18 @@ struct DeviceSnapshotData {
     qint16 widthDelta = 0;  // D210 (int16, target - current, 0.1 mm)
     quint16 widthSpeed = 0; // D220
 
+    // M0-M15 status coils (function code 01), read in the same block as the
+    // home bits. The M0-M14 accessors OR this with the D100 mirror bit (user
+    // decision 2026-09-22): the supplied PLC program builds 状态字1 with
+    // MOV K2M0 D100, which copies only M0-M7, so D100 bits 8-14 read 0 forever
+    // even while M8/M9/M14 are set. The coil read is the live truth; the mirror
+    // stays as a second, fail-safe source.
+    quint16 statusCoils1 = 0;
+    // M30-M45 coils (function code 01), same block, same composition for the
+    // M30-M45 accessors. The supplied program's 状态字3 uses MOV K2M30 D103, so
+    // D103 bits 8-15 are dead too — without this read the 皮带常转 (M42)
+    // readback confirmation would never arrive on the machine.
+    quint16 statusCoils3 = 0;
     // M50-M53 home-return bits (function code 01).
     quint16 homeBits = 0;
     // M15 扫码结束 (user decision 2026-09-22): read as a coil (function code
@@ -179,6 +191,11 @@ public:
     bool m12() const { return m_m12; }
     bool m13() const { return m_m13; }
     bool m14() const { return m_m14; }
+    // M0-M14 and M30-M45 by number, the same coil-OR-mirror composition as the
+    // accessors above (user decision 2026-09-22). For surfaces that enumerate
+    // bits, so they can never disagree with the top bar and the alarm banner.
+    // Returns false for undefined M numbers.
+    bool statusBit(int mNumber) const;
 
     // --- D103 bit states (M30-M45) ------------------------------------------
     bool m30() const { return m_m30; }

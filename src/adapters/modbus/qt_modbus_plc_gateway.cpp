@@ -16,17 +16,21 @@ namespace {
 // Poll block definitions (spec §8.3). 0-based protocol addresses.
 constexpr quint16 kFastStart = 100;    // D100
 constexpr quint16 kFastCount = 41;     // D100-D140
-// Home/scan coil block (function code 01). One transaction carries both the
-// M15 扫码结束 flag and the M50-M53 home-return bits: M15 is read as a coil
-// (user decision 2026-09-22), never from D100 bit15, so a second request would
-// share this block's cadence and evidence anyway while adding a second
-// transaction. M15 and M50 are 35 coils apart, hence the 39-coil span
-// (3 packed words).
-constexpr quint16 kScanStart = 15;     // M15 扫码结束 (block start)
+// Home/scan coil block (function code 01). One transaction carries the M0-M15
+// status coils, the M15 扫码结束 flag and the M50-M53 home-return bits. M15 is
+// read as a coil (user decision 2026-09-22), never from D100 bit15, and the
+// M0-M15 status bits come from the coils too (user decision 2026-09-22): the
+// supplied PLC program builds 状态字1 with `MOV K2M0 D100`, which copies only
+// M0-M7, so D100 bits 8-14 read 0 forever even while M8/M9/M14 are set. The
+// block therefore spans M0-M53 (54 coils = 4 packed words) instead of M15-M53.
+constexpr quint16 kStatusStart = 0;    // M0 状态位 (block start)
+constexpr quint16 kStatus3Start = 30;  // M30 状态字3 位 (M30-M45)
+constexpr quint16 kStatus3Count = 16;  // M30-M45
+constexpr quint16 kScanStart = 15;     // M15 扫码结束
 constexpr quint16 kHomeStart = 50;     // M50
 constexpr quint16 kHomeCount = 4;      // M50-M53
-constexpr quint16 kHomeBlockStart = kScanStart;
-constexpr quint16 kHomeBlockCount = kHomeStart + kHomeCount - kScanStart; // 39
+constexpr quint16 kHomeBlockStart = kStatusStart;
+constexpr quint16 kHomeBlockCount = kHomeStart + kHomeCount - kStatusStart; // 54
 constexpr quint16 kCommandStart = 100; // M100
 constexpr quint16 kCommandCount = 12;  // M100-M111 (M112 removed, D3)
 constexpr quint16 kSlowStart = 204;    // D204
@@ -957,6 +961,8 @@ void ModbusGatewayWorker::handleReadResult(const ModbusRequest &req, const Trans
             const quint32 slowInvalid = m_data.invalidFields
                 & ((quint32(1) << quint8(SnapshotField::PulsePerMm))
                    | (quint32(1) << quint8(SnapshotField::WidthSpeed)));
+            const quint16 statusCoils1 = m_data.statusCoils1;
+            const quint16 statusCoils3 = m_data.statusCoils3;
             const quint16 homeBits = m_data.homeBits;
             const quint16 commandBits = m_data.commandBits;
             const bool scanComplete = m_data.scanComplete;
@@ -965,6 +971,8 @@ void ModbusGatewayWorker::handleReadResult(const ModbusRequest &req, const Trans
             m_data.pulsePerMm = pulsePerMm;
             m_data.widthDelta = widthDelta;
             m_data.widthSpeed = widthSpeed;
+            m_data.statusCoils1 = statusCoils1;
+            m_data.statusCoils3 = statusCoils3;
             m_data.homeBits = homeBits;
             m_data.commandBits = commandBits;
             m_data.scanComplete = scanComplete;
@@ -996,8 +1004,22 @@ void ModbusGatewayWorker::handleReadResult(const ModbusRequest &req, const Trans
     // extra snapshot per block — mirrors the original publication cadence).
     if (req.cls == RequestClass::HomePoll) {
         if (res.values.size() >= (kHomeBlockCount + 15) / 16) {
-            // M15 扫码结束: block index 0 (user decision 2026-09-22).
-            m_data.scanComplete = coilBit(res.values, 0);
+            // M0-M15 status coils: block word 0 (user decision 2026-09-22).
+            // Authoritative for the M0-M14 accessors together with the D100
+            // mirror bit, which is dead in the high byte on the supplied PLC
+            // program (see the block comment above).
+            m_data.statusCoils1 = res.values.value(0, 0);
+            // M30-M45: block indices 30-45 -> statusCoils3 bits 0-15 (the D103
+            // mirror's high byte is dead on the supplied program too).
+            quint16 bits3 = 0;
+            for (int i = 0; i < kStatus3Count; ++i) {
+                if (coilBit(res.values, (kStatus3Start - kHomeBlockStart) + i))
+                    bits3 |= quint16(1) << i;
+            }
+            m_data.statusCoils3 = bits3;
+            // M15 扫码结束: block index 15.
+            m_data.scanComplete =
+                coilBit(res.values, kScanStart - kHomeBlockStart);
             // M50-M53: block indices 35-38, re-packed into homeBits bits 0-3 so
             // DeviceSnapshot's home accessors keep their meaning.
             quint16 bits = 0;

@@ -156,9 +156,16 @@ bool DiagnosticsModel::bitState(int mNumber) const
 {
     const DeviceSnapshot &s = m_model.snapshot();
     if (mNumber >= 0 && mNumber <= 14)
-        return fastFresh() && decode::d100Bit(s.statusWord1(), mNumber); // D100 -> M0-M14
+        // M0-M14: the M0-M15 coil read OR the D100 mirror bit (user decision
+        // 2026-09-22). The same composition the m0()..m14() accessors use, so
+        // this table can never disagree with the top bar and the alarm banner
+        // (the supplied PLC program's 状态字1 only carries M0-M7).
+        return fastFresh() && s.statusBit(mNumber);
     if (mNumber >= 30 && mNumber <= 45)
-        return fastFresh() && decode::d103Bit(s.statusWord3(), mNumber - 30); // D103 -> M30-M45
+        // M30-M45: the coil read OR the D103 mirror bit (user decision
+        // 2026-09-22) — the same composition the accessors use, so this table
+        // agrees with the buttons that read these bits back.
+        return fastFresh() && s.statusBit(mNumber);
     if (mNumber >= 50 && mNumber <= 53) {
         // M50-M53 (function code 01 readback, home block).
         if (!homeFresh())

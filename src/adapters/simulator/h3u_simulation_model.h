@@ -24,6 +24,13 @@ public:
     // --- coil / register access (0-based protocol addresses) ----------------
     void writeCoil(quint16 addr, bool value);
     bool readCoil(quint16 addr) const;
+    // 拍照结束/扫码结束 (M15) test-injection edge (user decision 2026-09-22):
+    // returns true once per injected pulse and clears the latch. An in-process
+    // pulse writes 1 then 0 inside a single call, so the level would never be
+    // visible in a snapshot; the edge is latched instead so the HMI's
+    // rising-edge detection still fires. Over Modbus RTU the HMI's own 100 ms
+    // level is what the PLC sees, so that path never needs the latch.
+    bool takeScanCompletePulse();
     void writeRegister(quint16 addr, quint16 value);
     quint16 readRegister(quint16 addr) const;
     // 32-bit read, low word first (D126/D127, D136/D137, D138/D139).
@@ -74,6 +81,8 @@ private:
     // in range but unused after the M112 removal; includes derived state bits
     // (M0, M1, M2, M60, M61) kept in sync by the handlers.
     bool m_coils[118] = {}; // 0..117 (M112 unused, M114-M117 test signals)
+    // Latched M15 rising edge from an injected pulse (takeScanCompletePulse).
+    bool m_scanCompletePulse = false;
 
     // Holding registers D100-D223 (index = protocol address). D100/D103 are
     // read-only derived status words computed on read from the coils; writes

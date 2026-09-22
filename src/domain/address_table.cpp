@@ -62,6 +62,12 @@ AddressTable::AddressTable()
         QStringLiteral("直通模式"), AccessType::Read, ValueType::U16));
     m_defs.push_back(def(QStringLiteral("M"), 14, QStringLiteral("M14"),
         QStringLiteral("故障锁存"), AccessType::Read, ValueType::U16));
+    // M15 拍照结束信号 (user decision 2026-09-22): the scan-complete coil the
+    // HMI reads in the home/scan block (M15-M53). ReadWrite because the 手动 page
+    // offers a test-only pulse that injects the signal for bench testing; on the
+    // machine the external scan program owns the coil.
+    m_defs.push_back(def(QStringLiteral("M"), 15, QStringLiteral("M15"),
+        QStringLiteral("拍照结束信号(扫码结束)"), AccessType::ReadWrite, ValueType::U16));
     m_defs.push_back(def(QStringLiteral("M"), 30, QStringLiteral("M30"),
         QStringLiteral("手动皮带点动命令"), AccessType::Read, ValueType::U16));
     m_defs.push_back(def(QStringLiteral("M"), 31, QStringLiteral("M31"),

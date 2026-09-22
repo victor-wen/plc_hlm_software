@@ -1721,13 +1721,17 @@ void ControlCoordinatorTest::simStationPulseIsAdminOnlyAndConvergesVisibly()
     QCOMPARE(terminals, 1); // exactly one terminal
     QVERIFY2(!gw.model().readCoil(114), "the pulse must end with the coil cleared");
 
-    // The other three signals are independent identities and addresses.
+    // The other four signals are independent identities and addresses.
     QVERIFY(c->simStationPulse(115).accepted);
     QVERIFY(c->simStationPulse(116).accepted);
     QVERIFY(c->simStationPulse(117).accepted);
+    // M15 拍照结束 (user decision 2026-09-22): the scan-complete coil the HMI
+    // itself reads, pulsed from the page for bench testing.
+    QVERIFY(c->simStationPulse(15).accepted);
     gw.tick();
+    QVERIFY2(!gw.model().readCoil(15), "the pulse must end with the coil cleared");
 
-    // An address outside the four defined signals is reported, never swallowed.
+    // An address outside the defined signals is reported, never swallowed.
     const ControlCoordinator::CommandResult unknown = c->simStationPulse(113);
     QVERIFY(!unknown.accepted);
     QVERIFY(!unknown.reason.isEmpty());

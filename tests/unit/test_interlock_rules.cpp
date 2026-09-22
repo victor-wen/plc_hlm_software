@@ -169,9 +169,13 @@ void InterlockRulesTest::startPreconditions()
     quint16 w1e = bit(bit(bit(bit(0,2),8),9),14);
     QVERIFY(!InterlockRules::checkStart(makeSnapshot(w1e, 0), true).allowed);
 
-    // Running M3=1: denied.
+    // Running M3=1: still allowed (user decision 2026-09-22). The decoded PLC
+    // start rung does not require M3=0 — M3 is a seal-in contact — so the HMI
+    // must not be stricter than the machine; the PLC decides whether the run
+    // starts, and a re-sent M101 pulse is harmless.
     quint16 w1f = bit(bit(bit(bit(0,2),8),9),3);
-    QVERIFY(!InterlockRules::checkStart(makeSnapshot(w1f, 0), true).allowed);
+    QVERIFY(InterlockRules::checkStart(makeSnapshot(w1f, 0), true).allowed);
+    QVERIFY(InterlockRules::checkStart(makeSnapshot(w1f, 0), true).unmet.isEmpty());
 
     // Offline: denied.
     QVERIFY(!InterlockRules::checkStart(makeSnapshot(w1, 0), false).allowed);

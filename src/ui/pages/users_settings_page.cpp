@@ -1,6 +1,7 @@
 #include "ui/pages/users_settings_page.h"
 
 #include "ui/shell/shell_model.h"
+#include "ui/widgets/disabled_hint.h"
 #include "ui/widgets/value_display.h"
 #include "ui/widgets/permission_button.h"
 #include "ui/dialogs/login_dialog.h"
@@ -603,6 +604,8 @@ void UsersSettingsPage::onSaveBarcodePathClicked()
     // the app shell's confirmed result replaces it (spec §11.2 无乐观更新).
     m_barcodePathSavePending = true;
     m_saveBarcodePath->setEnabled(false);
+    setUnavailableHint(m_saveBarcodePath, false,
+                       QStringLiteral("正在保存扫码路径…"));
     m_barcodePathStatus->setText(QStringLiteral("正在保存扫码路径…"));
     emit saveBarcodePathRequested(m_barcodePathEdit->text().trimmed());
 }
@@ -625,6 +628,8 @@ void UsersSettingsPage::setBarcodePathSavePending()
         return;
     m_barcodePathSavePending = true;
     m_saveBarcodePath->setEnabled(false);
+    setUnavailableHint(m_saveBarcodePath, false,
+                       QStringLiteral("正在保存扫码路径…"));
     m_barcodePathStatus->setText(QStringLiteral("正在保存扫码路径…"));
 }
 
@@ -634,6 +639,7 @@ void UsersSettingsPage::setBarcodePathSaveResult(bool ok, const QString &detail)
         return;
     m_barcodePathSavePending = false;
     m_saveBarcodePath->setEnabled(true);
+    setUnavailableHint(m_saveBarcodePath, true, QString());
     m_barcodePathStatus->setText(
         ok ? QStringLiteral("扫码结果文件路径已保存") : detail);
 }
@@ -689,6 +695,7 @@ void UsersSettingsPage::setNeedsInitialAdmin(bool needs)
 void UsersSettingsPage::setInitialAdminResult(bool ok, const QString &detail)
 {
     m_createAdmin->setEnabled(true);
+    setUnavailableHint(m_createAdmin, true, QString());
     m_createAdmin->setText(QStringLiteral("创建管理员"));
     if (ok) {
         showStatus(m_createAdminStatus, QStringLiteral("管理员创建成功"), true);
@@ -746,6 +753,7 @@ void UsersSettingsPage::setUsers(const QVector<UserRecord> &users)
 void UsersSettingsPage::setAddUserResult(bool ok, const QString &detail)
 {
     m_addUser->setEnabled(true);
+    setUnavailableHint(m_addUser, true, QString());
     showStatus(m_userStatus,
                ok ? QStringLiteral("用户创建成功")
                   : QStringLiteral("用户创建失败：%1")
@@ -760,6 +768,7 @@ void UsersSettingsPage::setAddUserResult(bool ok, const QString &detail)
 void UsersSettingsPage::setDeleteUserResult(bool ok, const QString &detail)
 {
     m_deleteUser->setEnabled(true);
+    setUnavailableHint(m_deleteUser, true, QString());
     showStatus(m_userStatus,
                ok ? QStringLiteral("用户删除成功")
                   : QStringLiteral("用户删除失败：%1")
@@ -770,6 +779,7 @@ void UsersSettingsPage::setDeleteUserResult(bool ok, const QString &detail)
 void UsersSettingsPage::setPasswordChangeResult(bool ok, const QString &detail)
 {
     m_changePassword->setEnabled(true);
+    setUnavailableHint(m_changePassword, true, QString());
     showStatus(m_changePasswordStatus,
                ok ? QStringLiteral("密码修改成功")
                   : QStringLiteral("密码修改失败：%1")
@@ -854,6 +864,7 @@ void UsersSettingsPage::setSerialSettingsSaveResult(bool committed, const QStrin
 {
     m_serialSavePending = false;
     m_saveSerial->setEnabled(true);
+    setUnavailableHint(m_saveSerial, true, QString());
     if (committed) {
         // 非乐观状态: 保存结果由组合根回填 (spec §11.2). 仅声明已持久化,
         // 不声明已重连: 模拟网关路径不重建连接.
@@ -964,6 +975,7 @@ void UsersSettingsPage::onCreateAdminClicked()
     // 无默认密码: 只把用户输入的密码交给应用层 (spec §11.5).
     showStatus(m_createAdminStatus, QStringLiteral("正在安全创建管理员…"), true);
     m_createAdmin->setEnabled(false);
+    setUnavailableHint(m_createAdmin, false, QStringLiteral("正在安全创建管理员…"));
     m_createAdmin->setText(QStringLiteral("正在创建…"));
     emit createInitialAdminRequested(username, password);
 }
@@ -1057,6 +1069,7 @@ void UsersSettingsPage::onAddUserClicked()
     const Role role = Role(m_newUserRole->currentData().toInt());
     showStatus(m_userStatus, QStringLiteral("正在创建用户…"), true);
     m_addUser->setEnabled(false);
+    setUnavailableHint(m_addUser, false, QStringLiteral("正在创建用户…"));
     emit addUserRequested(username, role, password);
 }
 
@@ -1082,6 +1095,7 @@ void UsersSettingsPage::onDeleteUserClicked()
         return;
     showStatus(m_userStatus, QStringLiteral("正在删除用户…"), true);
     m_deleteUser->setEnabled(false);
+    setUnavailableHint(m_deleteUser, false, QStringLiteral("正在删除用户…"));
     emit deleteUserRequested(target.id);
 }
 
@@ -1118,6 +1132,7 @@ void UsersSettingsPage::onChangePasswordClicked()
     }
     showStatus(m_changePasswordStatus, QStringLiteral("正在修改密码…"), true);
     m_changePassword->setEnabled(false);
+    setUnavailableHint(m_changePassword, false, QStringLiteral("正在修改密码…"));
     emit changePasswordRequested(userId, newPassword);
 }
 
@@ -1142,6 +1157,7 @@ void UsersSettingsPage::onSaveSerialClicked()
     // 组合根把七个键作为一个批次原子持久化, 并只在成功后重建网关.
     m_serialSavePending = true;
     m_saveSerial->setEnabled(false);
+    setUnavailableHint(m_saveSerial, false, QStringLiteral("等待确认保存并重连"));
     m_serialStatus->setText(QStringLiteral("等待确认保存并重连"));
     emit saveSerialSettingsRequested(cfg);
 }

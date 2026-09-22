@@ -2,6 +2,7 @@
 
 #include "domain/width_units.h"
 #include "ui/shell/shell_model.h"
+#include "ui/widgets/disabled_hint.h"
 #include "ui/widgets/value_display.h"
 #include "ui/widgets/width_spin_box.h"
 #include "ui/widgets/permission_button.h"
@@ -431,6 +432,11 @@ void RecipeWidthPage::refresh()
         deletePending ? QStringLiteral("正在删除配方, 请稍候") : permReason);
     m_nameEdit->setEnabled(canEdit);
     m_widthSpin->setEnabled(canEdit);
+    // Hover hint for the editors (user decision 2026-09-22): the shared inline
+    // reason label stays authoritative (spec §11.4), the hint repeats it on
+    // hover so a disabled editor also answers "why" under the pointer.
+    setUnavailableHint(m_nameEdit, canEdit, permReason);
+    setUnavailableHint(m_widthSpin, canEdit, permReason);
     // D5: the inline reason is always present (never hidden); it carries text
     // exactly while editing is unavailable for the current role.
     m_editorReason->setText(canEdit ? QString()

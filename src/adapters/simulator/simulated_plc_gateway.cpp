@@ -22,6 +22,30 @@ constexpr quint16 kSlowCount = 20;     // D204-D223
 // D140 heartbeat freeze threshold (spec §8.4): 3 ticks without a change.
 constexpr quint64 kHeartbeatFreezeTicks = 3;
 
+// Pack M0-M15 into the status word (bit0 = M0, ... bit15 = M15), mirroring the
+// real gateway's coil block read (user decision 2026-09-22).
+quint16 packStatusBits(const H3uSimulationModel &m)
+{
+    quint16 bits = 0;
+    for (int i = 0; i < 16; ++i) {
+        if (m.readCoil(quint16(i)))
+            bits |= quint16(1) << i;
+    }
+    return bits;
+}
+
+// Pack M30-M45 into the status-word-3 coil word (bit0 = M30, ... bit15 = M45),
+// mirroring the real gateway's block read of the same coils.
+quint16 packStatusCoils3(const H3uSimulationModel &m)
+{
+    quint16 bits = 0;
+    for (int i = 0; i < 16; ++i) {
+        if (m.readCoil(quint16(30 + i)))
+            bits |= quint16(1) << i;
+    }
+    return bits;
+}
+
 // Pack M50-M53 into the home-bits word (bit0 = M50, ... bit3 = M53).
 quint16 packHomeBits(const H3uSimulationModel &m)
 {
@@ -250,12 +274,25 @@ void SimulatedPlcGateway::publishSnapshot()
     DeviceSnapshotData d = decodeFastBlock(raw, ++m_sequence, true, 0, now, now,
                                            DataQuality::Valid);
 
-    // Home bits M50-M53 and command bits M100-M111 (function code 01).
+    // M0-M15 status coils, M50-M53 home bits and M100-M111 command bits
+    // (function code 01). The model's D100 synthesis already maps M8/M9 from
+    // M60/M61, but the HMI takes the coils as the live truth: the real PLC's
+    // 状态字1 only carries M0-M7 (MOV K2M0 D100), so a coil-only source is what
+    // makes the HMI read the same on the bench and on the machine.
+    d.statusCoils1 = packStatusBits(m_model);
+    d.statusCoils3 = packStatusCoils3(m_model);
     d.homeBits = packHomeBits(m_model);
     d.commandBits = packCommandBits(m_model);
     // M15 扫码结束: read as a coil in the same block as the home bits (user
-    // decision 2026-09-22), never from D100 bit15.
-    d.scanComplete = m_model.readCoil(kScanStart);
+    // decision 2026-09-22), never from D100 bit15. The 手动 page's test pulse is
+    // instantaneous in process, so its latched edge counts as one snapshot of
+    // M15=1 (see H3uSimulationModel::takeScanCompletePulse): without it the
+    // HMI's rising-edge detection could never see an injected scan cycle.
+    // The latch is consumed on EVERY publish (never short-circuited away by an
+    // already-high level), otherwise a stale pulse would keep the flag raised
+    // after the coil went back to 0 and swallow the next cycle's rising edge.
+    const bool scanPulse = m_model.takeScanCompletePulse();
+    d.scanComplete = m_model.readCoil(kScanStart) || scanPulse;
     // The in-process model completes every poll inline, so each block was
     // refreshed now: real zero ages and Valid quality (no hard-coded overall
     // age; recomputeDerivedQuality derives the maximum).

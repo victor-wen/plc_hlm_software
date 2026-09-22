@@ -12,6 +12,7 @@ constexpr quint16 kM1 = 1;   // manual mode
 constexpr quint16 kM2 = 2;   // auto mode
 constexpr quint16 kM3 = 3;   // running
 constexpr quint16 kM14 = 14; // latched fault
+constexpr quint16 kM15 = 15; // 拍照结束/扫码结束 (scan cycle end)
 constexpr quint16 kM34 = 34; // width adjusting
 constexpr quint16 kM43 = 43; // width adjust command (pulse)
 constexpr quint16 kM44 = 44; // width adjust success
@@ -86,6 +87,15 @@ void H3uSimulationModel::writeCoil(quint16 addr, bool value)
     m_coils[addr] = value;
 
     switch (addr) {
+    case kM15: // 拍照结束/扫码结束 (test injection, user decision 2026-09-22)
+        // The in-process pulse writes 1 then 0 inside one call, so the level is
+        // never visible in a snapshot. Latch the rising edge; the in-process
+        // gateway consumes it for exactly one snapshot, which is what the HMI's
+        // rising-edge detection needs. Over Modbus RTU the HMI's own 100 ms
+        // level is what the PLC sees, so the latch is not used on that path.
+        if (rising)
+            m_scanCompletePulse = true;
+        break;
     case kM43: // width adjust command (pulse)
         if (rising)
             onM43RisingEdge();
@@ -120,6 +130,13 @@ void H3uSimulationModel::writeCoil(quint16 addr, bool value)
     default:
         break;
     }
+}
+
+bool H3uSimulationModel::takeScanCompletePulse()
+{
+    const bool pulse = m_scanCompletePulse;
+    m_scanCompletePulse = false;
+    return pulse;
 }
 
 bool H3uSimulationModel::readCoil(quint16 addr) const

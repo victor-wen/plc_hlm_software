@@ -48,7 +48,7 @@ QStringList manualReasons(const ShellModel &model)
     return reasons;
 }
 
-// 测试信号 M114-M117 (user decision 2026-09-22): 仅管理员 + 在线. The gate is
+// 测试信号 M15/M114-M117 (user decision 2026-09-22): 仅管理员 + 在线. The gate is
 // deliberately free of machine-state preconditions so the signal stays
 // injectable while the flow runs; snapshot freshness is not required either,
 // because a bench injection does not act on machine state.

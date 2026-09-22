@@ -342,12 +342,12 @@ private:
     qint64 m_estopDeadlineMs = 0;
     // Accepted hold/latch/bypass commands waiting for snapshot confirmation.
     QVector<ManualConfirm> m_manualPending;
-    // 测试信号 M114-M117 (user decision 2026-09-22): one single-flight slot per
-    // signal, indexed by simSignalIndex(), plus its defensive deadline. A pulse
-    // whose correlated completion never arrives still converges visibly.
-    static constexpr int kSimSignalCount = 4;
-    bool m_simSignalPending[kSimSignalCount] = {false, false, false, false};
-    qint64 m_simSignalDeadlineMs[kSimSignalCount] = {0, 0, 0, 0};
+    // 测试信号 M15/M114-M117 (user decision 2026-09-22): one single-flight slot
+    // per signal, indexed by simSignalIndex(), plus its defensive deadline. A
+    // pulse whose correlated completion never arrives still converges visibly.
+    static constexpr int kSimSignalCount = 5;
+    bool m_simSignalPending[kSimSignalCount] = {false, false, false, false, false};
+    qint64 m_simSignalDeadlineMs[kSimSignalCount] = {0, 0, 0, 0, 0};
     // Pending logout/session-timeout clear generation (REV-P0-1). Only one
     // clear may be in flight; a duplicate logoutClear() while it is pending is
     // absorbed (no second generation, no second request-start).

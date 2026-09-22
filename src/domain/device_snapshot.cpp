@@ -15,7 +15,63 @@ void checkRange(DeviceSnapshotData &d, SnapshotField f, quint16 value,
         d.invalidFields |= (quint32(1) << quint8(f));
 }
 
+// M0-M14 source: the M0-M15 coil read OR the D100 mirror bit (user decision
+// 2026-09-22, see DeviceSnapshotData::statusCoils1). The OR is deliberate: the
+// supplied PLC program builds 状态字1 with MOV K2M0 D100, which copies only
+// M0-M7, so D100's high byte reads 0 forever even when M8/M9/M14 are set — the
+// coil read is the live truth. Keeping the mirror as a second source can only
+// add a warning, never hide one, and on a corrected PLC (MOV K4M0) both agree.
+bool statusBitFromEitherSource(const DeviceSnapshotData &d, int bit)
+{
+    return decode::d100Bit(d.statusWord1, bit)
+        || (d.statusCoils1 & (quint16(1) << bit)) != 0;
+}
+
+// M30-M45 source: the coil read OR the D103 mirror bit (user decision
+// 2026-09-22). Same reasoning as above: 状态字3 is built with MOV K2M30 D103,
+// so its high byte (M38-M45, including 调宽成功/失败 and 皮带常转) is dead on
+// the supplied program.
+bool statusBit3FromEitherSource(const DeviceSnapshotData &d, int bit)
+{
+    return decode::d103Bit(d.statusWord3, bit)
+        || (d.statusCoils3 & (quint16(1) << bit)) != 0;
+}
+
 } // namespace
+
+bool DeviceSnapshot::statusBit(int mNumber) const
+{
+    switch (mNumber) {
+    case 0: return m_m0;
+    case 1: return m_m1;
+    case 2: return m_m2;
+    case 3: return m_m3;
+    case 4: return m_m4;
+    case 5: return m_m5;
+    case 6: return m_m6;
+    case 7: return m_m7;
+    case 8: return m_m8;
+    case 9: return m_m9;
+    case 10: return m_m10;
+    case 11: return m_m11;
+    case 12: return m_m12;
+    case 13: return m_m13;
+    case 14: return m_m14;
+    case 30: return m_m30;
+    case 31: return m_m31;
+    case 32: return m_m32;
+    case 33: return m_m33;
+    case 34: return m_m34;
+    case 35: return m_m35;
+    case 40: return m_m40;
+    case 41: return m_m41;
+    case 42: return m_m42;
+    case 43: return m_m43;
+    case 44: return m_m44;
+    case 45: return m_m45;
+    default: return false; // bit15 of D100 and undefined M numbers
+    }
+}
 
 DataQuality aggregateQuality(const DeviceSnapshotData &d)
 {
@@ -188,33 +244,33 @@ DeviceSnapshot::DeviceSnapshot(const DeviceSnapshotData &d)
     , m_statusWord3(d.statusWord3)
     , m_statusWord4(d.statusWord4)
     , m_statusWord5(d.statusWord5)
-    , m_m0(decode::d100Bit(d.statusWord1, 0))
-    , m_m1(decode::d100Bit(d.statusWord1, 1))
-    , m_m2(decode::d100Bit(d.statusWord1, 2))
-    , m_m3(decode::d100Bit(d.statusWord1, 3))
-    , m_m4(decode::d100Bit(d.statusWord1, 4))
-    , m_m5(decode::d100Bit(d.statusWord1, 5))
-    , m_m6(decode::d100Bit(d.statusWord1, 6))
-    , m_m7(decode::d100Bit(d.statusWord1, 7))
-    , m_m8(decode::d100Bit(d.statusWord1, 8))
-    , m_m9(decode::d100Bit(d.statusWord1, 9))
-    , m_m10(decode::d100Bit(d.statusWord1, 10))
-    , m_m11(decode::d100Bit(d.statusWord1, 11))
-    , m_m12(decode::d100Bit(d.statusWord1, 12))
-    , m_m13(decode::d100Bit(d.statusWord1, 13))
-    , m_m14(decode::d100Bit(d.statusWord1, 14))
-    , m_m30(decode::d103Bit(d.statusWord3, 0))
-    , m_m31(decode::d103Bit(d.statusWord3, 1))
-    , m_m32(decode::d103Bit(d.statusWord3, 2))
-    , m_m33(decode::d103Bit(d.statusWord3, 3))
-    , m_m34(decode::d103Bit(d.statusWord3, 4))
-    , m_m35(decode::d103Bit(d.statusWord3, 5))
-    , m_m40(decode::d103Bit(d.statusWord3, 10))
-    , m_m41(decode::d103Bit(d.statusWord3, 11))
-    , m_m42(decode::d103Bit(d.statusWord3, 12))
-    , m_m43(decode::d103Bit(d.statusWord3, 13))
-    , m_m44(decode::d103Bit(d.statusWord3, 14))
-    , m_m45(decode::d103Bit(d.statusWord3, 15))
+    , m_m0(statusBitFromEitherSource(d, 0))
+    , m_m1(statusBitFromEitherSource(d, 1))
+    , m_m2(statusBitFromEitherSource(d, 2))
+    , m_m3(statusBitFromEitherSource(d, 3))
+    , m_m4(statusBitFromEitherSource(d, 4))
+    , m_m5(statusBitFromEitherSource(d, 5))
+    , m_m6(statusBitFromEitherSource(d, 6))
+    , m_m7(statusBitFromEitherSource(d, 7))
+    , m_m8(statusBitFromEitherSource(d, 8))
+    , m_m9(statusBitFromEitherSource(d, 9))
+    , m_m10(statusBitFromEitherSource(d, 10))
+    , m_m11(statusBitFromEitherSource(d, 11))
+    , m_m12(statusBitFromEitherSource(d, 12))
+    , m_m13(statusBitFromEitherSource(d, 13))
+    , m_m14(statusBitFromEitherSource(d, 14))
+    , m_m30(statusBit3FromEitherSource(d, 0))
+    , m_m31(statusBit3FromEitherSource(d, 1))
+    , m_m32(statusBit3FromEitherSource(d, 2))
+    , m_m33(statusBit3FromEitherSource(d, 3))
+    , m_m34(statusBit3FromEitherSource(d, 4))
+    , m_m35(statusBit3FromEitherSource(d, 5))
+    , m_m40(statusBit3FromEitherSource(d, 10))
+    , m_m41(statusBit3FromEitherSource(d, 11))
+    , m_m42(statusBit3FromEitherSource(d, 12))
+    , m_m43(statusBit3FromEitherSource(d, 13))
+    , m_m44(statusBit3FromEitherSource(d, 14))
+    , m_m45(statusBit3FromEitherSource(d, 15))
     , m_faultCode(d.faultCode)
     , m_fault(FaultCodeTable::instance().info(d.faultCode))
     , m_currentStep(d.currentStep)

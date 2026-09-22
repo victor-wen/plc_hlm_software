@@ -60,21 +60,24 @@ constexpr qint64 kSimSignalTimeoutMs = 3'000;
 // arrives. Same 3 s class as the manual confirmation timeout.
 constexpr qint64 kLogoutClearTimeoutMs = 3'000;
 
-// 测试信号 (user decision 2026-09-22): the four simulated neighbouring-station
-// signals on the 手动 page. The address order is the identity order used by
-// simSignalIndex(). M114-M117 are absent from the current PLC program, so on
-// an unchanged PLC these pulses are inert; the PLC engineer adds the rungs.
-constexpr quint16 kSimSignalAddresses[4] = {114, 115, 116, 117};
-constexpr Command kSimSignalCommands[4] = {
+// 测试信号 (user decision 2026-09-22): the test-only pulses on the 手动 page.
+// The address order is the identity order used by simSignalIndex(). M114-M117
+// are absent from the current PLC program, so on an unchanged PLC those pulses
+// are inert; the PLC engineer adds the rungs. M15 (拍照结束/扫码结束) is the
+// coil the HMI itself reads, so its pulse is the bench injection that makes the
+// whole barcode path run: the rising edge is detected on the snapshot feed.
+constexpr quint16 kSimSignalAddresses[5] = {114, 115, 116, 117, 15};
+constexpr Command kSimSignalCommands[5] = {
     Command::SimUpstreamBoardIn,
     Command::SimDownstreamBoardRequest,
     Command::SimUpstreamBoardRequest,
     Command::SimDownstreamExitRequest,
+    Command::SimScanComplete,
 };
 
 int simSignalIndex(Command cmd)
 {
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 5; ++i) {
         if (kSimSignalCommands[i] == cmd)
             return i;
     }
@@ -92,6 +95,8 @@ QString simSignalName(Command cmd)
         return QStringLiteral("模拟前站要板请求信号");
     case Command::SimDownstreamExitRequest:
         return QStringLiteral("模拟后站出站请求信号");
+    case Command::SimScanComplete:
+        return QStringLiteral("模拟拍照结束信号");
     default:
         return QString();
     }
@@ -99,7 +104,7 @@ QString simSignalName(Command cmd)
 
 std::optional<Command> simSignalForAddress(quint16 address)
 {
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 5; ++i) {
         if (kSimSignalAddresses[i] == address)
             return kSimSignalCommands[i];
     }
@@ -221,6 +226,7 @@ InterlockResult ControlCoordinator::interlock(Command cmd, const DeviceSnapshot 
     case Command::SimDownstreamBoardRequest:
     case Command::SimUpstreamBoardRequest:
     case Command::SimDownstreamExitRequest:
+    case Command::SimScanComplete:
         // 测试信号 (user decision 2026-09-22): online is the only gate, so the
         // signal stays injectable while the machine runs its flow.
         return InterlockRules::checkSimStationSignal(s, m_online);
@@ -961,7 +967,8 @@ void ControlCoordinator::onSubmissionCompleted(const SubmissionCompletion &compl
     case Command::SimUpstreamBoardIn:
     case Command::SimDownstreamBoardRequest:
     case Command::SimUpstreamBoardRequest:
-    case Command::SimDownstreamExitRequest: {
+    case Command::SimDownstreamExitRequest:
+    case Command::SimScanComplete: {
         // 测试信号 (user decision 2026-09-22): a failed pulse never started, so
         // the single terminal is the failure itself.
         const int simIndex = simSignalIndex(pending.cmd);
@@ -1244,7 +1251,8 @@ void ControlCoordinator::finishCommand(Command cmd, bool ok, const QString &deta
     case Command::SimUpstreamBoardIn:
     case Command::SimDownstreamBoardRequest:
     case Command::SimUpstreamBoardRequest:
-    case Command::SimDownstreamExitRequest: {
+    case Command::SimDownstreamExitRequest:
+    case Command::SimScanComplete: {
         const int simIndex = simSignalIndex(cmd);
         if (simIndex >= 0) {
             m_simSignalPending[simIndex] = false;
@@ -1295,6 +1303,7 @@ QString ControlCoordinator::pendingDetail(Command cmd) const
     case Command::SimDownstreamBoardRequest:
     case Command::SimUpstreamBoardRequest:
     case Command::SimDownstreamExitRequest:
+    case Command::SimScanComplete:
         return QStringLiteral("测试信号: 正在发送 %1 脉冲").arg(simSignalName(cmd));
     case Command::ManualCommand:
         return QStringLiteral("手动命令已发送: 等待 PLC 确认");

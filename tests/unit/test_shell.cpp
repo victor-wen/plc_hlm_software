@@ -130,6 +130,7 @@ private slots:
     void modelStartsOfflineUnknown();
     void modelSnapshotUpdatesState();
     void modelStaleSnapshotMarksInvalid();
+    void statusBitsFollowTheCoilReadWhenD100HighByteIsDead();
     void modelUserAndRole();
     void modelFlagsUseOwningBlockOnly();
 
@@ -203,6 +204,30 @@ void ShellTest::modelSnapshotUpdatesState()
     QCOMPARE(model.isRunning(), false);
     QCOMPARE(model.isHomed(), false);
     QCOMPARE(model.isFaulted(), false);
+}
+
+void ShellTest::statusBitsFollowTheCoilReadWhenD100HighByteIsDead()
+{
+    // User decision 2026-09-22: the supplied PLC program builds 状态字1 with
+    // `MOV K2M0 D100`, which copies only M0-M7 — D100 bits 8-14 read 0 forever.
+    // The shell must still show 已回原点 (M9/M61) and 故障锁存 (M14) from the
+    // M0-M15 coil read, or the machine would look permanently un-homed and
+    // fault-free.
+    ShellModel model;
+    DeviceSnapshotData d = validSnapshotData();
+    d.statusWord1 = 1 << 2;                // M2 auto (the low byte is live)
+    d.statusCoils1 = (1 << 8) | (1 << 9); // M8 + M9 set on the coils
+    model.updateSnapshot(DeviceSnapshot(d));
+    QVERIFY(model.isAutoMode());
+    QVERIFY2(model.isHomed(), "M9 must come from the coil read");
+    QVERIFY(!model.isFaulted());
+
+    DeviceSnapshotData latched = validSnapshotData();
+    latched.statusWord1 = 1 << 2;  // D100 bit14 stays clear (the K2M0 program)
+    latched.statusCoils1 = 1 << 14; // M14 latched on the coil
+    model.updateSnapshot(DeviceSnapshot(latched));
+    QVERIFY2(model.isFaulted(), "M14 must come from the coil read");
+    QVERIFY(model.activeAlarmText().contains(QStringLiteral("存在锁存故障")));
 }
 
 void ShellTest::modelStaleSnapshotMarksInvalid()

@@ -71,13 +71,18 @@ InterlockResult InterlockRules::checkAdjustWidth(const DeviceSnapshot &s, bool o
 
 InterlockResult InterlockRules::checkStart(const DeviceSnapshot &s, bool online)
 {
+    // 启动前置条件与 PLC 自己的启动梯级一致 (user decision 2026-09-22). The
+    // decoded ladder rung (SBR_STARTSTOP) is M101 ∧ M2 ∧ M60 ∧ ¬M0 ∧ ¬M14 with
+    // M3 as a SEAL-IN contact, not a precondition: pressing 启动 again while the
+    // flow runs re-sends the harmless M101 pulse, and the PLC is the authority
+    // on whether the run starts. The former extra ¬M3 requirement made the HMI
+    // stricter than the machine and left 启动 disabled for the whole run.
     InterlockResult r;
     add(r.unmet, online, QStringLiteral("通讯中断"));
     add(r.unmet, s.m2(), QStringLiteral("需要自动模式"));
     add(r.unmet, autoReady(s), QStringLiteral("自动准备未完成"));
     add(r.unmet, !s.m0(), QStringLiteral("急停有效"));
     add(r.unmet, !s.m14(), QStringLiteral("存在锁存故障"));
-    add(r.unmet, !s.m3(), QStringLiteral("设备正在运行"));
     r.allowed = r.unmet.isEmpty();
     return r;
 }

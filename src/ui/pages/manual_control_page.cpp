@@ -1,6 +1,7 @@
 #include "ui/pages/manual_control_page.h"
 
 #include "ui/shell/shell_model.h"
+#include "ui/widgets/disabled_hint.h"
 #include "ui/widgets/hold_button.h"
 #include "ui/widgets/permission_button.h"
 #include "ui/widgets/value_display.h"
@@ -28,7 +29,8 @@ constexpr quint16 kM108 = 108; // 手动皮带点动 (hold)
 constexpr quint16 kM109 = 109; // 手动挡停 (latch)
 constexpr quint16 kM110 = 110; // 光栅屏蔽
 constexpr quint16 kM111 = 111; // 门磁屏蔽
-// 测试信号 (user decision 2026-09-22): 模拟前后站信号, 台架测试用.
+// 测试信号 (user decision 2026-09-22): 台架测试用的脉冲信号.
+constexpr quint16 kM15 = 15;   // 拍照结束信号 (扫码结束)
 constexpr quint16 kM114 = 114; // 模拟前站进板信号
 constexpr quint16 kM115 = 115; // 模拟后站要板信号
 constexpr quint16 kM116 = 116; // 模拟前站要板请求信号
@@ -102,10 +104,23 @@ void ManualControlPage::buildLayout()
     widthRevColumn->addWidget(m_widthRevReason);
     manualRow->addLayout(widthRevColumn);
 
+    // 皮带点动 has no homing precondition (PLC-HMI-011 D5) but is still gated by
+    // permission/mode/estop/fault, so it carries its own visible reason beneath
+    // it exactly like the width jogs (spec §11.4). Before this it was the one
+    // manual control that went dead with nothing on screen or on hover to say
+    // why (user decision 2026-09-22).
+    auto *jogColumn = new QVBoxLayout();
+    jogColumn->setSpacing(4);
     m_jog = new HoldButton(QStringLiteral("皮带点动"), manualBox);
     m_jog->setObjectName(QStringLiteral("beltJogButton"));
     m_jog->setMinimumHeight(64);
-    manualRow->addWidget(m_jog);
+    jogColumn->addWidget(m_jog);
+    m_jogReason = new QLabel(manualBox);
+    m_jogReason->setObjectName(QStringLiteral("beltJogReason"));
+    m_jogReason->setWordWrap(true);
+    m_jogReason->setMinimumHeight(20);
+    jogColumn->addWidget(m_jogReason);
+    manualRow->addLayout(jogColumn);
     m_stopGate = new PermissionButton(QStringLiteral("挡停伸出"), manualBox);
     m_stopGate->setObjectName(QStringLiteral("stopGateButton"));
     m_stopGate->setMinimumHeight(64);
@@ -133,17 +148,20 @@ void ManualControlPage::buildLayout()
     bypassRow->addWidget(m_beltContinuous);
     bypassLayout->addLayout(bypassRow);
 
-    // --- 测试信号 (M114-M117, user decision 2026-09-22) -------------------------
-    // 台架测试用: simulate the neighbouring-station handshake. Each button sends
-    // one 100 ms pulse (1 -> 100 ms -> 0) like M101/M102/M103/M43. These coils
-    // are absent from the current PLC program, so on an unchanged PLC the pulses
-    // are inert; the PLC engineer adds the rungs that consume them.
+    // --- 测试信号 (M15 + M114-M117, user decision 2026-09-22) -------------------
+    // 台架测试用: simulate the neighbouring-station handshake and the scan
+    // cycle's end. Each button sends one 100 ms pulse (1 -> 100 ms -> 0) like
+    // M101/M102/M103/M43. M114-M117 are absent from the current PLC program, so
+    // on an unchanged PLC those pulses are inert; the PLC engineer adds the
+    // rungs that consume them. M15 拍照结束 is the coil the HMI itself reads, so
+    // its pulse is the bench injection that drives the whole barcode path: the
+    // rising edge is detected on the snapshot feed and the result file is read.
     auto *simBox = new QFrame(this);
     simBox->setObjectName(QStringLiteral("simSignalPanel"));
     simBox->setFrameShape(QFrame::StyledPanel);
     auto *simLayout = new QVBoxLayout(simBox);
     simLayout->setSpacing(8);
-    auto *simTitle = new QLabel(QStringLiteral("测试信号 (模拟前后站)"), simBox);
+    auto *simTitle = new QLabel(QStringLiteral("测试信号 (模拟前后站/拍照结束)"), simBox);
     simTitle->setObjectName(QStringLiteral("sectionTitle"));
     simLayout->addWidget(simTitle);
 
@@ -158,6 +176,7 @@ void ManualControlPage::buildLayout()
         {kM115, "模拟后站要板", "simDownstreamBoardRequestButton"},
         {kM116, "模拟前站要板请求", "simUpstreamBoardRequestButton"},
         {kM117, "模拟后站出站请求", "simDownstreamExitRequestButton"},
+        {kM15, "模拟拍照结束", "simScanCompleteButton"},
     };
     for (const auto &signal : simSignals) {
         auto *button = new PermissionButton(QString::fromUtf8(signal.text), simBox);
@@ -366,10 +385,13 @@ void ManualControlPage::refresh()
         m_lastSeededWidthSpeed = readback;
     }
     const bool canWriteSpeed = m_pageModel.canWriteWidthSpeed();
+    const QString speedReason =
+        m_pageModel.widthSpeedWriteUnmetReasons().join(QStringLiteral("；"));
     m_widthSpeedSpin->setEnabled(canWriteSpeed);
-    m_writeWidthSpeed->setEnabledWithReason(
-        canWriteSpeed,
-        m_pageModel.widthSpeedWriteUnmetReasons().join(QStringLiteral("；")));
+    // The editor itself carries no reason text, so its hover hint mirrors the
+    // write button's reason (user decision 2026-09-22).
+    setUnavailableHint(m_widthSpeedSpin, canWriteSpeed, speedReason);
+    m_writeWidthSpeed->setEnabledWithReason(canWriteSpeed, speedReason);
 
     // Manual gating: permission + interlock reasons (spec §11.4). PLC-HMI-011 D5
     // splits the manual gate per command: the width jogs (M106/M107) still
@@ -380,10 +402,10 @@ void ManualControlPage::refresh()
         m_pageModel.widthJogUnmetReasons().join(QStringLiteral("；"));
     m_widthFwd->setEnabled(canWidth);
     m_widthRev->setEnabled(canWidth);
-    m_widthFwd->setToolTip(canWidth ? QString() : widthReason);
-    m_widthFwd->setStatusTip(canWidth ? QString() : widthReason);
-    m_widthRev->setToolTip(canWidth ? QString() : widthReason);
-    m_widthRev->setStatusTip(canWidth ? QString() : widthReason);
+    // Hover hint (user decision 2026-09-22): the HoldButtons are not
+    // PermissionButtons, so the hint is set here, next to the inline label.
+    setUnavailableHint(m_widthFwd, canWidth, widthReason);
+    setUnavailableHint(m_widthRev, canWidth, widthReason);
     // The remaining width-jog reason is visible inline text directly beneath
     // each width button, never tooltip-only (spec §11.4; the OB-7 surface
     // requirement).
@@ -392,7 +414,13 @@ void ManualControlPage::refresh()
     m_widthRevReason->setText(canWidth ? QString() : widthReason);
     m_widthRevReason->setVisible(!canWidth && !widthReason.isEmpty());
 
-    m_jog->setEnabled(m_pageModel.canBeltJog());
+    const bool canJog = m_pageModel.canBeltJog();
+    const QString jogReason =
+        m_pageModel.beltJogUnmetReasons().join(QStringLiteral("；"));
+    m_jog->setEnabled(canJog);
+    setUnavailableHint(m_jog, canJog, jogReason);
+    m_jogReason->setText(canJog ? QString() : jogReason);
+    m_jogReason->setVisible(!canJog && !jogReason.isEmpty());
     m_stopGate->setEnabledWithReason(
         m_pageModel.canStopGate(),
         m_pageModel.stopGateUnmetReasons().join(QStringLiteral("；")));

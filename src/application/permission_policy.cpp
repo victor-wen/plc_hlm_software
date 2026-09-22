@@ -24,11 +24,12 @@ PermissionResult PermissionPolicy::check(Role role, Command cmd)
     case Command::EstopRelease:
     case Command::ManualCommand:
     case Command::Bypass:
-    // 测试信号 M114-M117: 台架测试用, 与手动命令同权限 (仅管理员, spec §11.4).
+    // 测试信号 M15/M114-M117: 台架测试用, 与手动命令同权限 (仅管理员, spec §11.4).
     case Command::SimUpstreamBoardIn:
     case Command::SimDownstreamBoardRequest:
     case Command::SimUpstreamBoardRequest:
     case Command::SimDownstreamExitRequest:
+    case Command::SimScanComplete:
     case Command::ParameterChange:
         // 模式切换、复位、回原点、解除急停、配方调宽、手动、屏蔽、设置: 仅管理员
         // (spec §11.4).

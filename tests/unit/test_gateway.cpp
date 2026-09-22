@@ -105,6 +105,7 @@ private slots:
     void slowPollOutOfRangeMarksFieldsInvalid();
     void fastPollPreservesHomeAndCommandBits();
     void scanCompleteBitIsReadFromTheHomeBlock();
+    void statusBitsComeFromTheCoilsNotTheDeadD100HighByte();
     void packCoilBitsPacksLsbFirst();
     void makeTransferResultConvertsByKind();
     // Task 20: pulse state machine, comm stats.
@@ -759,10 +760,10 @@ void GatewayTest::fastPollPreservesHomeAndCommandBits()
     m_worker->onPollTick();
     m_transport->completeOk(fastBlock(2)); // in-flight fast poll first
     QCOMPARE(m_transport->sent.last().cls, RequestClass::HomePoll);
-    // The home/scan block is M15-M53 (39 coils = 3 words): word0 bit0 = M15,
-    // M50-M53 = block indices 35-38 -> word2 bits 3-6. This reply sets
-    // M51 + M53 (word2 bits 4 and 6) and leaves M15 clear.
-    m_transport->completeOk({0x0000, 0x0000, 0x0050});
+    // The home/scan block is M0-M53 (54 coils = 4 words): word0 = M0-M15,
+    // M50-M53 = block indices 50-53 -> word3 bits 2-5. This reply sets
+    // M51 + M53 (word3 bits 3 and 5) and leaves M15 clear.
+    m_transport->completeOk({0x0000, 0x0000, 0x0000, 0x0028});
     QCOMPARE(m_transport->sent.last().cls, RequestClass::CommandPoll);
     m_transport->completeOk({0x0801}); // M100 + M111 (M112 removed)
 
@@ -783,8 +784,8 @@ void GatewayTest::fastPollPreservesHomeAndCommandBits()
 void GatewayTest::scanCompleteBitIsReadFromTheHomeBlock()
 {
     // M15 扫码结束 is read as a coil in the home/scan block (user decision
-    // 2026-09-22), not from D100 bit15. Block layout: M15-M53 (39 coils = 3
-    // words), word0 bit0 = M15, M50-M53 = word2 bits 3-6.
+    // 2026-09-22), not from D100 bit15. Block layout: M0-M53 (54 coils = 4
+    // words), word0 bit15 = M15, M50-M53 = word3 bits 2-5.
     m_transport->completeOk(fastBlock(1)); // first fast poll -> online
     QVERIFY(m_worker->isOnline());
     QVERIFY(!m_lastSnapshot.m15()); // default: scan not complete
@@ -795,8 +796,8 @@ void GatewayTest::scanCompleteBitIsReadFromTheHomeBlock()
     m_worker->onPollTick();
     m_transport->completeOk(fastBlock(2)); // in-flight fast poll first
     QCOMPARE(m_transport->sent.last().cls, RequestClass::HomePoll);
-    // M15 set (word0 bit0) and M50 set (block index 35 -> word2 bit3).
-    m_transport->completeOk({0x0001, 0x0000, 0x0008});
+    // M15 set (word0 bit15) and M50 set (block index 50 -> word3 bit2).
+    m_transport->completeOk({0x8000, 0x0000, 0x0000, 0x0004});
     QCOMPARE(m_transport->sent.last().cls, RequestClass::CommandPoll);
     m_transport->completeOk({0x0000});
 
@@ -811,11 +812,11 @@ void GatewayTest::scanCompleteBitIsReadFromTheHomeBlock()
     // Drain the home/command polls enqueued on this tick so the next phase
     // starts from an empty queue.
     QCOMPARE(m_transport->sent.last().cls, RequestClass::HomePoll);
-    m_transport->completeOk({0x0001, 0x0000, 0x0008});
+    m_transport->completeOk({0x8000, 0x0000, 0x0000, 0x0004});
     QCOMPARE(m_transport->sent.last().cls, RequestClass::CommandPoll);
     m_transport->completeOk({0x0000});
 
-    // A reply too short to hold the whole 3-word block is not decoded at all:
+    // A reply too short to hold the whole 4-word block is not decoded at all:
     // the previous M15/M50-M53 values survive instead of a partial update.
     m_now = 900;
     m_worker->onPollTick();
@@ -829,6 +830,49 @@ void GatewayTest::scanCompleteBitIsReadFromTheHomeBlock()
     m_transport->completeOk(fastBlock(5));
     QVERIFY(m_lastSnapshot.m15());  // unchanged
     QVERIFY(m_lastSnapshot.m50());  // unchanged
+}
+
+void GatewayTest::statusBitsComeFromTheCoilsNotTheDeadD100HighByte()
+{
+    // User decision 2026-09-22: the supplied PLC program builds 状态字1 with
+    // `MOV K2M0 D100`, which copies only M0-M7 — D100 bits 8-14 read 0 forever
+    // even while M8/M9/M14 are set. The HMI therefore reads the M0-M15 coils in
+    // the home/scan block and ORs them with the mirror bit, so 启动 (M60 via
+    // M8), 已回原点 (M61 via M9) and 故障锁存 (M14) are visible on the machine.
+    m_transport->completeOk(fastBlock(1)); // first fast poll -> online
+    QVERIFY(m_worker->isOnline());
+    QCOMPARE(m_lastSnapshot.statusWord1(), quint16(0));
+    QVERIFY(!m_lastSnapshot.m8());
+    QVERIFY(!m_lastSnapshot.m9());
+    QVERIFY(!m_lastSnapshot.m14());
+
+    m_worker->setPollIntervals(250, 250, 250, 1000000);
+    m_now = 300;
+    m_worker->onPollTick();
+    m_transport->completeOk(fastBlock(2)); // in-flight fast poll first
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::HomePoll);
+    // M8 + M9 + M14 set on the coils (word0 bits 8, 9 and 14) and M42 on
+    // status word 3 (block index 42 -> word2 bit 10) while D100/D103 stay 0,
+    // exactly as the K2M0/K2M30 program leaves them.
+    m_transport->completeOk({quint16((1 << 8) | (1 << 9) | (1 << 14)), 0x0000,
+                             0x0400, 0x0000});
+    QCOMPARE(m_transport->sent.last().cls, RequestClass::CommandPoll);
+    m_transport->completeOk({0x0000});
+
+    // The next fast poll publishes a snapshot that must still carry the coil
+    // bits (the fast rebuild replaces m_data wholesale).
+    m_now = 600;
+    m_worker->onPollTick();
+    m_transport->completeOk(fastBlock(3));
+    QCOMPARE(m_snapshots, 3);
+    QVERIFY2(m_lastSnapshot.m8(), "M8 must come from the coil read");
+    QVERIFY2(m_lastSnapshot.m9(), "M9 must come from the coil read");
+    QVERIFY2(m_lastSnapshot.m14(), "M14 must come from the coil read");
+    // M42 (皮带常转) too: its readback confirms the hold command, so a dead
+    // D103 bit would make the button report a confirmation timeout.
+    QVERIFY2(m_lastSnapshot.m42(), "M42 must come from the coil read");
+    QVERIFY(!m_lastSnapshot.m3());  // a coil bit that is clear stays clear
+    QVERIFY(!m_lastSnapshot.m43()); // M43 (调宽命令) stays clear
 }
 
 // ---------------------------------------------------------------------------
@@ -1027,15 +1071,16 @@ void GatewayTest::packCoilBitsPacksLsbFirst()
     QCOMPARE(packCoilBits({}), QList<quint16>{quint16(0)});
     QCOMPARE(packCoilBits(QList<quint16>(13, 0)), QList<quint16>{quint16(0)});
 
-    // The home/scan block is M15-M53 (39 coils = 3 words). Word 0 bit 0 = M15,
-    // M50 = block index 35 -> word 2 bit 3. A >16-coil block must not be
-    // truncated to one word.
-    QList<quint16> homeScan(39, 0);
-    homeScan[0] = 1;  // M15
-    homeScan[35] = 1; // M50
-    homeScan[38] = 1; // M53
+    // The home/scan block is M0-M53 (54 coils = 4 words). Word 0 bit 15 = M15,
+    // M50 = block index 50 -> word 3 bit 2. A >48-coil block must not be
+    // truncated to fewer words.
+    QList<quint16> homeScan(54, 0);
+    homeScan[15] = 1; // M15
+    homeScan[50] = 1; // M50
+    homeScan[53] = 1; // M53
     QCOMPARE(packCoilBits(homeScan),
-             QList<quint16>({quint16(0x0001), quint16(0x0000), quint16(0x0048)}));
+             QList<quint16>({quint16(0x8000), quint16(0x0000), quint16(0x0000),
+                             quint16(0x0024)}));
 }
 
 void GatewayTest::makeTransferResultConvertsByKind()
@@ -1053,17 +1098,17 @@ void GatewayTest::makeTransferResultConvertsByKind()
     QCOMPARE(four.values.size(), 1); // guards against per-coil append
     QCOMPARE(four.values.first(), quint16(0b0101));
 
-    // A >16-coil block yields one word per 16 coils (the home/scan block is
-    // 39 coils = 3 words) instead of being truncated.
-    QList<quint16> homeScan(39, 0);
-    homeScan[0] = 1;  // M15
-    homeScan[35] = 1; // M50
+    // A >48-coil block yields one word per 16 coils (the home/scan block is
+    // 54 coils = 4 words) instead of being truncated.
+    QList<quint16> homeScan(54, 0);
+    homeScan[15] = 1; // M15
+    homeScan[50] = 1; // M50
     const TransferResult scan =
         makeTransferResult(coils, true, QString(), homeScan);
     QVERIFY(scan.ok);
-    QCOMPARE(scan.values.size(), 3);
-    QCOMPARE(scan.values.at(0), quint16(0x0001)); // M15
-    QCOMPARE(scan.values.at(2), quint16(0x0008)); // M50
+    QCOMPARE(scan.values.size(), 4);
+    QCOMPARE(scan.values.at(0), quint16(0x8000)); // M15
+    QCOMPARE(scan.values.at(3), quint16(0x0004)); // M50
 
     // Generic 13-coil response (bit0 + bit12, arbitrary positions): the
     // conversion packs any coil block, not just the live 12-coil M100-M111

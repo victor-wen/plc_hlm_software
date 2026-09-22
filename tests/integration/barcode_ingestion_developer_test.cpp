@@ -19,7 +19,8 @@
 //     fresh snapshot) and the newest line is displayed;
 //   - a second scan cycle whose file did not change reports 本轮未读到条码
 //     instead of re-showing the previous board's barcode;
-//   - a lost result file reports a visible failure, never silence.
+//   - a lost result file reports a visible failure, never silence;
+//   - the 手动 page's M15 拍照结束 test-signal button drives the same path.
 
 #include <QtTest>
 
@@ -34,8 +35,10 @@
 #include "adapters/sqlite/database_service.h"
 #include "app/application.h"
 #include "ui/MainWindow.h"
+#include "ui/pages/manual_control_page.h"
 #include "ui/pages/overview_page.h"
 #include "ui/pages/users_settings_page.h"
+#include "ui/widgets/permission_button.h"
 
 using namespace hlm;
 
@@ -145,6 +148,7 @@ private slots:
     void unchangedFileIsReportedAsNotRead();
     void missingFileReportsAFailure();
     void persistedPathIsRestoredAtStartup();
+    void manualScanTriggerDrivesTheWholePath();
 };
 
 void BarcodeIngestionDeveloperTest::unconfiguredPathStaysNotConfigured()
@@ -316,6 +320,43 @@ void BarcodeIngestionDeveloperTest::persistedPathIsRestoredAtStartup()
     rig.raiseScanComplete();
     QTRY_VERIFY_WITH_TIMEOUT(
         rig.overview->barcodeText().contains(QStringLiteral("AAA^1")), 5000);
+    rig.shutdown();
+}
+
+// The 手动 page's M15 拍照结束 test-signal button (user decision 2026-09-22)
+// injects the scan-complete signal, so the whole path can be driven from the
+// bench while the external scanning program is absent.
+void BarcodeIngestionDeveloperTest::manualScanTriggerDrivesTheWholePath()
+{
+    StartedApp rig;
+    rig.start();
+    rig.advanceUntilOnline();
+    rig.loginAsAdmin();
+
+    const QString path = rig.dir.filePath(QStringLiteral("Barcode.txt"));
+    QVERIFY(!writeResultFile(path, "C3003090^M10^260224^002777\r\n").isEmpty());
+    emit rig.settings->saveBarcodePathRequested(path);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        rig.settings->barcodePathStatusText().contains(QStringLiteral("已保存")),
+        5000);
+
+    auto *manual = rig.app->window()->findChild<ManualControlPage *>();
+    QVERIFY2(manual != nullptr, "the 手动 page must exist");
+    PermissionButton *scan = manual->simSignalButton(kM15);
+    QVERIFY2(scan != nullptr, "the M15 拍照结束 test-signal button must exist");
+    QTRY_VERIFY_WITH_TIMEOUT(scan->isEnabled(), 5000); // 仅管理员 + 在线
+
+    // One click sends the same single pulse as the neighbouring-station test
+    // signals; the next snapshot carries M15=1, the rising edge reads the file.
+    scan->click();
+    for (int i = 0; i < 20
+                    && !rig.overview->barcodeText().contains(QStringLiteral("002777"));
+         ++i) {
+        rig.gw->tick();
+        QTest::qWait(20);
+    }
+    QVERIFY2(rig.overview->barcodeText().contains(QStringLiteral("002777")),
+             qPrintable(rig.overview->barcodeText()));
     rig.shutdown();
 }
 
