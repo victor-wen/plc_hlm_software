@@ -316,29 +316,56 @@ void OverviewPageTest::barcodeStatusLineFollowsPathAndResult()
     model.updateSnapshot(DeviceSnapshot(scanning));
     QVERIFY(page.barcodeText().contains(QStringLiteral("扫码中")));
 
-    // A successful read shows the raw line exactly as the scanning program
-    // wrote it.
+    // A completed cycle shows every decoded barcode — one per line — exactly as
+    // the SDK reported them (user decision 2026-09-22: the HMI drives the scan
+    // and one cycle yields up to N barcodes).
     BarcodeResult ok;
     ok.state = BarcodeState::Ok;
     ok.line = QStringLiteral("C3003090^M10^260224^002700");
+    ok.rows = {{QStringLiteral("C3003090^M10^260224^002700"),
+                QStringLiteral("DataMatrix"), QStringLiteral("camera-window-2"), 1, 1},
+               {QStringLiteral("C3003100^M10^260224^002695"),
+                QStringLiteral("DataMatrix"), QStringLiteral("camera-window-2"), 2, 2}};
+    ok.decodedCount = 2;
+    ok.persisted = true;
     page.setBarcodeResult(ok);
     QVERIFY(page.barcodeText().contains(QStringLiteral("C3003090^M10^260224^002700")));
+    QVERIFY(page.barcodeText().contains(QStringLiteral("C3003100^M10^260224^002695")));
 
-    // An unchanged file is reported as such, never as this cycle's barcode.
-    BarcodeResult unchanged;
-    unchanged.state = BarcodeState::NoNewResult;
-    unchanged.detail = QStringLiteral("本轮未读到条码（结果文件未更新）");
-    page.setBarcodeResult(unchanged);
-    QVERIFY(page.barcodeText().contains(QStringLiteral("本轮未读到条码")));
+    // Positions the SDK looked at and did not recognise are stated, never
+    // filled with an older barcode.
+    BarcodeResult withGaps = ok;
+    withGaps.rows.append({QString(), QStringLiteral("DataMatrix"),
+                          QStringLiteral("camera-window-2"), 3, 3});
+    withGaps.emptyPositions = 1;
+    page.setBarcodeResult(withGaps);
+    QVERIFY(page.barcodeText().contains(QStringLiteral("另有 1 个位置未识别到条码")));
+
+    // A completed cycle that decoded nothing is its own outcome, not silence
+    // and not a failure.
+    BarcodeResult noCode;
+    noCode.state = BarcodeState::NoCode;
+    noCode.detail = QStringLiteral("本轮未识别到条码");
+    page.setBarcodeResult(noCode);
+    QVERIFY(page.barcodeText().contains(QStringLiteral("本轮未识别到条码")));
     QVERIFY(!page.barcodeText().contains(QStringLiteral("C3003090")));
 
-    // A read failure carries its reason.
+    // A failed cycle carries its operator-readable reason.
     BarcodeResult failed;
     failed.state = BarcodeState::Failed;
-    failed.detail = QStringLiteral("扫码结果文件不存在");
+    failed.detail = QStringLiteral("扫码服务未启动，请先打开 BarcodeReader 并点击运行");
     page.setBarcodeResult(failed);
     QVERIFY(page.barcodeText().contains(QStringLiteral("读取失败")));
-    QVERIFY(page.barcodeText().contains(QStringLiteral("扫码结果文件不存在")));
+    QVERIFY(page.barcodeText().contains(QStringLiteral("扫码服务未启动")));
+
+    // A storage failure is disclosed next to the barcode it did not save.
+    BarcodeResult writeFailed = ok;
+    writeFailed.persisted = false;
+    writeFailed.persistDetail = QStringLiteral("存储目录不存在");
+    page.setBarcodeResult(writeFailed);
+    QVERIFY(page.barcodeText().contains(QStringLiteral("C3003090^M10^260224^002700")));
+    QVERIFY(page.barcodeText().contains(QStringLiteral("存储失败")));
+    QVERIFY(page.barcodeText().contains(QStringLiteral("存储目录不存在")));
 
     // Clearing the path goes back to the placeholder even with a stale result.
     page.setBarcodeResultPath(QString());

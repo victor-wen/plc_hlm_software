@@ -304,6 +304,11 @@ void OverviewPage::refresh()
 // connection" rule (contract: barcode integration stays visibly
 // not-configured) is enforced by construction: 未配置 appears whenever no
 // result path is configured, and no branch ever says 已连接/在线.
+//
+// A cycle yields up to N barcodes (one per enabled rectangle — the reference
+// file holds 6 per board), so the Ok branch lists every decoded barcode, one
+// per line, and states how many positions came back empty instead of quietly
+// dropping them. An empty position is NEVER filled with an older code.
 QString OverviewPage::barcodeStatusText() const
 {
     if (m_barcodePath.isEmpty())
@@ -316,12 +321,30 @@ QString OverviewPage::barcodeStatusText() const
 
     switch (m_barcodeResult.state) {
     case BarcodeState::NotConfigured:
-        // The path was cleared between the read and this render.
+        // The path was cleared between the cycle and this render.
         return QStringLiteral("条码/扫码：未配置（预留）");
-    case BarcodeState::Ok:
-        return QStringLiteral("条码：%1").arg(m_barcodeResult.line);
-    case BarcodeState::NoNewResult:
-        return QStringLiteral("条码：本轮未读到条码（结果文件未更新）");
+    case BarcodeState::Ok: {
+        QStringList lines;
+        for (const BarcodeRow &row : m_barcodeResult.rows) {
+            if (row.barcode.trimmed().isEmpty())
+                continue;
+            lines.append(row.barcode);
+        }
+        if (lines.isEmpty())
+            lines.append(m_barcodeResult.line); // defensive: never blank
+        QString text = QStringLiteral("条码：%1").arg(lines.join(QLatin1Char('\n')));
+        if (m_barcodeResult.emptyPositions > 0) {
+            text += QStringLiteral("\n（另有 %1 个位置未识别到条码）")
+                        .arg(m_barcodeResult.emptyPositions);
+        }
+        if (!m_barcodeResult.persisted && !m_barcodeResult.persistDetail.isEmpty()) {
+            text += QStringLiteral("\n（存储失败：%1）")
+                        .arg(m_barcodeResult.persistDetail);
+        }
+        return text;
+    }
+    case BarcodeState::NoCode:
+        return QStringLiteral("条码：本轮未识别到条码");
     case BarcodeState::Failed:
         return QStringLiteral("条码：读取失败 — %1").arg(m_barcodeResult.detail);
     }

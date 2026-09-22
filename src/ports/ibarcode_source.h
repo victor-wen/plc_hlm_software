@@ -7,22 +7,23 @@
 
 namespace hlm {
 
-// Transport-neutral barcode result source (contract:
-//   "Reserve a transport-neutral barcode source boundary based on an external
-//    scanner program depositing results in a configurable folder; actual file
-//    parsing and forwarding remain inactive until a file contract is supplied."
-// ).
+// Transport-neutral barcode source (contract: "Reserve a transport-neutral
+// barcode source boundary …", IBarcodeSource with forbidden_fields
+// [vendor_sdk_handle, QWidget_pointer, QSqlDatabase, QModbusClient_pointer, …]).
 //
-// ACTIVATION (user decision 2026-09-22): the file contract was supplied as the
-// reference result file 需求/扫码相关/Barcode.txt, so the boundary is active.
-// The scope stays exactly what the contract reserved:
-//   - the scanning program is external and automatic; the HMI never triggers a
-//     scan and never calls the BarcodeReaderTrigger SDK (there is no scanner SDK
-//     dependency anywhere in this boundary);
-//   - the only I/O is reading one text file at a configurable path, on the
-//     adapter's own worker thread — never on the UI thread and never in the PLC
+// ACTIVATION (user decision 2026-09-22, revised the same day): the HMI itself
+// drives the scan. On the PLC's M15 扫码结束 rising edge the composition root
+// submits one decode cycle and the adapter reports its terminal outcome. The
+// scope stays exactly what the port reserves:
+//   - the vendor SDK handle never appears here (forbidden_fields:
+//     vendor_sdk_handle): it lives inside the adapter, behind an internal,
+//     testable facade — the same isolation hlm_vision gives OpenCV;
+//   - the adapter's blocking SDK calls and its file writes run on the
+//     adapter's OWN worker thread, never on the UI thread and never in the PLC
 //     control path (contract forbidden_change: no scanner SDK calls, QModbus
-//     calls, SQL or blocking waits in QWidget code or the UI thread).
+//     calls, SQL or blocking waits in QWidget code or the UI thread);
+//   - the cycle is independent of the H3U RTU gateway: a scanner failure can
+//     never remove the ability to submit Stop or software emergency-stop.
 class IBarcodeSource : public QObject
 {
     Q_OBJECT
@@ -37,18 +38,28 @@ public:
     virtual void start() = 0;
     virtual void stop() = 0;
 
-    // The configured result-file path. Empty means 未配置: the UI must say so
-    // rather than pretend the feature works.
+    // The configured result-file path (append target). Empty means 未配置: the
+    // UI must say so rather than pretend the feature works.
     virtual void setResultPath(const QString &path) = 0;
     virtual QString resultPath() const = 0;
 
-    // A scan cycle ended (the PLC raised M15 扫码结束): read the result file and
-    // report through resultReady(). Asynchronous; returns immediately.
-    virtual void requestRead() = 0;
+    // A scan cycle ended (the PLC raised M15 扫码结束): run one trigger →
+    // poll → decode-result cycle and report through resultReady(). Asynchronous;
+    // returns immediately.
+    //
+    // Returns false when the cycle was NOT submitted because the previous one
+    // has not finished. The caller must surface that as a visible state rather
+    // than assume a read is coming — an overlapping cycle is never queued,
+    // because the SDK itself rejects a second trigger while one is pending.
+    virtual bool requestRead() = 0;
+
+    // True while a submitted cycle is still being polled. Lets the caller (and
+    // its tests) tell "scanning" from "idle" without guessing.
+    virtual bool cycleInProgress() const = 0;
 
 signals:
-    // Terminal outcome of one requestRead(), exactly once per request. A
-    // NoNewResult/Failed outcome is a result, not silence.
+    // Terminal outcome of one requestRead(), exactly once per submitted cycle.
+    // A NoCode/Failed outcome is a result, not silence.
     void resultReady(const hlm::BarcodeResult &result);
 };
 

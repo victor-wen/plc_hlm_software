@@ -10,7 +10,7 @@
 #include <QThread>
 #include <QTimer>
 
-#include "adapters/barcode/barcode_file_source.h"
+#include "adapters/barcode/barcode_reader_sdk_source.h"
 #include "adapters/modbus/qt_modbus_plc_gateway.h"
 #include "adapters/modbus/qt_serial_port_discovery.h"
 #include "adapters/simulator/simulated_plc_gateway.h"
@@ -103,7 +103,11 @@ Application::~Application()
     // other application objects which the window still references.
     delete m_window;
     m_window = nullptr;
-    delete m_barcodeSource;
+    // An injected source is caller-owned (AppConfig::barcodeSource) and is
+    // never deleted or reparented by the composition root.
+    if (m_cfg.barcodeSource == nullptr) {
+        delete m_barcodeSource;
+    }
     m_barcodeSource = nullptr;
     delete m_vision;
     m_vision = nullptr;
@@ -165,11 +169,19 @@ void Application::createObjects()
             sim->tick();
     });
 
-    // 扫码结果源 (user decision 2026-09-22): created WITHOUT a parent so it can
-    // move to its own worker thread; the path arrives from app_settings after
-    // the database is ready. It is never given the PLC gateway: reading the
-    // result file must not share the HMI's single H3U RTU control channel.
-    m_barcodeSource = new BarcodeFileSource(nullptr);
+    // 扫码结果源 (user decision 2026-09-22, revised the same day): the HMI
+    // drives the scan itself — M15 扫码结束 submits one SDK trigger cycle and
+    // the decoded rows come back on this adapter's worker thread. Created
+    // WITHOUT a parent so it can move to that thread; the append path arrives
+    // from app_settings after the database is ready. It is never given the PLC
+    // gateway: a scanner failure must not share, or disturb, the HMI's single
+    // H3U RTU control channel. An injected source (AppConfig::barcodeSource) is
+    // caller-owned and takes precedence, exactly like plcGateway.
+    if (m_cfg.barcodeSource != nullptr) {
+        m_barcodeSource = m_cfg.barcodeSource;
+    } else {
+        m_barcodeSource = new BarcodeReaderSdkSource(nullptr);
+    }
 
     // Coordinator: PulseTransport routes into the revised submission port
     // (spec §8.5, PLC-HMI-003 D1/D5). Every callback returns the structured
@@ -1094,9 +1106,11 @@ void Application::failPendingBarcodePathSave(const QString &reason)
 
 void Application::handleBarcodeResult(const BarcodeResult &result)
 {
-    // Readback only: the scanning program is the authoritative peer, so the
-    // outcome is displayed exactly as reported (Ok/NoNewResult/Failed), never
-    // turned into a success claim. The full barcode value is never logged.
+    // Readback only: the scan program is the authoritative peer, so the
+    // outcome is displayed exactly as reported (Ok/NoCode/Failed), never turned
+    // into a success claim — and a NoCode cycle is never filled with an older
+    // barcode. The full barcode value is never logged (contract
+    // forbidden_change: no full barcode values in logs).
     m_lastBarcode = result;
     if (m_overviewPage != nullptr)
         m_overviewPage->setBarcodeResult(result);

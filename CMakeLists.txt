@@ -140,11 +140,14 @@ if(HLM_ENABLE_VISION)
     )
 endif()
 
-# hlm_barcode: IBarcodeSource file adapter (user decision 2026-09-22). The
-# scanning program is external; the only I/O here is reading one text file on
-# the adapter's own worker thread. No scanner SDK, no camera, no Qt Widgets.
+# hlm_barcode: IBarcodeSource SDK adapter (user decision 2026-09-22, revised:
+# the HMI drives the scan itself). The vendor BarcodeReader Trigger DLL is a
+# Windows named-pipe library loaded at runtime by name; every platform-specific
+# detail lives behind IBarcodeSdk inside this target, and the adapter's trigger
+# / poll / parse / persist cycle compiles and tests on every platform. No Qt
+# Widgets, no Qt SerialBus.
 add_library(hlm_barcode STATIC
-    src/adapters/barcode/barcode_file_source.cpp
+    src/adapters/barcode/barcode_reader_sdk_source.cpp
 )
 target_include_directories(hlm_barcode PUBLIC src)
 target_link_libraries(hlm_barcode PUBLIC

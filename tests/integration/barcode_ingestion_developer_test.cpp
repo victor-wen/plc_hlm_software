@@ -1,36 +1,37 @@
-// Developer integration test: barcode result ingestion end to end
-// (user decision 2026-09-22).
+// Developer integration test: barcode ingestion end to end (user decision
+// 2026-09-22, revised the same day — the HMI drives the scan through the vendor
+// SDK instead of reading a result file).
 //
-// The scanning program is external and automatic, so the HMI's whole job is:
-//   1. watch the PLC's M15 扫码结束 coil,
-//   2. on its rising edge read the result file at the configured path,
-//   3. show the readback (or the reason there is none).
+// The HMI's whole job in one line: watch the PLC's M15 扫码结束 coil, and on
+// its rising edge run one decode cycle and show what came back.
 //
 // This test drives the real composition root (Application) with the in-process
-// PLC simulator and a real result file, so the wiring under test is the
+// PLC simulator and an injected fake SDK, so the wiring under test is the
 // production one: settings load/save through the SQLite app_settings table, the
-// M15 edge on the snapshot feed, the worker-thread file read, and the overview
-// page rendering.
+// M15 rising edge on the snapshot feed, the worker-thread trigger/poll cycle,
+// the append to the configured file, and the overview page rendering. The
+// vendor DLL is the only thing swapped out.
 //
 // Guarantees pinned here:
-//   - with no configured path the surface stays 未配置 and no file is read;
+//   - with no configured path the surface stays 未配置 and nothing is triggered;
 //   - a confirmed path save is echoed and reaches the adapter;
-//   - M15 rising reads the file exactly once (edge-triggered, and only from a
-//     fresh snapshot) and the newest line is displayed;
-//   - a second scan cycle whose file did not change reports 本轮未读到条码
-//     instead of re-showing the previous board's barcode;
-//   - a lost result file reports a visible failure, never silence;
+//   - M15 rising runs exactly one cycle (edge-triggered, fresh snapshot only)
+//     and every decoded barcode is displayed and appended;
+//   - a held M15 does not re-trigger, and the next cycle uses a new requestId;
+//   - a cycle that decodes nothing says so instead of re-showing an older code;
+//   - a missing scan service reports a visible, actionable failure;
 //   - the 手动 page's M15 拍照结束 test-signal button drives the same path.
 
 #include <QtTest>
 
 #include <QApplication>
-#include <QLineEdit>
 #include <QDir>
 #include <QFile>
+#include <QLineEdit>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 
+#include "adapters/barcode/barcode_reader_sdk_source.h"
 #include "adapters/simulator/simulated_plc_gateway.h"
 #include "adapters/sqlite/database_service.h"
 #include "app/application.h"
@@ -46,9 +47,80 @@ namespace {
 
 constexpr quint16 kM15 = 15; // 扫码结束 (coil, read in the home/scan block)
 
+// A scripted stand-in for the vendor DLL, shared by every case: each cycle gets
+// its own accepted→completed exchange, and a case can replace the script to
+// exercise a failure.
+class FakeScanSdk : public IBarcodeSdk
+{
+public:
+    BarcodeSdkReply status() override
+    {
+        if (!available) {
+            return {BarcodeSdkStatus::LibraryUnavailable, QByteArray()};
+        }
+        ++statusCalls;
+        return {BarcodeSdkStatus::Ok,
+                QByteArray(R"({"ok":true,"code":"status","running":true,)"
+                           R"("serverId":"server-1","version":1})")};
+    }
+
+    BarcodeSdkReply trigger(const QString &requestId) override
+    {
+        if (!available) {
+            return {BarcodeSdkStatus::LibraryUnavailable, QByteArray()};
+        }
+        triggerIds.append(requestId);
+        return {BarcodeSdkStatus::Ok,
+                QStringLiteral(R"({"ok":true,"code":"accepted","state":"pending",)"
+                               R"("requestId":"%1","serverId":"server-1"})")
+                    .arg(requestId)
+                    .toUtf8()};
+    }
+
+    BarcodeSdkReply result(const QString &requestId) override
+    {
+        if (!available) {
+            return {BarcodeSdkStatus::LibraryUnavailable, QByteArray()};
+        }
+        resultIds.append(requestId);
+        return {BarcodeSdkStatus::Ok, completedJson(requestId)};
+    }
+
+    // What the next completed cycle reports, in table order. Empty strings are
+    // positions the SDK looked at and did not recognise.
+    QStringList nextRows;
+    bool available = true;
+    int statusCalls = 0;
+    QStringList triggerIds;
+    QStringList resultIds;
+
+private:
+    QByteArray completedJson(const QString &requestId) const
+    {
+        QStringList rows;
+        int sequence = 1;
+        for (const QString &barcode : nextRows) {
+            rows.append(
+                QStringLiteral(R"({"barcode":"%1","cameraId":"camera-window-2",)"
+                               R"("format":"DataMatrix","rectId":%2,"sequence":%2})")
+                    .arg(barcode)
+                    .arg(sequence));
+            ++sequence;
+        }
+        return QStringLiteral(R"({"ok":true,"code":"completed","state":"completed",)"
+                              R"("requestId":"%1","serverId":"server-1","saved":true,)"
+                              R"("decodedCount":%2,"message":"","rows":[%3]})")
+            .arg(requestId)
+            .arg(nextRows.size())
+            .arg(rows.join(QLatin1Char(',')))
+            .toUtf8();
+    }
+};
+
 struct StartedApp
 {
     QTemporaryDir dir;
+    FakeScanSdk sdk;
     AppConfig cfg;
     std::unique_ptr<Application> app;
     SimulatedPlcGateway *gw = nullptr;
@@ -60,16 +132,36 @@ struct StartedApp
         cfg.useSimulatedGateway = true;
         cfg.simulatedTickIntervalMs = 0; // the test owns the clock
         cfg.databasePath = dir.filePath(QStringLiteral("app.db"));
+        // Injected, caller-owned: the real adapter is never constructed, so no
+        // vendor DLL is needed on the Linux dev loop.
+        cfg.barcodeSource = nullptr; // set in start() so the adapter uses it
     }
 
     void start()
     {
+        // The adapter is constructed here with the fake SDK, and injected into
+        // the composition root, which then never builds its own.
+        source = new BarcodeReaderSdkSource(&sdk);
+        cfg.barcodeSource = source;
         app = std::make_unique<Application>(cfg);
         app->start();
         gw = qobject_cast<SimulatedPlcGateway *>(app->gateway());
         overview = app->window()->findChild<OverviewPage *>();
         settings = app->window()->findChild<UsersSettingsPage *>();
     }
+
+    ~StartedApp()
+    {
+        // Application neither deletes nor reparents an injected source, so the
+        // rig owns it — and the adapter must be stopped before it dies.
+        if (source != nullptr) {
+            source->stop();
+            delete source;
+            source = nullptr;
+        }
+    }
+
+    BarcodeReaderSdkSource *source = nullptr;
 
     void shutdown()
     {
@@ -110,8 +202,8 @@ struct StartedApp
 
     bool adminCreated = false;
 
-    // One scan cycle: the PLC raises M15 (scan finished), the snapshot feed
-    // sees the rising edge, and the adapter reads the file on its own thread.
+    // One scan cycle: the PLC raises M15 (scan finished), the snapshot feed sees
+    // the rising edge, and the adapter runs one cycle on its own thread.
     void raiseScanComplete()
     {
         gw->model().writeCoil(kM15, true);
@@ -123,16 +215,44 @@ struct StartedApp
         gw->model().writeCoil(kM15, false);
         gw->tick();
     }
+
+    // Waits until the overview surface shows `text`, ticking the simulated PLC
+    // so a pending cycle can also complete.
+    bool waitForText(const QString &text, int timeoutMs = 5000)
+    {
+        QElapsedTimer timer;
+        timer.start();
+        while (timer.elapsed() < timeoutMs) {
+            if (overview->barcodeText().contains(text))
+                return true;
+            gw->tick();
+            QTest::qWait(20);
+        }
+        return overview->barcodeText().contains(text);
+    }
 };
 
-QString writeResultFile(const QString &path, const QByteArray &data)
+// Saves the append path through the real page -> Application -> SQLite path and
+// waits for the confirmed echo (never optimistic).
+void savePath(StartedApp &rig, const QString &path)
+{
+    QSignalSpy savedSpy(rig.settings, &UsersSettingsPage::saveBarcodePathRequested);
+    emit rig.settings->saveBarcodePathRequested(path);
+    QCOMPARE(savedSpy.count(), 1);
+    QTRY_COMPARE_WITH_TIMEOUT(rig.settings->barcodePathEdit()->text(), path, 5000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        rig.settings->barcodePathStatusText().contains(QStringLiteral("已保存")),
+        5000);
+}
+
+QStringList fileLines(const QString &path)
 {
     QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
-        return QString();
-    file.write(data);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    const QString text = QString::fromUtf8(file.readAll());
     file.close();
-    return path;
+    return text.split(QLatin1String("\r\n"), Qt::SkipEmptyParts);
 }
 
 } // namespace
@@ -144,9 +264,10 @@ class BarcodeIngestionDeveloperTest : public QObject
 private slots:
     void unconfiguredPathStaysNotConfigured();
     void configuredPathIsSavedAndEchoed();
-    void scanCycleShowsTheNewestLine();
-    void unchangedFileIsReportedAsNotRead();
-    void missingFileReportsAFailure();
+    void scanCycleShowsEveryDecodedBarcode();
+    void heldScanCompleteDoesNotRetrigger();
+    void cycleWithoutAnyBarcodeIsReportedAsSuch();
+    void scanServiceDownReportsAnActionableFailure();
     void persistedPathIsRestoredAtStartup();
     void manualScanTriggerDrivesTheWholePath();
 };
@@ -164,10 +285,12 @@ void BarcodeIngestionDeveloperTest::unconfiguredPathStaysNotConfigured()
     QVERIFY(!rig.overview->barcodeText().contains(QStringLiteral("已连接")));
     QVERIFY(!rig.overview->barcodeText().contains(QStringLiteral("在线")));
 
-    // An M15 cycle with no configured path reports 未配置 rather than a value.
+    // An M15 cycle with no configured path reports 未配置 and never reaches the
+    // SDK at all — nothing to store means nothing to scan.
     rig.raiseScanComplete();
-    QTRY_VERIFY_WITH_TIMEOUT(
-        rig.overview->barcodeText().contains(QStringLiteral("未配置")), 5000);
+    QVERIFY(rig.waitForText(QStringLiteral("未配置")));
+    QCOMPARE(rig.sdk.triggerIds.size(), 0);
+    QCOMPARE(rig.sdk.statusCalls, 0);
     rig.shutdown();
 }
 
@@ -179,23 +302,12 @@ void BarcodeIngestionDeveloperTest::configuredPathIsSavedAndEchoed()
     rig.loginAsAdmin();
 
     const QString path = rig.dir.filePath(QStringLiteral("Barcode.txt"));
-    QVERIFY(!writeResultFile(path, "AAA^1\r\n").isEmpty());
-
-    // The save goes through the real page -> Application -> SQLite path and is
-    // echoed only once it is confirmed (never optimistic).
-    QSignalSpy savedSpy(rig.settings, &UsersSettingsPage::saveBarcodePathRequested);
-    emit rig.settings->saveBarcodePathRequested(path);
-    QCOMPARE(savedSpy.count(), 1);
-
-    QTRY_COMPARE_WITH_TIMEOUT(rig.settings->barcodePathEdit()->text(), path, 5000);
-    QTRY_VERIFY_WITH_TIMEOUT(
-        rig.settings->barcodePathStatusText().contains(QStringLiteral("已保存")),
-        5000);
+    savePath(rig, path);
     QVERIFY(rig.overview->barcodeText().contains(QStringLiteral("等待扫码")));
     rig.shutdown();
 }
 
-void BarcodeIngestionDeveloperTest::scanCycleShowsTheNewestLine()
+void BarcodeIngestionDeveloperTest::scanCycleShowsEveryDecodedBarcode()
 {
     StartedApp rig;
     rig.start();
@@ -203,44 +315,35 @@ void BarcodeIngestionDeveloperTest::scanCycleShowsTheNewestLine()
     rig.loginAsAdmin();
 
     const QString path = rig.dir.filePath(QStringLiteral("Barcode.txt"));
-    QVERIFY(!writeResultFile(
-                 path,
-                 "C3003090^M10^260224^002700\r\n"
-                 "C3003100^M10^260224^002695\r\n")
-                 .isEmpty());
-    emit rig.settings->saveBarcodePathRequested(path);
-    QTRY_VERIFY_WITH_TIMEOUT(
-        rig.settings->barcodePathStatusText().contains(QStringLiteral("已保存")),
-        5000);
+    savePath(rig, path);
 
-    // The PLC raises M15 扫码结束: the newest line is read and displayed.
+    // A real cycle: six rectangles, one of them not recognised.
+    rig.sdk.nextRows = {QStringLiteral("C3003090^M10^260224^002695"),
+                        QStringLiteral("C3003100^M10^260224^002696"),
+                        QStringLiteral("C3003090^M10^260224^002697"),
+                        QStringLiteral("C3003100^M10^260224^002698"),
+                        QStringLiteral("C3003090^M10^260224^002699"),
+                        QString()};
+
     rig.raiseScanComplete();
-    QTRY_VERIFY_WITH_TIMEOUT(
-        rig.overview->barcodeText().contains(QStringLiteral("C3003100^M10^260224^002695")),
-        5000);
+    QVERIFY(rig.waitForText(QStringLiteral("002695")));
+    const QString text = rig.overview->barcodeText();
+    // Every decoded barcode is on the surface, not just the first one.
+    QVERIFY(text.contains(QStringLiteral("002696")));
+    QVERIFY(text.contains(QStringLiteral("002699")));
+    // The unrecognised position is disclosed, never filled in.
+    QVERIFY(text.contains(QStringLiteral("另有 1 个位置未识别到条码")));
+    QCOMPARE(rig.sdk.triggerIds.size(), 1);
 
-    // A held M15 must not re-read: the edge is what triggers, not the level.
-    rig.gw->tick();
-    rig.gw->tick();
-    QVERIFY(rig.overview->barcodeText().contains(QStringLiteral("C3003100")));
-
-    // Next cycle with a new line: the display follows the file.
-    QVERIFY(!writeResultFile(path, QByteArray()).isEmpty());
-    rig.clearScanComplete();
-    QVERIFY(!writeResultFile(
-                 path,
-                 "C3003090^M10^260224^002700\r\n"
-                 "C3003100^M10^260224^002695\r\n"
-                 "C3003090^M10^260224^002701\r\n")
-                 .isEmpty());
-    rig.raiseScanComplete();
-    QTRY_VERIFY_WITH_TIMEOUT(
-        rig.overview->barcodeText().contains(QStringLiteral("C3003090^M10^260224^002701")),
-        5000);
+    // Five decoded barcodes were appended, one CRLF line each.
+    const QStringList lines = fileLines(path);
+    QCOMPARE(lines.size(), 5);
+    QCOMPARE(lines.at(0), QStringLiteral("C3003090^M10^260224^002695"));
+    QCOMPARE(lines.at(4), QStringLiteral("C3003090^M10^260224^002699"));
     rig.shutdown();
 }
 
-void BarcodeIngestionDeveloperTest::unchangedFileIsReportedAsNotRead()
+void BarcodeIngestionDeveloperTest::heldScanCompleteDoesNotRetrigger()
 {
     StartedApp rig;
     rig.start();
@@ -248,45 +351,76 @@ void BarcodeIngestionDeveloperTest::unchangedFileIsReportedAsNotRead()
     rig.loginAsAdmin();
 
     const QString path = rig.dir.filePath(QStringLiteral("Barcode.txt"));
-    QVERIFY(!writeResultFile(path, "C3003090^M10^260224^002700\r\n").isEmpty());
-    emit rig.settings->saveBarcodePathRequested(path);
-    QTRY_VERIFY_WITH_TIMEOUT(
-        rig.settings->barcodePathStatusText().contains(QStringLiteral("已保存")),
-        5000);
+    savePath(rig, path);
 
+    rig.sdk.nextRows = {QStringLiteral("C3003090^M10^260224^002701")};
     rig.raiseScanComplete();
-    QTRY_VERIFY_WITH_TIMEOUT(
-        rig.overview->barcodeText().contains(QStringLiteral("C3003090^M10^260224^002700")),
-        5000);
+    QVERIFY(rig.waitForText(QStringLiteral("002701")));
+    QCOMPARE(rig.sdk.triggerIds.size(), 1);
 
-    // Second cycle, the scanning program decoded nothing and left the previous
-    // text in place: the HMI must NOT present the old barcode as this board's.
+    // M15 stays high for several polls: the edge is already consumed, so no
+    // second cycle may start.
+    for (int i = 0; i < 5; ++i)
+        rig.gw->tick();
+    QTest::qWait(100);
+    QCOMPARE(rig.sdk.triggerIds.size(), 1);
+
+    // A new board: M15 falls and rises again, with a new requestId and a new
+    // result on the surface and in the file.
     rig.clearScanComplete();
+    rig.sdk.nextRows = {QStringLiteral("C3003100^M10^260224^002702")};
     rig.raiseScanComplete();
-    QTRY_VERIFY_WITH_TIMEOUT(
-        rig.overview->barcodeText().contains(QStringLiteral("本轮未读到条码")), 5000);
+    QVERIFY(rig.waitForText(QStringLiteral("002702")));
+    QCOMPARE(rig.sdk.triggerIds.size(), 2);
+    QVERIFY2(rig.sdk.triggerIds.at(0) != rig.sdk.triggerIds.at(1),
+             "each scan cycle must use its own requestId");
+    QVERIFY(!rig.overview->barcodeText().contains(QStringLiteral("002701")));
+    QCOMPARE(fileLines(path).size(), 2);
+    rig.shutdown();
+}
+
+void BarcodeIngestionDeveloperTest::cycleWithoutAnyBarcodeIsReportedAsSuch()
+{
+    StartedApp rig;
+    rig.start();
+    rig.advanceUntilOnline();
+    rig.loginAsAdmin();
+
+    const QString path = rig.dir.filePath(QStringLiteral("Barcode.txt"));
+    savePath(rig, path);
+
+    rig.sdk.nextRows = {QStringLiteral("C3003090^M10^260224^002700")};
+    rig.raiseScanComplete();
+    QVERIFY(rig.waitForText(QStringLiteral("002700")));
+
+    // Next board: the SDK completed but decoded nothing. The previous board's
+    // barcode must NOT be presented as this cycle's result.
+    rig.clearScanComplete();
+    rig.sdk.nextRows = {QString(), QString(), QString()};
+    rig.raiseScanComplete();
+    QVERIFY(rig.waitForText(QStringLiteral("本轮未识别到条码")));
     QVERIFY(!rig.overview->barcodeText().contains(QStringLiteral("002700")));
+    // Nothing decoded → nothing appended; the file keeps the first board only.
+    QCOMPARE(fileLines(path).size(), 1);
     rig.shutdown();
 }
 
-void BarcodeIngestionDeveloperTest::missingFileReportsAFailure()
+void BarcodeIngestionDeveloperTest::scanServiceDownReportsAnActionableFailure()
 {
     StartedApp rig;
     rig.start();
     rig.advanceUntilOnline();
     rig.loginAsAdmin();
 
-    // A path that does not exist converges to a visible failure, never to
-    // silence and never to a stale value.
-    const QString path = rig.dir.filePath(QStringLiteral("absent.txt"));
-    emit rig.settings->saveBarcodePathRequested(path);
-    QTRY_VERIFY_WITH_TIMEOUT(
-        rig.settings->barcodePathStatusText().contains(QStringLiteral("已保存")),
-        5000);
+    const QString path = rig.dir.filePath(QStringLiteral("Barcode.txt"));
+    savePath(rig, path);
 
+    // The scan program is closed: the operator gets something to act on, not
+    // silence and not a status code.
+    rig.sdk.available = false;
     rig.raiseScanComplete();
-    QTRY_VERIFY_WITH_TIMEOUT(
-        rig.overview->barcodeText().contains(QStringLiteral("读取失败")), 5000);
+    QVERIFY(rig.waitForText(QStringLiteral("扫码服务未启动")));
+    QVERIFY(rig.overview->barcodeText().contains(QStringLiteral("读取失败")));
     rig.shutdown();
 }
 
@@ -298,12 +432,7 @@ void BarcodeIngestionDeveloperTest::persistedPathIsRestoredAtStartup()
     rig.loginAsAdmin();
 
     const QString path = rig.dir.filePath(QStringLiteral("Barcode.txt"));
-    QVERIFY(!writeResultFile(path, "AAA^1\r\n").isEmpty());
-    emit rig.settings->saveBarcodePathRequested(path);
-    QTRY_VERIFY_WITH_TIMEOUT(
-        rig.settings->barcodePathStatusText().contains(QStringLiteral("已保存")),
-        5000);
-    QVERIFY(rig.overview->barcodeText().contains(QStringLiteral("等待扫码")));
+    savePath(rig, path);
     rig.shutdown();
 
     // Restart against the same database: the persisted path must be restored,
@@ -311,21 +440,21 @@ void BarcodeIngestionDeveloperTest::persistedPathIsRestoredAtStartup()
     rig.app.reset();
     rig.start();
     rig.advanceUntilOnline();
-    // The persisted settings load asynchronously on database-ready.
     QTRY_COMPARE_WITH_TIMEOUT(rig.settings->barcodePathEdit()->text(), path, 5000);
     QVERIFY(rig.overview->barcodeText().contains(QStringLiteral("等待扫码")));
     QVERIFY(!rig.overview->barcodeText().contains(QStringLiteral("未配置")));
 
-    // And a scan cycle still reads that file.
+    // And a scan cycle still runs against that path.
+    rig.sdk.nextRows = {QStringLiteral("C3003090^M10^260224^002703")};
     rig.raiseScanComplete();
-    QTRY_VERIFY_WITH_TIMEOUT(
-        rig.overview->barcodeText().contains(QStringLiteral("AAA^1")), 5000);
+    QVERIFY(rig.waitForText(QStringLiteral("002703")));
+    QCOMPARE(fileLines(path).size(), 1);
     rig.shutdown();
 }
 
 // The 手动 page's M15 拍照结束 test-signal button (user decision 2026-09-22)
 // injects the scan-complete signal, so the whole path can be driven from the
-// bench while the external scanning program is absent.
+// bench while the real scan program is absent.
 void BarcodeIngestionDeveloperTest::manualScanTriggerDrivesTheWholePath()
 {
     StartedApp rig;
@@ -334,11 +463,8 @@ void BarcodeIngestionDeveloperTest::manualScanTriggerDrivesTheWholePath()
     rig.loginAsAdmin();
 
     const QString path = rig.dir.filePath(QStringLiteral("Barcode.txt"));
-    QVERIFY(!writeResultFile(path, "C3003090^M10^260224^002777\r\n").isEmpty());
-    emit rig.settings->saveBarcodePathRequested(path);
-    QTRY_VERIFY_WITH_TIMEOUT(
-        rig.settings->barcodePathStatusText().contains(QStringLiteral("已保存")),
-        5000);
+    savePath(rig, path);
+    rig.sdk.nextRows = {QStringLiteral("C3003090^M10^260224^002777")};
 
     auto *manual = rig.app->window()->findChild<ManualControlPage *>();
     QVERIFY2(manual != nullptr, "the 手动 page must exist");
@@ -347,16 +473,11 @@ void BarcodeIngestionDeveloperTest::manualScanTriggerDrivesTheWholePath()
     QTRY_VERIFY_WITH_TIMEOUT(scan->isEnabled(), 5000); // 仅管理员 + 在线
 
     // One click sends the same single pulse as the neighbouring-station test
-    // signals; the next snapshot carries M15=1, the rising edge reads the file.
+    // signals; the next snapshot carries M15=1 and the cycle runs.
     scan->click();
-    for (int i = 0; i < 20
-                    && !rig.overview->barcodeText().contains(QStringLiteral("002777"));
-         ++i) {
-        rig.gw->tick();
-        QTest::qWait(20);
-    }
-    QVERIFY2(rig.overview->barcodeText().contains(QStringLiteral("002777")),
-             qPrintable(rig.overview->barcodeText()));
+    QVERIFY(rig.waitForText(QStringLiteral("002777")));
+    QCOMPARE(rig.sdk.triggerIds.size(), 1);
+    QCOMPARE(fileLines(path).size(), 1);
     rig.shutdown();
 }
 

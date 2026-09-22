@@ -9,14 +9,16 @@ target_link_libraries(test_smoke PRIVATE
 
 add_test(NAME smoke COMMAND test_smoke)
 
-# 扫码结果文件源 (user decision 2026-09-22): file-only adapter, no Qt Widgets.
-add_executable(test_barcode_file_source test_barcode_file_source.cpp)
-target_link_libraries(test_barcode_file_source PRIVATE
+# 扫码 (user decision 2026-09-22, revised: the HMI drives the scan through the
+# vendor SDK). The adapter's trigger/poll/parse/persist cycle is driven through
+# an injected fake SDK, so it runs with no vendor DLL. No Qt Widgets.
+add_executable(test_barcode_reader_sdk_source test_barcode_reader_sdk_source.cpp)
+target_link_libraries(test_barcode_reader_sdk_source PRIVATE
     hlm_barcode
     Qt6::Test
 )
 
-add_test(NAME barcode_file_source COMMAND test_barcode_file_source)
+add_test(NAME barcode_reader_sdk_source COMMAND test_barcode_reader_sdk_source)
 
 add_executable(test_snapshot_decode test_snapshot_decode.cpp)
 target_link_libraries(test_snapshot_decode PRIVATE

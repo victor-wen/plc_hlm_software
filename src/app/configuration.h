@@ -16,6 +16,7 @@ namespace hlm {
 
 class ISerialPortDiscovery;
 class IPlcGateway;
+class IBarcodeSource;
 
 struct AppConfig {
     // --- database (spec §12) -------------------------------------------------
@@ -57,6 +58,15 @@ struct AppConfig {
     // neither deletes nor reparents it, and the caller keeps it alive for the
     // whole application lifetime (same pattern as serialPortDiscovery).
     IPlcGateway *plcGateway = nullptr;
+
+    // --- injected barcode source (user decision 2026-09-22) -------------------
+    // Optional caller-owned 扫码结果源. When null the composition root creates
+    // the real BarcodeReaderSdkSource (which loads the vendor DLL at runtime);
+    // when non-null that instance is used instead — tests inject a fake so the
+    // whole scan cycle is deterministic with no vendor DLL present. Same
+    // ownership rule as plcGateway: never deleted, never reparented, and the
+    // caller keeps it alive for the whole application lifetime.
+    IBarcodeSource *barcodeSource = nullptr;
 };
 
 } // namespace hlm
