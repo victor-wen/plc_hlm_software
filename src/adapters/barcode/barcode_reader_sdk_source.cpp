@@ -11,6 +11,7 @@
 #include <QMetaObject>
 #include <QMutexLocker>
 #include <QTimer>
+#include <QUuid>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -28,22 +29,19 @@ constexpr unsigned int kCallTimeoutMs = 2000;
 // Largest response this adapter will parse (matches the sample's MaxJsonLength).
 constexpr qint64 kMaxJsonBytes = 1024 * 1024;
 
-// BR_* transport return codes (BarcodeReaderTrigger.h). BR_OK is transport
-// success only; the JSON's ok/code/state decides the business outcome.
+// BR_* transport return codes this adapter reasons about (BarcodeReaderTrigger.h).
+// BR_OK is transport success only; the JSON's ok/code/state decides the business
+// outcome. The other codes only travel through as BarcodeSdkStatus.
 constexpr int kBrOk = 0;
-constexpr int kBrNotConnected = 2;
-constexpr int kBrTimeout = 3;
 constexpr int kBrBufferTooSmall = 5;
-constexpr int kBrResponseTooLarge = 6;
 
-// The SDK requires 1..64 ASCII letters/digits/_/- (README_CN.md:105). This
-// shape is unique per cycle without pulling in a UUID dependency.
-QString makeRequestId(quint64 sequence)
+// The SDK requires 1..64 ASCII letters/digits/_/- (README_CN.md:105), and the
+// vendor recommends a GUID: the server dedups repeats within its 64-entry
+// cache, so an id reused across a restart would be answered from the previous
+// run's result. A UUID makes that impossible rather than merely unlikely.
+QString makeRequestId()
 {
-    return QStringLiteral("job-%1-%2")
-        .arg(QDateTime::currentDateTime().toString(
-            QStringLiteral("yyyyMMdd-hhmmsszzz")))
-        .arg(sequence);
+    return QUuid::createUuid().toString(QUuid::WithoutBraces).remove(QLatin1Char('-'));
 }
 
 QString businessCodeReason(const QString &code)
@@ -380,7 +378,7 @@ void BarcodeReaderSdkSource::performCycle()
     if (statusError.error == QJsonParseError::NoError)
         m_serverId = statusObject.value(QStringLiteral("serverId")).toString();
 
-    m_requestId = makeRequestId(result.sequence);
+    m_requestId = makeRequestId();
     result.requestId = m_requestId;
 
     const BarcodeSdkReply triggered = m_sdk->trigger(m_requestId);
