@@ -112,7 +112,7 @@ public:
     QLabel *d204WarningLabel() const { return m_d204Warning; }
     ValueDisplay *paramDisplay(const QString &key) const;
     QString paramStatusText() const;
-    // 扫码结果文件路径 (user decision 2026-09-22): the external scanning
+    // 扫码结果追加文件路径 (user decision 2026-09-22): the external scanning
     // program writes its results here. Empty = 未配置.
     QLineEdit *barcodePathEdit() const { return m_barcodePathEdit; }
     QPushButton *saveBarcodePathButton() const { return m_saveBarcodePath; }
@@ -133,7 +133,7 @@ public:
     void setSerialConfig(const SerialConnectionSettings &config);
     // 串口配置保存结果, 兼容旧调用方; 等价于 setSerialSettingsSaveResult.
     void setSerialSaveResult(bool ok, const QString &detail);
-    // 扫码结果文件路径回显 (empty = 未配置) 与保存结果.
+    // 扫码结果追加文件路径回显 (empty = 未配置) 与保存结果.
     void setBarcodeResultPath(const QString &path);
     void setBarcodePathSavePending();
     void setBarcodePathSaveResult(bool ok, const QString &detail);
@@ -165,7 +165,7 @@ signals:
     void writeParameterRequested(quint16 address, quint16 value);
     // D204 写请求, 携带管理员密码供 Task 20 二次验证 (spec §11.3).
     void d204WriteRequested(quint16 value, const QString &adminPassword);
-    // 扫码结果文件路径保存请求 (user decision 2026-09-22). Never optimistic:
+    // 扫码结果追加文件路径保存请求 (user decision 2026-09-22). Never optimistic:
     // the app shell reports the outcome through setBarcodePathSaveResult.
     void saveBarcodePathRequested(const QString &path);
 
@@ -257,7 +257,7 @@ private:
     QPushButton *m_writeD122 = nullptr;
     QPushButton *m_writeD204 = nullptr;
     QPushButton *m_writeD220 = nullptr;
-    // 扫码结果文件路径 editor + its page-local result line.
+    // 扫码结果追加文件路径 editor + its page-local result line.
     QLineEdit *m_barcodePathEdit = nullptr;
     QPushButton *m_saveBarcodePath = nullptr;
     QLabel *m_barcodePathStatus = nullptr;

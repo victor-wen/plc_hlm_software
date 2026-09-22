@@ -566,12 +566,12 @@ QWidget *UsersSettingsPage::buildParameterSection()
     connect(m_writeD204, &QPushButton::clicked, this, &UsersSettingsPage::onWriteD204);
     connect(m_writeD220, &QPushButton::clicked, this, &UsersSettingsPage::onWriteD220);
 
-    // --- 扫码结果文件路径 (user decision 2026-09-22) ---------------------------
+    // --- 扫码结果追加文件路径 (user decision 2026-09-22) ---------------------------
     // The scanning program is external and automatic; the HMI only needs to
     // know where it writes. Empty means 未配置, which the overview page keeps
     // rendering as the placeholder. The field is admin-only like every other
     // setting on this page (the whole settings page is behind login).
-    layout->addWidget(new QLabel(QStringLiteral("扫码结果文件路径"), box));
+    layout->addWidget(new QLabel(QStringLiteral("扫码结果追加文件路径"), box));
     m_barcodePathEdit = new QLineEdit(box);
     m_barcodePathEdit->setObjectName(QStringLiteral("barcodePathEdit"));
     m_barcodePathEdit->setPlaceholderText(
@@ -618,8 +618,8 @@ void UsersSettingsPage::setBarcodeResultPath(const QString &path)
     // never leaves the operator looking at an unpersisted path.
     m_barcodePathEdit->setText(path);
     m_barcodePathStatus->setText(
-        path.trimmed().isEmpty() ? QStringLiteral("扫码结果文件路径：未配置")
-                                 : QStringLiteral("扫码结果文件路径已保存"));
+        path.trimmed().isEmpty() ? QStringLiteral("扫码结果追加文件路径：未配置")
+                                 : QStringLiteral("扫码结果追加文件路径已保存"));
 }
 
 void UsersSettingsPage::setBarcodePathSavePending()
@@ -641,7 +641,7 @@ void UsersSettingsPage::setBarcodePathSaveResult(bool ok, const QString &detail)
     m_saveBarcodePath->setEnabled(true);
     setUnavailableHint(m_saveBarcodePath, true, QString());
     m_barcodePathStatus->setText(
-        ok ? QStringLiteral("扫码结果文件路径已保存") : detail);
+        ok ? QStringLiteral("扫码结果追加文件路径已保存") : detail);
 }
 
 QString UsersSettingsPage::barcodePathStatusText() const

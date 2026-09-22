@@ -47,8 +47,9 @@ constexpr const char *kSerialParity = "serial.parity";
 constexpr const char *kSerialTimeoutMs = "serial.timeoutMs";
 constexpr const char *kSerialReadRetries = "serial.readRetries";
 
-// 扫码结果文件路径 (user decision 2026-09-22): the external scanning program
-// writes its results here; an empty value keeps the feature visibly 未配置.
+// 扫码结果追加文件路径 (user decision 2026-09-22, revised: the HMI drives the
+// scan, so the HMI is the writer). One decoded barcode per line is appended
+// here; an empty value keeps the feature visibly 未配置.
 constexpr const char *kBarcodeResultPath = "barcode.resultPath";
 
 constexpr quint16 kD122 = 122; // 皮带速度
@@ -674,7 +675,7 @@ void Application::onReady()
     m_db->listRecipes();
     m_db->runRetentionCleanup();
     // Load the persisted settings for echo (spec §8.1): the seven serial keys
-    // plus the 扫码结果文件路径 (user decision 2026-09-22).
+    // plus the 扫码结果追加文件路径 (user decision 2026-09-22).
     m_pendingSettingLoads = 8;
     m_db->getSetting(QString::fromLatin1(kBarcodeResultPath));
     m_db->getSetting(QString::fromLatin1(kSerialComPort));
@@ -767,8 +768,9 @@ void Application::handleSettingLoaded(const std::optional<SettingRecord> &settin
         const QString &value = setting->typedValue;
         bool ok = false;
         if (key == QString::fromLatin1(kBarcodeResultPath)) {
-            // 扫码结果文件路径 (user decision 2026-09-22): an empty value keeps
-            // the feature visibly 未配置 rather than pretending it works.
+            // 扫码结果追加文件路径 (user decision 2026-09-22, revised): an empty
+            // value keeps the feature visibly 未配置 rather than pretending it
+            // works.
             m_barcodePath = value;
             if (m_barcodeSource != nullptr)
                 m_barcodeSource->setResultPath(m_barcodePath);
@@ -1042,7 +1044,7 @@ void Application::handleManualWidthSpeedWrite(quint16 value)
     submitParameterWrite(kD220, value, ParamWriteSink::Manual);
 }
 
-// --- 扫码结果文件路径 (user decision 2026-09-22) -------------------------------
+// --- 扫码结果追加文件路径 (user decision 2026-09-22) ---------------------------
 
 void Application::handleBarcodePathSave(const QString &path)
 {
