@@ -45,13 +45,13 @@ public:
 
     // Deployment paths, set from the persisted settings (user decision
     // 2026-09-23). These are plain PATH STRINGS, not handles: the
-    // `forbidden_fields: vendor_sdk_handle` rule still holds, because the
-    // loaded module and its exports never leave the adapter.
+    // `forbidden_fields: vendor_sdk_handle` rule still holds, because whatever
+    // runs the scanner program never leaves the adapter.
     //
-    // DLL path: empty = load the vendor library by name (the executable's own
-    // directory is searched first); non-empty = load exactly that file.
-    virtual void setDllPath(const QString &path) = 0;
-    virtual QString dllPath() const = 0;
+    // Scanner program path (the vendor CLI): empty = not configured, nothing is
+    // run and the surface says so.
+    virtual void setScannerProgramPath(const QString &path) = 0;
+    virtual QString scannerProgramPath() const = 0;
     // Forward-program path: empty = the step does not run at all. Non-empty =
     // after each cycle that decoded at least one barcode, run that program once
     // with ONE ARGUMENT PER DECODED BARCODE, in table order (user decision

@@ -186,7 +186,7 @@ public:
 private:
     BarcodeSdkReply run(const QString &command, const QString &requestId)
     {
-        // Checked here as well as in setDllPath() so an injected path that never
+        // Checked here as well as in setScannerProgramPath() so an injected path that never
         // passed through the setter still gets an actionable reason rather than
         // QProcess's generic "failed to start".
         if (m_program.trimmed().isEmpty() || !QFileInfo::exists(m_program)) {
@@ -259,9 +259,9 @@ private:
     qint64 m_callTimeoutMs = 2000;
 };
 
-std::unique_ptr<IBarcodeSdk> makeSystemBarcodeSdk(const QString &dllPath)
+std::unique_ptr<IBarcodeSdk> makeSystemBarcodeSdk(const QString &scannerProgramPath)
 {
-    return std::make_unique<BarcodeCliClient>(dllPath, kCallTimeoutMs);
+    return std::make_unique<BarcodeCliClient>(scannerProgramPath, kCallTimeoutMs);
 }
 
 BarcodeReaderSdkSource::BarcodeReaderSdkSource(IBarcodeSdk *sdk, Config config,
@@ -329,23 +329,23 @@ QString BarcodeReaderSdkSource::resultPath() const
     return m_path;
 }
 
-void BarcodeReaderSdkSource::setDllPath(const QString &path)
+void BarcodeReaderSdkSource::setScannerProgramPath(const QString &path)
 {
     QMutexLocker lock(&m_mutex);
     const QString trimmed = path.trimmed();
-    if (trimmed == m_dllPath)
+    if (trimmed == m_scannerProgramPath)
         return;
-    m_dllPath = trimmed;
+    m_scannerProgramPath = trimmed;
     // Only a flag here: the module itself is loaded and freed on the worker
-    // thread, at the start of the next cycle (applyPendingDllPath). Doing it
+    // thread, at the start of the next cycle (applyPendingScannerProgramPath). Doing it
     // from this (caller) thread could free the library under an in-flight call.
-    m_sdkPathDirty = true;
+    m_scannerProgramDirty = true;
 }
 
-QString BarcodeReaderSdkSource::dllPath() const
+QString BarcodeReaderSdkSource::scannerProgramPath() const
 {
     QMutexLocker lock(&m_mutex);
-    return m_dllPath;
+    return m_scannerProgramPath;
 }
 
 void BarcodeReaderSdkSource::setForwardExePath(const QString &path)
@@ -360,15 +360,15 @@ QString BarcodeReaderSdkSource::forwardExePath() const
     return m_forwardPath;
 }
 
-void BarcodeReaderSdkSource::applyPendingDllPath()
+void BarcodeReaderSdkSource::applyPendingScannerProgramPath()
 {
     QString path;
     {
         QMutexLocker lock(&m_mutex);
-        if (!m_sdkPathDirty)
+        if (!m_scannerProgramDirty)
             return;
-        m_sdkPathDirty = false;
-        path = m_dllPath;
+        m_scannerProgramDirty = false;
+        path = m_scannerProgramPath;
     }
     if (m_ownedSdk == nullptr) {
         // An injected SDK is caller-owned and knows nothing about paths; the
@@ -408,7 +408,7 @@ void BarcodeReaderSdkSource::performCycle()
 {
     // A DLL-path change takes effect here, on the worker thread, between
     // cycles: never while a call into the previous module is in flight.
-    applyPendingDllPath();
+    applyPendingScannerProgramPath();
 
     BarcodeResult result;
     {

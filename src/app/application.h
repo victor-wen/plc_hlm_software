@@ -103,7 +103,7 @@ private:
     // coil, and the 扫码服务 page's 采集条码 button exists for bench work.
     void handleBarcodePathSave(const QString &path);
     void handleBarcodePathSaved(bool ok, const QString &error);
-    void handleBarcodeSdkPathSave(const QString &path);
+    void handleBarcodeScanProgramPathSave(const QString &path);
     void handleBarcodeForwardExePathSave(const QString &path);
     // Submits one scan cycle on behalf of `source` (M15 扫码结束 or the manual
     // button). A refused overlap is surfaced visibly, never dropped.
@@ -177,7 +177,7 @@ private:
     // 扫码服务块 (user decision 2026-09-23): the vendor library path (empty =
     // load by name from the executable's directory) and the forward program
     // path (empty = do not forward).
-    QString m_barcodeSdkPath;
+    QString m_barcodeScanProgramPath;
     QString m_barcodeForwardExePath;
     // Single-flight guard across ALL three persisted settings: the DB reports
     // settingSaved() without echoing a key, so at most one save may be in flight

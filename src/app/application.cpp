@@ -56,7 +56,7 @@ constexpr const char *kBarcodeResultPath = "barcode.resultPath";
 // forward program's path. Both empty by default —— empty DLL path loads by
 // name from the executable's directory; empty forward path means the outbound
 // step does not run at all.
-constexpr const char *kBarcodeSdkPath = "barcode.sdkPath";
+constexpr const char *kBarcodeScanProgramPath = "barcode.sdkPath";
 constexpr const char *kBarcodeForwardExePath = "barcode.forwardExePath";
 
 constexpr quint16 kD122 = 122; // 皮带速度
@@ -358,7 +358,7 @@ void Application::wireSignals()
     connect(m_scanPage, &ScanServicePage::collectRequested, this,
             [this]() { submitScanCycle(QStringLiteral("手动采集")); });
     connect(m_scanPage, &ScanServicePage::scanProgramSaveRequested, this,
-            &Application::handleBarcodeSdkPathSave);
+            &Application::handleBarcodeScanProgramPathSave);
     connect(m_scanPage, &ScanServicePage::forwardProgramSaveRequested, this,
             &Application::handleBarcodeForwardExePathSave);
     connect(m_barcodeSource, &IBarcodeSource::resultReady, this,
@@ -684,7 +684,7 @@ void Application::onReady()
     // plus the three 扫码服务 keys (result path, library path, forward program).
     m_pendingSettingLoads = 10;
     m_db->getSetting(QString::fromLatin1(kBarcodeResultPath));
-    m_db->getSetting(QString::fromLatin1(kBarcodeSdkPath));
+    m_db->getSetting(QString::fromLatin1(kBarcodeScanProgramPath));
     m_db->getSetting(QString::fromLatin1(kBarcodeForwardExePath));
     m_db->getSetting(QString::fromLatin1(kSerialComPort));
     m_db->getSetting(QString::fromLatin1(kSerialStation));
@@ -790,14 +790,14 @@ void Application::handleSettingLoaded(const std::optional<SettingRecord> &settin
                 m_overviewPage->setBarcodeResultPath(m_barcodePath);
             if (m_scanPage != nullptr)
                 m_scanPage->setResultPath(m_barcodePath);
-        } else if (key == QString::fromLatin1(kBarcodeSdkPath)) {
+        } else if (key == QString::fromLatin1(kBarcodeScanProgramPath)) {
             // 扫码库路径 (user decision 2026-09-23): empty keeps the documented
             // "load by name from the executable's directory" behaviour.
-            m_barcodeSdkPath = value;
+            m_barcodeScanProgramPath = value;
             if (m_barcodeSource != nullptr)
-                m_barcodeSource->setDllPath(m_barcodeSdkPath);
+                m_barcodeSource->setScannerProgramPath(m_barcodeScanProgramPath);
             if (m_overviewPage != nullptr)
-                m_scanPage->setScanProgramPath(m_barcodeSdkPath);
+                m_scanPage->setScanProgramPath(m_barcodeScanProgramPath);
         } else if (key == QString::fromLatin1(kBarcodeForwardExePath)) {
             // 外发程序路径 (user decision 2026-09-23): empty means the outbound
             // step does not run at all, which the page states visibly.
@@ -1124,7 +1124,7 @@ void Application::handleBarcodePathSave(const QString &path)
     // round trip as the result path above, sharing its single-flight guard so the
     // key-less settingSaved() correlation stays unambiguous: at most one of the
     // three is ever in flight.
-void Application::handleBarcodeSdkPathSave(const QString &path)
+void Application::handleBarcodeScanProgramPathSave(const QString &path)
 {
     if (m_scanPage == nullptr)
         return;
@@ -1150,7 +1150,7 @@ void Application::handleBarcodeSdkPathSave(const QString &path)
     m_pendingSetting = PendingSetting::SdkPath;
     m_pendingBarcodePath = trimmed;
     SettingRecord record;
-    record.key = QString::fromLatin1(kBarcodeSdkPath);
+    record.key = QString::fromLatin1(kBarcodeScanProgramPath);
     record.typedValue = trimmed;
     record.updatedBy = m_lifecycle ? m_lifecycle->currentUsername()
                                    : QStringLiteral("anonymous");
@@ -1228,10 +1228,10 @@ void Application::handleBarcodePathSaved(bool ok, const QString &error)
 
     switch (pendingSetting) {
     case PendingSetting::SdkPath:
-        m_barcodeSdkPath = m_pendingBarcodePath;
+        m_barcodeScanProgramPath = m_pendingBarcodePath;
         if (m_barcodeSource != nullptr)
-            m_barcodeSource->setDllPath(m_barcodeSdkPath);
-        m_scanPage->setScanProgramPath(m_barcodeSdkPath);
+            m_barcodeSource->setScannerProgramPath(m_barcodeScanProgramPath);
+        m_scanPage->setScanProgramPath(m_barcodeScanProgramPath);
         m_scanPage->setScanProgramSaveResult(true, QString());
         break;
     case PendingSetting::ForwardExePath:

@@ -1,15 +1,18 @@
 #pragma once
 
-// SDK-based barcode source (user decision 2026-09-22, revised the same day).
+// Barcode source: one scan cycle, entirely on this adapter's worker thread.
 //
-// One scan cycle, entirely on this adapter's worker thread:
-//   1. no configured append path → visibly 未配置, nothing is triggered;
-//   2. BR_GetStatusW → remember serverId;
-//   3. BR_TriggerW(new requestId) → accepted/pending;
-//   4. every Config::pollIntervalMs, BR_GetResultW(SAME requestId) until the
-//      state is completed/failed, or the Config::cycleDeadlineMs runs out;
-//   5. append each decoded barcode to the configured file, then emit exactly
-//      one terminal BarcodeResult.
+//   1. no configured scanner program → visibly 未配置, nothing is run;
+//   2. `status` → remember serverId;
+//   3. `trigger <new requestId>` → accepted/pending;
+//   4. every Config::pollIntervalMs, `result <SAME requestId>` until the state
+//      is completed/failed, or the Config::cycleDeadlineMs runs out;
+//   5. append each decoded barcode to the configured file, hand them to the
+//      forward program, then emit exactly one terminal BarcodeResult.
+//
+// Each step is ONE invocation of the vendor's CLI (see barcode_sdk.h for why the
+// CLI and not the DLL), so a cycle that converges on its first poll runs three
+// processes: status, trigger, result.
 //
 // The structure follows the vendor's own DecodeAsync (TriggerClient.cs:56-77):
 // a fresh requestId per cycle, the same id for every retry and query, a 50 ms
@@ -19,13 +22,13 @@
 // because the contract requires every accepted operation to reach a visible
 // terminal state (never silence).
 //
-// Threading: the SDK calls BLOCK in the calling thread (README_CN.md:30) and
-// the append touches disk, so both run here and never on the UI thread. The
-// poll is a QTimer rather than a sleep loop, so stop() can quit the thread
-// promptly instead of waiting out a cycle.
+// Threading: the CLI call BLOCKS its caller and the append touches disk, so both
+// run here and never on the UI thread. The poll is a QTimer rather than a sleep
+// loop, so stop() can quit the thread promptly instead of waiting out a cycle.
 //
-// m_path and m_cycleInProgress are written from the caller thread and read on
-// the worker thread; both directions are guarded by m_mutex.
+// m_path / m_forwardPath / m_scannerProgramPath / m_cycleInProgress are written
+// from the caller thread and read on the worker thread; both directions are
+// guarded by m_mutex.
 
 #include <QMutex>
 #include <QThread>
@@ -40,16 +43,14 @@ class QTimer;
 
 namespace hlm {
 
-// Builds the production SDK façade: on Windows a LoadLibraryW/GetProcAddress
-// wrapper over the vendor library, elsewhere a stub that reports every call as
-// unavailable. Declared here so the composition root never needs to know which
-// one it got.
+// Builds the production façade over the vendor's CLI. Declared here so the
+// composition root never needs to know which implementation it got.
 //
-// `dllPath` empty loads the library BY NAME, so Windows searches the running
-// executable's own directory first (the documented deployment). Non-empty loads
-// exactly that file (user decision 2026-09-23: the operator can point the HMI at
-// a DLL kept elsewhere).
-std::unique_ptr<IBarcodeSdk> makeSystemBarcodeSdk(const QString &dllPath = QString());
+// `scannerProgramPath` is the CLI's full path — the 扫码程序路径 setting. Empty
+// means NOT CONFIGURED, and the adapter says so instead of running anything
+// (user decision 2026-09-23: the path is what enables the feature, now that the
+// in-process DLL is no longer used).
+std::unique_ptr<IBarcodeSdk> makeSystemBarcodeSdk(const QString &scannerProgramPath = QString());
 
 // Poll cadence, per-cycle budget and forward-program budget for one scan cycle.
 // The first two defaults are the vendor sample's (TriggerClient.cs:62,73). They
@@ -96,8 +97,8 @@ public:
 
     void setResultPath(const QString &path) override;
     QString resultPath() const override;
-    void setDllPath(const QString &path) override;
-    QString dllPath() const override;
+    void setScannerProgramPath(const QString &path) override;
+    QString scannerProgramPath() const override;
     void setForwardExePath(const QString &path) override;
     QString forwardExePath() const override;
 
@@ -127,15 +128,16 @@ private:
     // Appends one line per decoded barcode to the configured path. Never
     // touches state: a failed write must not hide a decoded barcode.
     void persistRows(BarcodeResult *result);
-    // Runs the configured forward program once for this cycle with the decoded
-    // barcodes as one space-joined argument. Never touches state either: a
-    // failed forward must not hide a barcode that was decoded (and the file
-    // append above has already happened).
+    // Runs the configured forward program once for this cycle with one argument
+    // per decoded barcode. Never touches state either: a failed forward must not
+    // hide a barcode that was decoded (and the file append above has already
+    // happened).
     void forwardRows(BarcodeResult *result);
-    // Rebuilds the owned SDK when setDllPath() changed the path. Runs on the
-    // worker thread at the start of a cycle, so the module is only ever loaded
-    // or unloaded between cycles and never under an in-flight call.
-    void applyPendingDllPath();
+    // Rebuilds the owned transport when setScannerProgramPath() changed the
+    // path. Runs on the worker thread at the start of a cycle, so the configured
+    // program is only ever swapped between cycles, never under an in-flight
+    // call.
+    void applyPendingScannerProgramPath();
     // The single convergence path for a terminal cycle: append the decoded
     // barcodes to the file, forward them to the configured program, then emit
     // exactly one terminal result. Repeating the three steps at every converge
@@ -147,11 +149,11 @@ private:
     std::unique_ptr<IBarcodeSdk> m_ownedSdk;
     Config m_config;
 
-    mutable QMutex m_mutex; // guards m_path / m_forwardPath / m_dllPath / flags
+    mutable QMutex m_mutex; // guards m_path / m_forwardPath / m_scannerProgramPath / flags
     QString m_path;
     QString m_forwardPath;
-    QString m_dllPath;
-    bool m_sdkPathDirty = false;
+    QString m_scannerProgramPath;
+    bool m_scannerProgramDirty = false;
     bool m_cycleInProgress = false;
 
     quint64 m_sequence = 0;

@@ -735,7 +735,7 @@ void BarcodeIngestionDeveloperTest::persistedServicePathsAreRestoredAtStartup()
     QCOMPARE(rig.scanPage->forwardProgramEdit()->text(), forwardPath);
     // The adapter received them too. (The DLL itself is loaded on the worker
     // thread at the next cycle; the configured value is recorded at once.)
-    QCOMPARE(rig.source->dllPath(), QStringLiteral("D:/SDK/x64/lib.dll"));
+    QCOMPARE(rig.source->scannerProgramPath(), QStringLiteral("D:/SDK/x64/lib.dll"));
     QCOMPARE(rig.source->forwardExePath(), forwardPath);
     rig.shutdown();
 }
