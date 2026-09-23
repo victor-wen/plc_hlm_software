@@ -50,6 +50,12 @@ namespace {
 
 constexpr quint16 kM15 = 15; // 扫码结束 (coil, read in the home/scan block)
 
+// What the operator fills into 扫码程序路径. It is the feature's enable switch
+// (user decision 2026-09-23: the result file became optional), so the rig models
+// a DEPLOYED machine — configured program, no result file unless a case asks for
+// one via savePath().
+constexpr const char *kScannerProgram = "C:/SDK/x64/trigger_client.exe";
+
 // A scripted stand-in for the vendor DLL, shared by every case: each cycle gets
 // its own accepted→completed exchange, and a case can replace the script to
 // exercise a failure.
@@ -208,6 +214,7 @@ struct StartedApp
     {
         for (int i = 0; i < maxTicks && gw != nullptr && !gw->isOnline(); ++i)
             gw->tick();
+        enableScanner();
     }
 
     // Settings are admin-only, so the session must be a real one: create the
@@ -236,6 +243,42 @@ struct StartedApp
     }
 
     bool adminCreated = false;
+
+    // The startup settings load is asynchronous and the fresh test database is
+    // empty, so the persisted (empty) scanner-program value lands AFTER start()
+    // and would clobber anything a test set beforehand. Counting the arrivals
+    // lets enableScanner() run once the load has settled — and the count is 10
+    // because that is how many keys onReady() requests.
+    int settingsLoaded = 0;
+
+    void disableScanner()
+    {
+        source->setScannerProgramPath(QString());
+        scanPage->setScanProgramPath(QString());
+        overview->setScanProgramConfigured(false);
+    }
+
+    void enableScanner()
+    {
+        QElapsedTimer timer;
+        timer.start();
+        while (settingsLoaded < 10 && timer.elapsed() < 5000) {
+            QTest::qWait(10);
+            QApplication::processEvents();
+        }
+        // A deployed machine: the scanner program is configured. The result file
+        // is optional and stays whatever the case decided.
+        //
+        // ONLY when nothing was loaded: a restart with a persisted value must
+        // keep that value, which is the whole point of
+        // persistedServicePathsAreRestoredAtStartup. The persisted setting is
+        // authoritative, exactly as it is in production.
+        if (!source->scannerProgramPath().isEmpty())
+            return;
+        source->setScannerProgramPath(QString::fromLatin1(kScannerProgram));
+        scanPage->setScanProgramPath(QString::fromLatin1(kScannerProgram));
+        overview->setScanProgramConfigured(true);
+    }
 
     // One scan cycle: the PLC raises M15 (scan finished), the snapshot feed sees
     // the rising edge, and the adapter runs one cycle on its own thread.
@@ -322,7 +365,7 @@ class BarcodeIngestionDeveloperTest : public QObject
     Q_OBJECT
 
 private slots:
-    void unconfiguredPathStaysNotConfigured();
+    void unconfiguredScannerProgramStaysNotConfigured();
     void configuredPathIsSavedAndEchoed();
     void scanCycleShowsEveryDecodedBarcode();
     void heldScanCompleteDoesNotRetrigger();
@@ -338,12 +381,14 @@ private slots:
     void persistedServicePathsAreRestoredAtStartup();
 };
 
-void BarcodeIngestionDeveloperTest::unconfiguredPathStaysNotConfigured()
+void BarcodeIngestionDeveloperTest::unconfiguredScannerProgramStaysNotConfigured()
 {
     StartedApp rig;
     rig.start();
     rig.advanceUntilOnline();
     QVERIFY(rig.overview != nullptr);
+    // 未配置 is decided by the SCANNER PROGRAM (the result file is optional).
+    rig.disableScanner();
 
     // Fresh installation: no path configured, so the surface is the 未配置
     // placeholder and never claims a connection.
@@ -719,7 +764,8 @@ void BarcodeIngestionDeveloperTest::persistedServicePathsAreRestoredAtStartup()
     rig.advanceUntilOnline();
     rig.loginAsAdmin();
 
-    saveOverviewPath(rig, /*sdkPath=*/true, QStringLiteral("D:/SDK/x64/lib.dll"),
+    saveOverviewPath(rig, /*sdkPath=*/true,
+                     QStringLiteral("D:/SDK/x64/trigger_client.exe"),
                      QStringLiteral("已保存"));
     saveOverviewPath(rig, /*sdkPath=*/false, forwardPath,
                      QStringLiteral("已保存"));
@@ -731,11 +777,12 @@ void BarcodeIngestionDeveloperTest::persistedServicePathsAreRestoredAtStartup()
     rig.start();
     rig.advanceUntilOnline();
     QTRY_COMPARE_WITH_TIMEOUT(rig.scanPage->scanProgramEdit()->text(),
-                              QStringLiteral("D:/SDK/x64/lib.dll"), 5000);
+                              QStringLiteral("D:/SDK/x64/trigger_client.exe"), 5000);
     QCOMPARE(rig.scanPage->forwardProgramEdit()->text(), forwardPath);
     // The adapter received them too. (The DLL itself is loaded on the worker
     // thread at the next cycle; the configured value is recorded at once.)
-    QCOMPARE(rig.source->scannerProgramPath(), QStringLiteral("D:/SDK/x64/lib.dll"));
+    QCOMPARE(rig.source->scannerProgramPath(),
+             QStringLiteral("D:/SDK/x64/trigger_client.exe"));
     QCOMPARE(rig.source->forwardExePath(), forwardPath);
     rig.shutdown();
 }

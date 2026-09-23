@@ -207,6 +207,12 @@ void OverviewPage::setBarcodeResultPath(const QString &path)
     refresh();
 }
 
+void OverviewPage::setScanProgramConfigured(bool configured)
+{
+    m_scanProgramConfigured = configured;
+    refresh();
+}
+
 void OverviewPage::setBarcodeResult(const BarcodeResult &result)
 {
     m_barcodeResult = result;
@@ -313,7 +319,10 @@ void OverviewPage::refresh()
 // dropping them. An empty position is NEVER filled with an older code.
 QString OverviewPage::barcodeStatusText() const
 {
-    if (m_barcodePath.isEmpty())
+    // The enable switch is the SCANNER PROGRAM, not the result file: the file is
+    // optional, so keying 未配置 on it would leave a fully working machine
+    // claiming to be unconfigured forever.
+    if (!m_scanProgramConfigured)
         return QStringLiteral("条码/扫码：未配置（预留）");
 
     const bool scanning = m_pageModel.m11();

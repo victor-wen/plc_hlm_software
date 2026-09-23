@@ -406,8 +406,8 @@ bool BarcodeReaderSdkSource::requestRead()
 
 void BarcodeReaderSdkSource::performCycle()
 {
-    // A DLL-path change takes effect here, on the worker thread, between
-    // cycles: never while a call into the previous module is in flight.
+    // A scanner-program change takes effect here, on the worker thread, between
+    // cycles: never while a call into the previous program is in flight.
     applyPendingScannerProgramPath();
 
     BarcodeResult result;
@@ -417,9 +417,15 @@ void BarcodeReaderSdkSource::performCycle()
     }
     result.readAt = QDateTime::currentDateTime();
 
-    const QString path = resultPath().trimmed();
-    if (path.isEmpty()) {
-        // Visibly 未配置: nothing is triggered, and the surface says so.
+    // NOT CONFIGURED is decided by the SCANNER PROGRAM, which is what enables
+    // the feature: no program means nothing is run, and the surface says so.
+    // The result file is a separate, optional output — a scan with no file
+    // configured still decodes, still displays, and still forwards; it just does
+    // not persist (user decision 2026-09-23: "不需要结果文件 结果打印到界面上
+    // 并且通过exe发送"). Gating the cycle on the file was what made a fully
+    // configured bench report "未配置".
+    const QString program = scannerProgramPath().trimmed();
+    if (program.isEmpty()) {
         result.state = BarcodeState::NotConfigured;
         finishCycle(&result);
         return;
@@ -650,10 +656,9 @@ void BarcodeReaderSdkSource::persistRows(BarcodeResult *result)
         return; // nothing decoded: the file is left exactly as it was
 
     const QString path = resultPath().trimmed();
-    if (path.isEmpty()) {
-        result->persistDetail = QStringLiteral("未配置存储路径");
-        return;
-    }
+    if (path.isEmpty())
+        return; // no file configured: the step does not run, and nothing is
+                // reported as a failure — the operator chose not to keep one
     // The parent directory must already exist: creating it silently would hide
     // a mistyped path behind an empty folder the operator never asked for.
     const QFileInfo info(path);

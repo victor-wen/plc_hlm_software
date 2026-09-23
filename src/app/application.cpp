@@ -1233,6 +1233,9 @@ void Application::handleBarcodePathSaved(bool ok, const QString &error)
             m_barcodeSource->setScannerProgramPath(m_barcodeScanProgramPath);
         m_scanPage->setScanProgramPath(m_barcodeScanProgramPath);
         m_scanPage->setScanProgramSaveResult(true, QString());
+        if (m_overviewPage != nullptr)
+            m_overviewPage->setScanProgramConfigured(
+                !m_barcodeScanProgramPath.isEmpty());
         break;
     case PendingSetting::ForwardExePath:
         m_barcodeForwardExePath = m_pendingBarcodePath;

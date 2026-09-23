@@ -147,6 +147,7 @@ class BarcodeReaderSdkSourceTest : public QObject
 private slots:
     void paddedReplyBufferYieldsExactlyThePayload();
     void notConfiguredTriggersNothing();
+    void noResultFileStillDecodesDisplaysAndForwards();
     void completedCycleParsesEveryRowAndAppendsEachBarcode();
     void emptyPositionsAreCountedAndNeverWritten();
     void completedCycleWithoutAnyBarcodeIsNoCode();
@@ -222,6 +223,8 @@ void BarcodeReaderSdkSourceTest::paddedReplyBufferYieldsExactlyThePayload()
 
 void BarcodeReaderSdkSourceTest::notConfiguredTriggersNothing()
 {
+    // 未配置 is decided by the SCANNER PROGRAM — the setting that enables the
+    // feature. No program means nothing runs and the surface says so.
     FakeBarcodeSdk sdk;
     sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
     BarcodeReaderSdkSource source(&sdk);
@@ -232,9 +235,50 @@ void BarcodeReaderSdkSourceTest::notConfiguredTriggersNothing()
     QTRY_COMPARE_WITH_TIMEOUT(spy.size(), 1, 5000);
     const BarcodeResult result = spy[0][0].value<BarcodeResult>();
     QCOMPARE(result.state, BarcodeState::NotConfigured);
-    // A missing path must not reach the SDK at all.
+    // A missing program must not reach the SDK at all.
     QCOMPARE(sdk.statusCalls, 0);
     QCOMPARE(sdk.triggerIds.size(), 0);
+    source.stop();
+}
+
+void BarcodeReaderSdkSourceTest::noResultFileStillDecodesDisplaysAndForwards()
+{
+    // The result file is OPTIONAL (user decision 2026-09-23: "不需要结果文件
+    // 结果打印到界面上 并且通过exe发送"). Gating the cycle on it was wrong: a bench
+    // with the scanner program and the forward program configured, and no file,
+    // must still decode, still show the barcodes, and still forward — it just
+    // does not persist.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    hlm_test::ForwardProbe probe(dir.path());
+
+    FakeBarcodeSdk sdk;
+    sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
+    sdk.triggerReplies = {okReply(acceptedJson(QStringLiteral("job-1")))};
+    sdk.resultReplies = {okReply(completedJson(
+        QStringLiteral("job-1"), {QStringLiteral("C3003090^M10^260224^002695")}))};
+
+    BarcodeReaderSdkSource source(&sdk);
+    // Program configured, forward program configured, NO result file.
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
+    source.setForwardExePath(hlm_test::probeProgramPath());
+    source.start();
+    QSignalSpy spy(&source, &IBarcodeSource::resultReady);
+
+    QVERIFY(source.requestRead());
+    QTRY_COMPARE_WITH_TIMEOUT(spy.size(), 1, 5000);
+    const BarcodeResult result = spy[0][0].value<BarcodeResult>();
+    // Decoded and displayed…
+    QCOMPARE(result.state, BarcodeState::Ok);
+    QCOMPARE(result.line, QStringLiteral("C3003090^M10^260224^002695"));
+    // …not persisted, and NOT reported as a failure: an unconfigured optional
+    // file is a choice, not a problem (the 扫码服务 page states it separately).
+    QVERIFY(!result.persisted);
+    QVERIFY(result.persistDetail.isEmpty());
+    // …and forwarded anyway.
+    QVERIFY2(result.forwarded, qPrintable(result.forwardDetail));
+    QCOMPARE(probe.arguments(),
+             QStringList({QStringLiteral("C3003090^M10^260224^002695")}));
     source.stop();
 }
 
@@ -253,6 +297,7 @@ void BarcodeReaderSdkSourceTest::completedCycleParsesEveryRowAndAppendsEachBarco
          QStringLiteral("C3003100^M10^260224^002696")}))};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(path);
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
@@ -298,6 +343,7 @@ void BarcodeReaderSdkSourceTest::emptyPositionsAreCountedAndNeverWritten()
          QString(), QString(), QString()}))};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(path);
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
@@ -337,6 +383,7 @@ void BarcodeReaderSdkSourceTest::completedCycleWithoutAnyBarcodeIsNoCode()
         QStringLiteral("job-1"), {QString(), QString(), QString()}))};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(path);
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
@@ -367,6 +414,7 @@ void BarcodeReaderSdkSourceTest::absentSdkConvergesToTheOperatorReason()
     sdk.statusReplies = {{BarcodeSdkStatus::NotConnected, QByteArray()}};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
@@ -392,6 +440,7 @@ void BarcodeReaderSdkSourceTest::missingScannerProgramIsItsOwnActionableReason()
     sdk.statusReplies = {{BarcodeSdkStatus::ProgramUnavailable, QByteArray()}};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
@@ -414,6 +463,7 @@ void BarcodeReaderSdkSourceTest::rejectedTriggerCarriesTheBusinessReason()
         R"({"ok":false,"code":"wrong_mode","state":"failed","serverId":"server-1"})")};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
@@ -442,6 +492,7 @@ void BarcodeReaderSdkSourceTest::serverRestartNeverTrustsTheResult()
     sdk.resultReplies[0].json.replace("server-1", "server-2");
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
@@ -467,6 +518,7 @@ void BarcodeReaderSdkSourceTest::transportTimeoutKeepsPollingTheSameRequestId()
     sdk.resultReplies = {{BarcodeSdkStatus::Timeout, QByteArray()}};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
@@ -507,6 +559,7 @@ void BarcodeReaderSdkSourceTest::cycleDeadlineConvergesTheWaitNotTheDecode()
     config.pollIntervalMs = 5;
     config.cycleDeadlineMs = 60;
     BarcodeReaderSdkSource source(&sdk, config);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
@@ -542,6 +595,7 @@ void BarcodeReaderSdkSourceTest::busyTriggerIsTerminalBecauseNothingWasAccepted(
         okReply(R"({"ok":false,"code":"busy","serverId":"server-1"})")};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
@@ -574,6 +628,7 @@ void BarcodeReaderSdkSourceTest::truncatedResultIsAFailureNotNoCode()
         R"("requestId":"job-1","saved":true,"rowsTruncated":true,"rows":[]})")};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(path);
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
@@ -605,6 +660,7 @@ void BarcodeReaderSdkSourceTest::busyKeepsPollingTheSameRequestId()
                               {QStringLiteral("C3003090^M10^260224^002695")}))};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
@@ -629,6 +685,7 @@ void BarcodeReaderSdkSourceTest::twoCyclesUseDifferentRequestIds()
     sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(path);
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
@@ -673,6 +730,7 @@ void BarcodeReaderSdkSourceTest::requestIdIsATimestampThatNeverRepeats()
     sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
@@ -723,6 +781,7 @@ void BarcodeReaderSdkSourceTest::failedWriteStillShowsTheBarcode()
         QStringLiteral("job-1"), {QStringLiteral("C3003090^M10^260224^002695")}))};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(path);
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
@@ -820,6 +879,7 @@ void BarcodeReaderSdkSourceTest::emptyForwardPathNeverRunsTheProgram()
         QStringLiteral("job-1"), {QStringLiteral("C3003090^M10^260224^002695")}))};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
@@ -845,6 +905,7 @@ void BarcodeReaderSdkSourceTest::missingForwardProgramIsAVisibleFailure()
         QStringLiteral("job-1"), {QStringLiteral("C3003090^M10^260224^002695")}))};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
     source.setForwardExePath(dir.filePath(QStringLiteral("no-such-program")));
     source.start();
@@ -880,6 +941,7 @@ void BarcodeReaderSdkSourceTest::forwardingRunsTheProgramOncePerCycleWithEveryBa
          QStringLiteral("C3003090^M10^260224^002696")}))};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
     // A program path that CONTAINS A SPACE: the invocation must pass the
     // program separately from its arguments, never through a shell. The probe
@@ -927,6 +989,7 @@ void BarcodeReaderSdkSourceTest::nonZeroExitIsAVisibleFailure()
         QStringLiteral("job-1"), {QStringLiteral("C3003090^M10^260224^002695")}))};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
     source.setForwardExePath(hlm_test::probeProgramPath());
     source.start();
@@ -963,6 +1026,7 @@ void BarcodeReaderSdkSourceTest::timeoutKillsTheProgramAndIsAVisibleFailure()
     BarcodeSdkSourceConfig config;
     config.forwardTimeoutMs = 500;
     BarcodeReaderSdkSource source(&sdk, config);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
     source.setForwardExePath(hlm_test::probeProgramPath());
     source.start();
@@ -1005,6 +1069,7 @@ void BarcodeReaderSdkSourceTest::unrepresentableBarcodeIsNotForwardedButIsStillS
 
     BarcodeReaderSdkSource source(&sdk);
     const QString resultPath = dir.filePath(QStringLiteral("Barcode.txt"));
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(resultPath);
     source.setForwardExePath(hlm_test::probeProgramPath());
     source.start();
@@ -1041,6 +1106,7 @@ void BarcodeReaderSdkSourceTest::noCodeCycleDoesNotForward()
     sdk.resultReplies = {okReply(completedJson(QStringLiteral("job-1"), {}))};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
     source.setForwardExePath(hlm_test::probeProgramPath());
     source.start();
@@ -1070,6 +1136,7 @@ void BarcodeReaderSdkSourceTest::overlappingCycleIsRejectedNotQueued()
     sdk.resultReplies = {{BarcodeSdkStatus::Timeout, QByteArray()}};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
     source.start();
 
@@ -1139,6 +1206,7 @@ void BarcodeReaderSdkSourceTest::sdkCallsRunOffTheCallingThread()
         QStringLiteral("job-1"), {QStringLiteral("C3003090^M10^260224^002695")}))};
 
     BarcodeReaderSdkSource source(&sdk);
+    source.setScannerProgramPath(QStringLiteral("C:/SDK/trigger_client.exe"));
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);

@@ -321,6 +321,8 @@ void ScanServicePage::refresh()
         }
     } else if (m_model.scanInProgress() || m_model.snapshot().m11()) {
         m_status->setText(QStringLiteral("扫码服务：扫码中…"));
+    } else if (m_scanProgramEdit->text().trimmed().isEmpty()) {
+        m_status->setText(QStringLiteral("扫码服务：未配置（请填写扫码程序路径）"));
     } else {
         m_status->setText(QStringLiteral("扫码服务：等待扫码（PLC 扫码结束信号自动触发）"));
     }
@@ -344,9 +346,12 @@ void ScanServicePage::refresh()
 
     // Where the results go. Empty is a real state: the cycle still runs and the
     // barcodes are still shown, nothing is written.
+    // The result file is optional (user decision 2026-09-23): with none
+    // configured the barcodes are still decoded, still shown here and still
+    // handed to the forward program. Said plainly, not as an error.
     m_resultPathEcho->setText(
         m_resultPath.isEmpty()
-            ? QStringLiteral("结果文件：未配置存储路径（本轮只显示，不落盘）")
+            ? QStringLiteral("结果文件：未配置（不落盘；条码仍会显示并外发）")
             : QStringLiteral("结果文件：%1").arg(m_resultPath));
 
     const QString collectReason =

@@ -42,9 +42,11 @@ public:
     QString latestAlarmText() const;
     // Visible reliability disclosure for the D138/D139 production count.
     QLabel *productionCountDisclosureLabel() const;
-    // 条码/扫码 status line. With no result path configured it stays the
-    // 未配置 placeholder and never implies a connection; with a path
-    // configured it shows the last readback (user decision 2026-09-22).
+    // 条码/扫码 status line. With no SCANNER PROGRAM configured it stays the
+    // 未配置 placeholder and never implies a connection; otherwise it shows the
+    // last readback (user decision 2026-09-22; the enable switch moved from the
+    // result file to the scanner program on 2026-09-23, when the result file
+    // became optional).
     QLabel *barcodePlaceholderLabel() const;
     QString barcodeText() const;
 
@@ -57,6 +59,10 @@ public slots:
     // a readback, never an optimistic success.
     void setBarcodeResultPath(const QString &path);
     void setBarcodeResult(const BarcodeResult &result);
+    // Whether the 扫码程序路径 setting is filled in — the thing that decides
+    // whether this line may claim the feature is configured. Fed by the
+    // composition root, which owns that setting.
+    void setScanProgramConfigured(bool configured);
 
 private:
     void buildLayout();
@@ -72,8 +78,12 @@ private:
     QLabel *m_productionCountLabel = nullptr;
     QLabel *m_productionDisclosure = nullptr;
     QLabel *m_barcodePlaceholder = nullptr;
-    // Configured result path echoed by the settings page (empty = 未配置).
+    // Configured result path echoed by the settings page (empty = the file is
+    // optional and simply not kept).
     QString m_barcodePath;
+    // 扫码程序路径 configured? This, not the result file, is what makes the
+    // feature configured.
+    bool m_scanProgramConfigured = false;
     // Latest scan readback, rendered by refresh()/setBarcodeResult().
     BarcodeResult m_barcodeResult;
     bool m_barcodeResultSet = false;

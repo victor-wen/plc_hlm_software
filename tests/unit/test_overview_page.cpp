@@ -297,13 +297,16 @@ void OverviewPageTest::barcodeStatusLineFollowsPathAndResult()
     ShellModel model;
     OverviewPage page(model);
 
-    // No result path configured: the surface stays the 未配置 placeholder and
-    // never claims a connection (contract: visibly not-configured).
+    // No SCANNER PROGRAM configured: the surface stays the 未配置 placeholder and
+    // never claims a connection (contract: visibly not-configured, enable switch
+    // = 扫码程序路径 since the result file became optional on 2026-09-23).
     QVERIFY(page.barcodeText().contains(QStringLiteral("未配置")));
     QVERIFY(!page.barcodeText().contains(QStringLiteral("已连接")));
     QVERIFY(!page.barcodeText().contains(QStringLiteral("在线")));
 
-    // Path configured, no scan cycle read yet.
+    // Scanner program configured, no scan cycle read yet. The result path is
+    // irrelevant to this state — it only decides whether anything is written.
+    page.setScanProgramConfigured(true);
     page.setBarcodeResultPath(QStringLiteral("D:/扫码/Barcode.txt"));
     QVERIFY(page.barcodeText().contains(QStringLiteral("等待扫码")));
     QVERIFY(!page.barcodeText().contains(QStringLiteral("已连接")));
@@ -367,8 +370,9 @@ void OverviewPageTest::barcodeStatusLineFollowsPathAndResult()
     QVERIFY(page.barcodeText().contains(QStringLiteral("存储失败")));
     QVERIFY(page.barcodeText().contains(QStringLiteral("存储目录不存在")));
 
-    // Clearing the path goes back to the placeholder even with a stale result.
-    page.setBarcodeResultPath(QString());
+    // Clearing the SCANNER PROGRAM goes back to the placeholder even with a
+    // stale result — that is the switch, not the file.
+    page.setScanProgramConfigured(false);
     QVERIFY(page.barcodeText().contains(QStringLiteral("未配置")));
     QVERIFY(!page.barcodeText().contains(QStringLiteral("已连接")));
 }
