@@ -310,6 +310,12 @@ target_link_libraries(test_barcode_ingestion_developer PRIVATE
     hlm_ui
     Qt6::Test
 )
+# The shared forward-program probe (tests/unit/forward_probe.h): this binary
+# re-enters itself as the forward program, so the production QProcess
+# invocation is exercised with a real child process on every platform.
+target_include_directories(test_barcode_ingestion_developer PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../unit
+)
 add_test(NAME barcode_ingestion_developer COMMAND test_barcode_ingestion_developer)
 set_tests_properties(barcode_ingestion_developer PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=*.debug=false"

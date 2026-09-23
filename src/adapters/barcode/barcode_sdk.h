@@ -18,6 +18,7 @@
 
 #include <QByteArray>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 #include "domain/barcode_result.h"
@@ -61,18 +62,25 @@ struct BarcodeSdkReply {
 // the only place it bites is real Windows hardware.
 QByteArray barcodePayloadFromBuffer(const QByteArray &raw, quint32 requiredBytes);
 
-// Joins one cycle's decoded barcodes into the single argument the forward
-// program receives, in table order, separated by ONE SPACE (user decision
-// 2026-09-23). Positions the SDK reported as empty are skipped: they are not
-// barcodes.
+// Collects one cycle's decoded barcodes into the argument list the forward
+// program receives: ONE ARGUMENT PER BARCODE, in table order (user decision
+// 2026-09-23, revised the same day after the real forward program — TCP_HMI
+// V1.0.5 — was supplied). Positions the SDK reported as empty are skipped: they
+// are not barcodes, and an empty argument would make that program reject the
+// whole frame.
 //
-// Returns false when a non-empty barcode ITSELF contains a space. The join is
-// then ambiguous — the program would split one barcode into two and hand bad
-// data downstream, silently. Refusing (and saying so visibly) is the same
-// trade-off the rest of this adapter makes: a visible failure beats a silent
-// wrong value. Platform-neutral on purpose, so the Linux dev loop tests the
-// exact production join.
-bool barcodeForwardArgument(const QVector<BarcodeRow> &rows, QString *argument);
+// Why one argument per barcode and not one joined string: TCP_HMI's CLI mode
+// builds `BARCODE<TAB>argv[1]<TAB>argv[2]…` from its own command line, and the
+// receiving side splits that frame on TAB. A single space-joined argument would
+// therefore arrive as ONE barcode whose value happens to contain spaces.
+//
+// Returns false when a non-empty barcode carries a character that protocol
+// cannot represent: TAB is its field separator, and CR/LF terminate its frames.
+// Refusing (and saying so visibly) is the same trade-off the rest of this
+// adapter makes — a visible failure beats a silent wrong value. Platform-neutral
+// on purpose, so the Linux dev loop tests the exact production transform.
+bool barcodeForwardArguments(const QVector<BarcodeRow> &rows,
+                             QStringList *arguments);
 
 class IBarcodeSdk
 {

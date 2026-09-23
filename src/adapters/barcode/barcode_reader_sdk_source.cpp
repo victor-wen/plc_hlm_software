@@ -110,21 +110,22 @@ QByteArray barcodePayloadFromBuffer(const QByteArray &raw, quint32 requiredBytes
     return raw.left(length);
 }
 
-bool barcodeForwardArgument(const QVector<BarcodeRow> &rows, QString *argument)
+bool barcodeForwardArguments(const QVector<BarcodeRow> &rows,
+                             QStringList *arguments)
 {
-    QStringList decoded;
+    arguments->clear();
     for (const BarcodeRow &row : rows) {
         const QString code = row.barcode.trimmed();
         if (code.isEmpty())
             continue; // an empty position is not a barcode
-        // One space is the separator, so a barcode that itself contains one
-        // cannot be told apart from two barcodes downstream. Refusing is
-        // visible; sending it would corrupt the data silently.
-        if (code.contains(QLatin1Char(' ')))
+        // TAB separates the downstream program's frame fields and CR/LF
+        // terminate them, so a barcode carrying either cannot be represented.
+        // Refusing is visible; sending it would corrupt the frame silently.
+        if (code.contains(QLatin1Char('\t')) || code.contains(QLatin1Char('\r'))
+            || code.contains(QLatin1Char('\n')))
             return false;
-        decoded.append(code);
+        arguments->append(code);
     }
-    *argument = decoded.join(QLatin1Char(' '));
     return true;
 }
 
@@ -727,13 +728,13 @@ void BarcodeReaderSdkSource::forwardRows(BarcodeResult *result)
     if (program.isEmpty())
         return; // not configured: neither field claims anything happened
 
-    QString argument;
-    if (!barcodeForwardArgument(result->rows, &argument)) {
+    QStringList arguments;
+    if (!barcodeForwardArguments(result->rows, &arguments)) {
         result->forwardDetail =
-            QStringLiteral("条码含空格，按空格拼接会串位，本轮未外发");
+            QStringLiteral("条码含制表符或换行，外发协议无法表示，本轮未外发");
         return;
     }
-    if (argument.isEmpty()) {
+    if (arguments.isEmpty()) {
         result->forwardDetail = QStringLiteral("本轮无可外发条码");
         return;
     }
@@ -753,9 +754,10 @@ void BarcodeReaderSdkSource::forwardRows(BarcodeResult *result)
             args->flags |= CREATE_NO_WINDOW;
         });
 #endif
-    // Program and argument are passed separately: no shell is involved, so a
-    // program path containing spaces still works.
-    process.start(program, QStringList{argument});
+    // The program path and every argument are passed separately: no shell is
+    // involved, so a path containing spaces still works and no barcode value is
+    // ever re-parsed as command-line syntax.
+    process.start(program, arguments);
     if (!process.waitForStarted(2000)) {
         result->forwardDetail =
             QStringLiteral("外发程序无法启动（%1）").arg(process.errorString());

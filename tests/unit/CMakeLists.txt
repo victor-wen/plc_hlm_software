@@ -17,6 +17,11 @@ target_link_libraries(test_barcode_reader_sdk_source PRIVATE
     hlm_barcode
     Qt6::Test
 )
+# forward_probe.h lives here and is shared with the integration barcode test:
+# both binaries re-enter themselves as the forward program, so both need it.
+target_include_directories(test_barcode_reader_sdk_source PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
 
 add_test(NAME barcode_reader_sdk_source COMMAND test_barcode_reader_sdk_source)
 

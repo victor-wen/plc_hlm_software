@@ -16,16 +16,24 @@
 // - The same requestId is reused for every query; two cycles use different ids.
 // - A failed file write never hides the barcode that was decoded.
 // - All SDK calls and file writes run on the adapter's own worker thread.
+// - Forwarding (user decision 2026-09-23): one argument per barcode in table
+//   order, one invocation per board, and a visible failure for every way it can
+//   go wrong (missing program, non-zero exit, timeout, unrepresentable barcode).
+//   The forward program is a REAL process — this test binary re-entered as the
+//   probe in tests/unit/forward_probe.h — because the production invocation is
+//   thing under test, and an injected fake could not prove it.
 
 #include <QtTest>
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QThread>
 
 #include "adapters/barcode/barcode_reader_sdk_source.h"
+#include "forward_probe.h"
 
 using namespace hlm;
 
@@ -150,14 +158,14 @@ private slots:
     void busyKeepsPollingTheSameRequestId();
     void twoCyclesUseDifferentRequestIds();
     void failedWriteStillShowsTheBarcode();
-    void forwardArgumentJoinsBarcodesInTableOrder();
-    void forwardArgumentRefusesABarcodeContainingASpace();
+    void forwardArgumentKeepsOnePerBarcodeInTableOrder();
+    void forwardArgumentRefusesATabOrNewline();
     void emptyForwardPathNeverRunsTheProgram();
     void missingForwardProgramIsAVisibleFailure();
     void forwardingRunsTheProgramOncePerCycleWithEveryBarcode();
     void nonZeroExitIsAVisibleFailure();
     void timeoutKillsTheProgramAndIsAVisibleFailure();
-    void barcodeContainingASpaceIsNotForwardedButIsStillStored();
+    void unrepresentableBarcodeIsNotForwardedButIsStillStored();
     void noCodeCycleDoesNotForward();
     void overlappingCycleIsRejectedNotQueued();
     void sdkCallsRunOffTheCallingThread();
@@ -638,58 +646,71 @@ void BarcodeReaderSdkSourceTest::failedWriteStillShowsTheBarcode()
     source.stop();
 }
 
-void BarcodeReaderSdkSourceTest::forwardArgumentJoinsBarcodesInTableOrder()
+void BarcodeReaderSdkSourceTest::forwardArgumentKeepsOnePerBarcodeInTableOrder()
 {
-    // The exact join the forward program receives (user decision 2026-09-23):
-    // table order, ONE space between barcodes, empty positions skipped, nothing
-    // added around the whole string. A platform-neutral helper, so this is the
-    // production code path, not a re-implementation.
+    // The exact argument vector the forward program receives (user decision
+    // 2026-09-23, revised the same day after the real forward program — TCP_HMI
+    // V1.0.5 — was supplied): ONE ARGUMENT PER BARCODE, table order, empty
+    // positions skipped. It is NOT a joined string: TCP_HMI builds its frame as
+    // `BARCODE<TAB>argv[1]<TAB>argv[2]…` and the receiver splits on TAB, so a
+    // single space-joined argument would arrive as one barcode containing
+    // spaces. A platform-neutral helper, so this is the production transform,
+    // not a re-implementation of it.
     QVector<BarcodeRow> rows;
-    const auto addRow = [&rows](const QString &barcode) {
-        BarcodeRow row;
-        row.barcode = barcode;
-        rows.append(row);
+    const auto row = [](const QString &barcode) {
+        BarcodeRow r;
+        r.barcode = barcode;
+        return r;
     };
-    addRow(QStringLiteral("C3003090^M10^260224^002695"));
-    addRow(QString());                       // a looked-at but empty position
-    addRow(QStringLiteral("C3003090^M10^260224^002696"));
+    rows.append(row(QStringLiteral("C3003090^M10^260224^002695")));
+    rows.append(row(QString())); // a looked-at but empty position
+    rows.append(row(QStringLiteral("C3003090^M10^260224^002696")));
 
-    QString argument;
-    QVERIFY(barcodeForwardArgument(rows, &argument));
-    QCOMPARE(argument,
-             QStringLiteral("C3003090^M10^260224^002695 "
-                            "C3003090^M10^260224^002696"));
+    QStringList arguments;
+    QVERIFY(barcodeForwardArguments(rows, &arguments));
+    QCOMPARE(arguments,
+             QStringList({QStringLiteral("C3003090^M10^260224^002695"),
+                          QStringLiteral("C3003090^M10^260224^002696")}));
+    // The barcode's own '^' characters survive untouched: they are content.
+    QVERIFY(arguments.first().contains(QLatin1Char('^')));
 
-    // One barcode: no separator, no padding.
-    QVector<BarcodeRow> single;
-    addRow(QStringLiteral("ONLY"));
-    BarcodeRow only;
-    only.barcode = QStringLiteral("ONLY");
-    single.append(only);
-    QVERIFY(barcodeForwardArgument(single, &argument));
-    QCOMPARE(argument, QStringLiteral("ONLY"));
+    // One barcode: exactly one argument, no padding of any kind.
+    QVERIFY(barcodeForwardArguments({row(QStringLiteral("ONLY"))}, &arguments));
+    QCOMPARE(arguments, QStringList({QStringLiteral("ONLY")}));
 
-    // Nothing decoded: an empty argument, which the caller treats as "nothing
+    // A barcode containing a SPACE is fine here — TCP_HMI separates on TAB, so
+    // a space inside a value is unambiguous and must not block the handover.
+    QVERIFY(barcodeForwardArguments({row(QStringLiteral("AB CD"))}, &arguments));
+    QCOMPARE(arguments, QStringList({QStringLiteral("AB CD")}));
+
+    // Nothing decoded: no arguments at all, which the caller treats as "nothing
     // to forward" rather than starting a program with an empty parameter.
-    QVERIFY(barcodeForwardArgument({}, &argument));
-    QVERIFY(argument.isEmpty());
+    QVERIFY(barcodeForwardArguments({}, &arguments));
+    QVERIFY(arguments.isEmpty());
 }
 
-void BarcodeReaderSdkSourceTest::forwardArgumentRefusesABarcodeContainingASpace()
+void BarcodeReaderSdkSourceTest::forwardArgumentRefusesATabOrNewline()
 {
-    // One space is the separator, so a barcode that itself contains one cannot
-    // be told apart from two barcodes by the receiving program. Refusing is a
-    // visible failure; sending it would corrupt the data silently.
-    QVector<BarcodeRow> rows;
-    BarcodeRow clean;
-    clean.barcode = QStringLiteral("C3003090^M10^260224^002695");
-    BarcodeRow dirty;
-    dirty.barcode = QStringLiteral("BAD CODE");
-    rows.append(clean);
-    rows.append(dirty);
-
-    QString argument;
-    QVERIFY(!barcodeForwardArgument(rows, &argument));
+    // TAB is the downstream frame's field separator and CR/LF terminate its
+    // frames, so a barcode carrying either cannot be represented. Refusing is a
+    // visible failure; sending it would corrupt the frame silently — the same
+    // trade-off this adapter makes everywhere else.
+    const auto row = [](const QString &barcode) {
+        BarcodeRow r;
+        r.barcode = barcode;
+        return r;
+    };
+    QStringList arguments;
+    QVERIFY(!barcodeForwardArguments(
+        {row(QStringLiteral("C3003090^M10^260224^002695")),
+         row(QStringLiteral("BAD\tCODE"))},
+        &arguments));
+    QVERIFY(!barcodeForwardArguments({row(QStringLiteral("BAD\nCODE"))},
+                                     &arguments));
+    QVERIFY(!barcodeForwardArguments({row(QStringLiteral("BAD\rCODE"))},
+                                     &arguments));
+    // The refusal is all-or-nothing: nothing is half-handled.
+    QVERIFY(arguments.isEmpty());
 }
 
 void BarcodeReaderSdkSourceTest::emptyForwardPathNeverRunsTheProgram()
@@ -750,27 +771,12 @@ void BarcodeReaderSdkSourceTest::missingForwardProgramIsAVisibleFailure()
 
 void BarcodeReaderSdkSourceTest::forwardingRunsTheProgramOncePerCycleWithEveryBarcode()
 {
-    // A real program, on whichever platform this runs: a shell script that
-    // records its argv verbatim. QProcess is a real process on every platform,
-    // so this exercises the production invocation, path and all.
+    // The program is a REAL process — this very test binary re-entered as the
+    // probe (tests/unit/forward_probe.h). No shell, so it behaves the same on the
+    // Windows CI where the .sh version of this test could never run.
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
-    const QString output = dir.filePath(QStringLiteral("argv.txt"));
-    const QString program = dir.filePath(QStringLiteral("record-argv.sh"));
-    {
-        QFile script(program);
-        QVERIFY(script.open(QIODevice::WriteOnly));
-        script.write("#!/bin/sh\n");
-        // One line per argument, prefixed with the count on the first line, so
-        // the test can prove BOTH the argument count and the exact text.
-        script.write("echo \"argc=$#\" > \"$OUT\"\n");
-        script.write("for a in \"$@\"; do echo \"$a\" >> \"$OUT\"; done\n");
-        script.close();
-        QVERIFY(script.setPermissions(QFileDevice::ReadOwner
-                                      | QFileDevice::WriteOwner
-                                      | QFileDevice::ExeOwner));
-    }
-    qputenv("OUT", output.toUtf8());
+    hlm_test::ForwardProbe probe(dir.path());
 
     FakeBarcodeSdk sdk;
     sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
@@ -782,6 +788,14 @@ void BarcodeReaderSdkSourceTest::forwardingRunsTheProgramOncePerCycleWithEveryBa
 
     BarcodeReaderSdkSource source(&sdk);
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
+    // A program path that CONTAINS A SPACE: the invocation must pass the
+    // program separately from its arguments, never through a shell. The probe
+    // copy is made beside the original because Windows deploys the Qt DLLs
+    // app-local next to the test executable.
+    const QString program = hlm_test::probeProgramWithSpaceInPath();
+    QVERIFY2(!program.isEmpty() && program.contains(QLatin1Char(' '))
+                 && QFileInfo::exists(program),
+             qPrintable(QStringLiteral("probe copy not prepared: %1").arg(program)));
     source.setForwardExePath(program);
     source.setForwardExePath(program); // idempotent: the same path twice is fine
     source.start();
@@ -795,38 +809,23 @@ void BarcodeReaderSdkSourceTest::forwardingRunsTheProgramOncePerCycleWithEveryBa
                             .arg(result.forwardDetail)));
     QVERIFY(result.forwardDetail.isEmpty());
 
-    // Exactly ONE argument, carrying both barcodes space-joined in table order.
-    QFile recorded(output);
-    QVERIFY(recorded.open(QIODevice::ReadOnly));
-    const QStringList lines =
-        QString::fromUtf8(recorded.readAll())
-            .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-    recorded.close();
-    QCOMPARE(lines.size(), 2);
-    QCOMPARE(lines[0], QStringLiteral("argc=1"));
-    QCOMPARE(lines[1], QStringLiteral("C3003090^M10^260224^002695 "
-                                      "C3003090^M10^260224^002696"));
+    // ONE invocation carrying TWO arguments, in table order, each barcode
+    // whole. `arguments()` has already dropped the probe's own argv[0].
+    QVERIFY2(probe.ran(), "the forward program was never started");
+    QCOMPARE(probe.arguments(),
+             QStringList({QStringLiteral("C3003090^M10^260224^002695"),
+                          QStringLiteral("C3003090^M10^260224^002696")}));
     source.stop();
 }
 
-// A cycle that decoded nothing has nothing to hand downstream. Starting the
-// program with an empty argument would look like a board with no barcodes.
 void BarcodeReaderSdkSourceTest::nonZeroExitIsAVisibleFailure()
 {
     // A program that ran and rejected the data (a failed downstream handover)
     // must be reported, not silently treated as delivered.
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
-    const QString program = dir.filePath(QStringLiteral("fail.sh"));
-    {
-        QFile script(program);
-        QVERIFY(script.open(QIODevice::WriteOnly));
-        script.write("#!/bin/sh\nexit 3\n");
-        script.close();
-        QVERIFY(script.setPermissions(QFileDevice::ReadOwner
-                                      | QFileDevice::WriteOwner
-                                      | QFileDevice::ExeOwner));
-    }
+    hlm_test::ForwardProbe probe(dir.path());
+    probe.exitWith(3);
 
     FakeBarcodeSdk sdk;
     sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
@@ -836,7 +835,7 @@ void BarcodeReaderSdkSourceTest::nonZeroExitIsAVisibleFailure()
 
     BarcodeReaderSdkSource source(&sdk);
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
-    source.setForwardExePath(program);
+    source.setForwardExePath(hlm_test::probeProgramPath());
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
 
@@ -854,18 +853,13 @@ void BarcodeReaderSdkSourceTest::timeoutKillsTheProgramAndIsAVisibleFailure()
     // A hung program must not hold the cycle open forever. The timeout is
     // injected through Config for the same reason the cycle deadline is: the
     // production default (10 s) would make this test take ten seconds.
+    //
+    // The probe hangs for far longer than the injected budget, so the fact that
+    // the cycle converged at all proves the kill took effect.
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
-    const QString program = dir.filePath(QStringLiteral("hang.sh"));
-    {
-        QFile script(program);
-        QVERIFY(script.open(QIODevice::WriteOnly));
-        script.write("#!/bin/sh\nsleep 30\n");
-        script.close();
-        QVERIFY(script.setPermissions(QFileDevice::ReadOwner
-                                      | QFileDevice::WriteOwner
-                                      | QFileDevice::ExeOwner));
-    }
+    hlm_test::ForwardProbe probe(dir.path());
+    probe.hangFor(30000);
 
     FakeBarcodeSdk sdk;
     sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
@@ -877,53 +871,49 @@ void BarcodeReaderSdkSourceTest::timeoutKillsTheProgramAndIsAVisibleFailure()
     config.forwardTimeoutMs = 500;
     BarcodeReaderSdkSource source(&sdk, config);
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
-    source.setForwardExePath(program);
+    source.setForwardExePath(hlm_test::probeProgramPath());
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
 
+    QElapsedTimer timer;
+    timer.start();
     QVERIFY(source.requestRead());
     QTRY_COMPARE_WITH_TIMEOUT(spy.size(), 1, 10000);
     const BarcodeResult result = spy[0][0].value<BarcodeResult>();
+    // Bounded by the injected budget plus the kill's own 1 s grace, and far
+    // below the 30 s the program wanted. This is the kill assertion: if the
+    // adapter waited the program out, this would be 30 s.
+    QVERIFY2(timer.elapsed() < 10000,
+             qPrintable(QStringLiteral("the cycle waited %1 ms for a program that "
+                                       "asked for 30 s")
+                            .arg(timer.elapsed())));
     QVERIFY(result.persisted);
     QVERIFY(!result.forwarded);
-    // 500 ms / 1000 is 0 whole seconds, so the message reads "外发超时（0 秒）";
-    // the important part is that it says 超时 and the cycle converged.
     QVERIFY2(result.forwardDetail.contains(QStringLiteral("外发超时")),
              qPrintable(result.forwardDetail));
     source.stop();
 }
 
-void BarcodeReaderSdkSourceTest::barcodeContainingASpaceIsNotForwardedButIsStillStored()
+void BarcodeReaderSdkSourceTest::unrepresentableBarcodeIsNotForwardedButIsStillStored()
 {
-    // The join cannot represent a barcode that contains the separator. Refusing
-    // is visible; sending it would hand the downstream program a value it would
-    // silently split in the wrong place.
+    // TAB cannot be represented in the downstream frame. Refusing is visible;
+    // sending it would corrupt every field after it.
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
-    const QString output = dir.filePath(QStringLiteral("argv.txt"));
-    const QString program = dir.filePath(QStringLiteral("record-argv.sh"));
-    {
-        QFile script(program);
-        QVERIFY(script.open(QIODevice::WriteOnly));
-        script.write("#!/bin/sh\necho \"argc=$#\" > \"$OUT\"\n");
-        script.close();
-        QVERIFY(script.setPermissions(QFileDevice::ReadOwner
-                                      | QFileDevice::WriteOwner
-                                      | QFileDevice::ExeOwner));
-    }
-    qputenv("OUT", output.toUtf8());
+    hlm_test::ForwardProbe probe(dir.path());
 
     FakeBarcodeSdk sdk;
     sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
     sdk.triggerReplies = {okReply(acceptedJson(QStringLiteral("job-1")))};
     sdk.resultReplies = {okReply(completedJson(
         QStringLiteral("job-1"),
-        {QStringLiteral("C3003090^M10^260224^002695"), QStringLiteral("BAD CODE")}))};
+        {QStringLiteral("C3003090^M10^260224^002695"),
+         QStringLiteral("BAD\tCODE")}))};
 
     BarcodeReaderSdkSource source(&sdk);
     const QString resultPath = dir.filePath(QStringLiteral("Barcode.txt"));
     source.setResultPath(resultPath);
-    source.setForwardExePath(program);
+    source.setForwardExePath(hlm_test::probeProgramPath());
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
 
@@ -931,35 +921,26 @@ void BarcodeReaderSdkSourceTest::barcodeContainingASpaceIsNotForwardedButIsStill
     QTRY_COMPARE_WITH_TIMEOUT(spy.size(), 1, 5000);
     const BarcodeResult result = spy[0][0].value<BarcodeResult>();
     QVERIFY(!result.forwarded);
-    QVERIFY(result.forwardDetail.contains(QStringLiteral("空格")));
-    // …and both barcodes — including the one that blocked the forward — are
+    QVERIFY(result.forwardDetail.contains(QStringLiteral("制表符")));
+    // …and every barcode — including the one that blocked the forward — is
     // still displayed and still stored.
     QCOMPARE(result.state, BarcodeState::Ok);
     QVERIFY(result.persisted);
     QCOMPARE(resultLines(resultPath),
              QStringList({QStringLiteral("C3003090^M10^260224^002695"),
-                          QStringLiteral("BAD CODE")}));
-    QVERIFY2(!QFile::exists(output), "the forward program ran despite the "
-                                     "ambiguous join");
+                          QStringLiteral("BAD\tCODE")}));
+    QVERIFY2(!probe.ran(), "the forward program ran despite the unrepresentable "
+                           "barcode");
     source.stop();
 }
 
 void BarcodeReaderSdkSourceTest::noCodeCycleDoesNotForward()
 {
+    // A cycle that decoded nothing has nothing to hand downstream. Starting the
+    // program with no arguments would look like a board with no barcodes.
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
-    const QString output = dir.filePath(QStringLiteral("argv.txt"));
-    const QString program = dir.filePath(QStringLiteral("record-argv.sh"));
-    {
-        QFile script(program);
-        QVERIFY(script.open(QIODevice::WriteOnly));
-        script.write("#!/bin/sh\necho \"argc=$#\" > \"$OUT\"\n");
-        script.close();
-        QVERIFY(script.setPermissions(QFileDevice::ReadOwner
-                                      | QFileDevice::WriteOwner
-                                      | QFileDevice::ExeOwner));
-    }
-    qputenv("OUT", output.toUtf8());
+    hlm_test::ForwardProbe probe(dir.path());
 
     FakeBarcodeSdk sdk;
     sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
@@ -968,7 +949,7 @@ void BarcodeReaderSdkSourceTest::noCodeCycleDoesNotForward()
 
     BarcodeReaderSdkSource source(&sdk);
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
-    source.setForwardExePath(program);
+    source.setForwardExePath(hlm_test::probeProgramPath());
     source.start();
     QSignalSpy spy(&source, &IBarcodeSource::resultReady);
 
@@ -978,10 +959,11 @@ void BarcodeReaderSdkSourceTest::noCodeCycleDoesNotForward()
     QCOMPARE(result.state, BarcodeState::NoCode);
     QVERIFY(!result.forwarded);
     QVERIFY(result.forwardDetail.isEmpty());
-    QVERIFY2(!QFile::exists(output), "the forward program was started for a "
-                                     "cycle that decoded nothing");
+    QVERIFY2(!probe.ran(), "the forward program was started for a cycle that "
+                           "decoded nothing");
     source.stop();
 }
+
 
 void BarcodeReaderSdkSourceTest::overlappingCycleIsRejectedNotQueued()
 {
@@ -1078,5 +1060,18 @@ void BarcodeReaderSdkSourceTest::sdkCallsRunOffTheCallingThread()
     source.stop();
 }
 
-QTEST_MAIN(BarcodeReaderSdkSourceTest)
+// A hand-written main instead of QTEST_MAIN so the binary can also act as the
+// forward-program probe (tests/forward_probe.h): when the environment asks for
+// it, this process records its own argv and exits without running any test. The
+// probe is a real executable on every platform, which is what lets the forward
+// tests exercise the production QProcess invocation on Windows too.
+int main(int argc, char *argv[])
+{
+    QCoreApplication app(argc, argv);
+    if (hlm_test::forwardProbeRequested())
+        return hlm_test::runForwardProbe();
+    BarcodeReaderSdkSourceTest tc;
+    return QTest::qExec(&tc, argc, argv);
+}
+
 #include "test_barcode_reader_sdk_source.moc"

@@ -41,6 +41,7 @@
 #include "ui/pages/overview_page.h"
 #include "ui/pages/users_settings_page.h"
 #include "ui/widgets/permission_button.h"
+#include "forward_probe.h"
 
 using namespace hlm;
 
@@ -320,7 +321,8 @@ private slots:
     void manualScanTriggerDrivesTheWholePath();
     void refusedOverlappingScanIsVisible();
     void overviewManualButtonDrivesTheWholePathWithoutThePlc();
-    void forwardProgramReceivesTheBarcodesAsOneArgument();
+    void forwardProgramReceivesEveryBarcodeAsItsOwnArgument();
+    void autoTriggerAlsoForwardsTheBarcodes();
     void forwardFailureStaysVisibleAndKeepsTheBarcode();
     void persistedServicePathsAreRestoredAtStartup();
 };
@@ -606,10 +608,16 @@ void BarcodeIngestionDeveloperTest::overviewManualButtonDrivesTheWholePathWithou
     rig.shutdown();
 }
 
-// The forward step (user decision 2026-09-23): after a cycle that decoded
-// barcodes, the configured program runs ONCE with all of them as a single
-// space-joined argument, in table order.
-void BarcodeIngestionDeveloperTest::forwardProgramReceivesTheBarcodesAsOneArgument()
+// The forward step (user decision 2026-09-23, revised the same day after the
+// real forward program — TCP_HMI V1.0.5 — was supplied): after a cycle that
+// decoded barcodes, the configured program runs ONCE with ONE ARGUMENT PER
+// BARCODE, in table order. Not a joined string: TCP_HMI builds its frame as
+// `BARCODE<TAB>argv[1]<TAB>argv[2]…` and its receiver splits on TAB.
+//
+// The program is a REAL process — this test binary re-entered as the probe
+// (tests/unit/forward_probe.h) — so this holds on the Windows CI too, where a
+// #!/bin/sh script could never run.
+void BarcodeIngestionDeveloperTest::forwardProgramReceivesEveryBarcodeAsItsOwnArgument()
 {
     StartedApp rig;
     rig.start();
@@ -618,24 +626,8 @@ void BarcodeIngestionDeveloperTest::forwardProgramReceivesTheBarcodesAsOneArgume
 
     const QString path = rig.dir.filePath(QStringLiteral("Barcode.txt"));
     savePath(rig, path);
-
-    // A real program: it records its argv so the assertion is on the bytes the
-    // process actually received, not on what the HMI intended to send.
-    const QString output = rig.dir.filePath(QStringLiteral("argv.txt"));
-    const QString program = rig.dir.filePath(QStringLiteral("send.sh"));
-    {
-        QFile script(program);
-        QVERIFY(script.open(QIODevice::WriteOnly));
-        script.write("#!/bin/sh\n");
-        script.write("echo \"argc=$#\" > \"$OUT\"\n");
-        script.write("for a in \"$@\"; do echo \"$a\" >> \"$OUT\"; done\n");
-        script.close();
-        QVERIFY(script.setPermissions(QFileDevice::ReadOwner
-                                      | QFileDevice::WriteOwner
-                                      | QFileDevice::ExeOwner));
-    }
-    qputenv("OUT", output.toUtf8());
-    saveOverviewPath(rig, /*sdkPath=*/false, program,
+    hlm_test::ForwardProbe probe(rig.dir.path());
+    saveOverviewPath(rig, /*sdkPath=*/false, hlm_test::probeProgramPath(),
                      QStringLiteral("已保存"));
 
     rig.sdk.nextRows = {QStringLiteral("C3003090^M10^260224^002911"),
@@ -645,17 +637,37 @@ void BarcodeIngestionDeveloperTest::forwardProgramReceivesTheBarcodesAsOneArgume
     QVERIFY(rig.waitForText(QStringLiteral("002911")));
     QVERIFY(rig.waitForText(QStringLiteral("已外发")));
 
-    QFile recorded(output);
-    QVERIFY(recorded.open(QIODevice::ReadOnly));
-    const QStringList lines =
-        QString::fromUtf8(recorded.readAll())
-            .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-    recorded.close();
-    // ONE argument, both decoded barcodes, the empty position skipped.
-    QCOMPARE(lines.size(), 2);
-    QCOMPARE(lines[0], QStringLiteral("argc=1"));
-    QCOMPARE(lines[1], QStringLiteral("C3003090^M10^260224^002911 "
-                                      "C3003090^M10^260224^002912"));
+    // TWO arguments, both decoded barcodes, the empty position skipped.
+    QVERIFY2(probe.ran(), "the forward program was never started");
+    QCOMPARE(probe.arguments(),
+             QStringList({QStringLiteral("C3003090^M10^260224^002911"),
+                          QStringLiteral("C3003090^M10^260224^002912")}));
+    rig.shutdown();
+}
+
+// The auto and the manual entries must both forward: the user's requirement is
+// "跑自动的时候调用 exe，手动调试触发信号也调用 exe". A forward wired only to
+// the manual path would satisfy every other case here.
+void BarcodeIngestionDeveloperTest::autoTriggerAlsoForwardsTheBarcodes()
+{
+    StartedApp rig;
+    rig.start();
+    rig.advanceUntilOnline();
+    rig.loginAsAdmin();
+
+    savePath(rig, rig.dir.filePath(QStringLiteral("Barcode.txt")));
+    hlm_test::ForwardProbe probe(rig.dir.path());
+    saveOverviewPath(rig, /*sdkPath=*/false, hlm_test::probeProgramPath(),
+                     QStringLiteral("已保存"));
+
+    rig.sdk.nextRows = {QStringLiteral("C3003090^M10^260224^002931")};
+    // No button: the PLC's own M15 扫码结束 edge drives this cycle.
+    rig.raiseScanComplete();
+    QVERIFY(rig.waitForText(QStringLiteral("002931")));
+    QVERIFY(rig.waitForText(QStringLiteral("已外发")));
+
+    QCOMPARE(probe.arguments(),
+             QStringList({QStringLiteral("C3003090^M10^260224^002931")}));
     rig.shutdown();
 }
 
@@ -717,5 +729,18 @@ void BarcodeIngestionDeveloperTest::persistedServicePathsAreRestoredAtStartup()
     rig.shutdown();
 }
 
-QTEST_MAIN(BarcodeIngestionDeveloperTest)
+// A hand-written main instead of QTEST_MAIN so the binary can also act as the
+// forward-program probe (tests/unit/forward_probe.h): when the environment asks
+// for it, this process records its own argv and exits without running any test.
+// The probe is a real executable on every platform, which is what lets the
+// forward cases exercise the production QProcess invocation on Windows too.
+int main(int argc, char *argv[])
+{
+    QApplication app(argc, argv);
+    if (hlm_test::forwardProbeRequested())
+        return hlm_test::runForwardProbe();
+    BarcodeIngestionDeveloperTest tc;
+    return QTest::qExec(&tc, argc, argv);
+}
+
 #include "barcode_ingestion_developer_test.moc"

@@ -54,7 +54,9 @@ public:
     virtual QString dllPath() const = 0;
     // Forward-program path: empty = the step does not run at all. Non-empty =
     // after each cycle that decoded at least one barcode, run that program once
-    // with the cycle's barcodes as a single space-joined argument.
+    // with ONE ARGUMENT PER DECODED BARCODE, in table order (user decision
+    // 2026-09-23; revised the same day when the real forward program — TCP_HMI
+    // V1.0.5 — turned out to build its frame from separate args).
     virtual void setForwardExePath(const QString &path) = 0;
     virtual QString forwardExePath() const = 0;
 

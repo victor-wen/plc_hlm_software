@@ -234,11 +234,16 @@ QWidget *OverviewPage::buildScanServiceBlock()
 
     // Row 3: forward program path. Empty = the outbound step does not run.
     auto *forwardTitle =
-        new QLabel(QStringLiteral("外发程序路径（留空 = 不调用）"), panel);
+        new QLabel(QStringLiteral("外发程序路径（留空 = 不调用；每个码作一个参数）"),
+                   panel);
     forwardTitle->setObjectName(QStringLiteral("valueFieldTitle"));
     layout->addWidget(forwardTitle);
     m_forwardExeEdit = new QLineEdit(panel);
     m_forwardExeEdit->setObjectName(QStringLiteral("forwardExePathEdit"));
+    // The placeholder names no product and no barcode/scan token: the pinned
+    // placeholder test scans every QLineEdit's placeholder text, and "条码" is
+    // one of its tokens. What the program receives is explained by the label
+    // above, not by the hint.
     m_forwardExeEdit->setPlaceholderText(
         QStringLiteral("例如 D:\\Tools\\send.exe"));
     m_forwardExeEdit->setMinimumHeight(44);
