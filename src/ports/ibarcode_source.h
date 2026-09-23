@@ -59,10 +59,18 @@ public:
     // V1.0.5 — turned out to build its frame from separate args).
     virtual void setForwardExePath(const QString &path) = 0;
     virtual QString forwardExePath() const = 0;
+    // How many barcodes the current recipe expects (user decision 2026-09-23).
+    // 0 = do not check. A cycle that decodes a different number converges as
+    // CountMismatch and is NOT persisted or forwarded: a partial read is not a
+    // board result, and writing it would only pollute the traceability file.
+    // The caller (which knows the recipe) decides whether to retry.
+    virtual void setExpectedBarcodeCount(int count) = 0;
+    virtual int expectedBarcodeCount() const = 0;
 
-    // A scan cycle ended (the PLC raised M15 扫码结束): run one trigger →
-    // poll → decode-result cycle and report through resultReady(). Asynchronous;
-    // returns immediately.
+    // A scan cycle ended — the PLC raised M11 相机触发中 (user decision
+    // 2026-09-23: M11 is what the HMI READS; M15 is what the HMI WRITES back):
+    // run one trigger → poll → decode-result cycle and report through
+    // resultReady(). Asynchronous; returns immediately.
     //
     // Returns false when the cycle was NOT submitted because the previous one
     // has not finished. The caller must surface that as a visible state rather

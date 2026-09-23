@@ -9,6 +9,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QSpinBox>
 #include <QVBoxLayout>
 
 namespace hlm {
@@ -115,6 +116,35 @@ void ScanServicePage::buildLayout()
     scanLayout->addWidget(m_scanProgramStatus);
     root->addWidget(scanPanel);
 
+    // --- 触发次数 ------------------------------------------------------------------
+    auto *attemptsPanel =
+        buildSection(QStringLiteral("触发次数（条码个数不符时最多采集几次）"));
+    auto *attemptsLayout = qobject_cast<QVBoxLayout *>(attemptsPanel->layout());
+    auto *attemptsRow = new QHBoxLayout();
+    attemptsRow->setSpacing(12);
+    m_scanAttemptsSpin = new QSpinBox(attemptsPanel);
+    m_scanAttemptsSpin->setObjectName(QStringLiteral("scanAttemptsSpin"));
+    // Never 0: a board with no attempt at all could never be scanned, so the
+    // range starts at 1 (user decision 2026-09-23).
+    m_scanAttemptsSpin->setRange(1, 9);
+    m_scanAttemptsSpin->setMinimumHeight(48);
+    attemptsRow->addWidget(m_scanAttemptsSpin);
+    m_saveScanAttempts = new PermissionButton(QStringLiteral("保存触发次数"),
+                                              attemptsPanel);
+    m_saveScanAttempts->setObjectName(QStringLiteral("saveScanAttemptsButton"));
+    m_saveScanAttempts->setMinimumHeight(48);
+    connect(m_saveScanAttempts, &QPushButton::clicked, this,
+            &ScanServicePage::onSaveScanAttemptsClicked);
+    attemptsRow->addWidget(m_saveScanAttempts);
+    attemptsRow->addStretch();
+    attemptsLayout->addLayout(attemptsRow);
+    m_scanAttemptsStatus = new QLabel(attemptsPanel);
+    m_scanAttemptsStatus->setObjectName(QStringLiteral("scanAttemptsStatus"));
+    m_scanAttemptsStatus->setMinimumHeight(32);
+    m_scanAttemptsStatus->setWordWrap(true);
+    attemptsLayout->addWidget(m_scanAttemptsStatus);
+    root->addWidget(attemptsPanel);
+
     // --- 外发程序路径 -------------------------------------------------------------
     auto *forwardPanel =
         buildSection(QStringLiteral("外发程序路径（留空 = 不调用；每个码作一个参数）"));
@@ -179,6 +209,12 @@ QString ScanServicePage::scanProgramStatusText() const
     return m_scanProgramStatus != nullptr ? m_scanProgramStatus->text() : QString();
 }
 
+QString ScanServicePage::scanAttemptsStatusText() const
+{
+    return m_scanAttemptsStatus != nullptr ? m_scanAttemptsStatus->text()
+                                           : QString();
+}
+
 QString ScanServicePage::forwardProgramStatusText() const
 {
     return m_forwardProgramStatus != nullptr ? m_forwardProgramStatus->text()
@@ -211,6 +247,37 @@ void ScanServicePage::onSaveScanProgramClicked()
         return;
     setScanProgramSavePending();
     emit scanProgramSaveRequested(m_scanProgramEdit->text().trimmed());
+}
+
+void ScanServicePage::onSaveScanAttemptsClicked()
+{
+    if (m_scanAttemptsSavePending)
+        return;
+    setScanAttemptsSavePending();
+    emit scanAttemptsSaveRequested(m_scanAttemptsSpin->value());
+}
+
+void ScanServicePage::setScanAttempts(int attempts)
+{
+    if (m_scanAttemptsSpin != nullptr)
+        m_scanAttemptsSpin->setValue(qMax(1, attempts));
+}
+
+void ScanServicePage::setScanAttemptsSavePending()
+{
+    m_scanAttemptsSavePending = true;
+    refresh();
+    m_saveScanAttempts->setEnabled(false);
+    m_scanAttemptsStatus->setText(QStringLiteral("正在保存触发次数…"));
+}
+
+void ScanServicePage::setScanAttemptsSaveResult(bool ok, const QString &detail)
+{
+    m_scanAttemptsSavePending = false;
+    refresh();
+    m_scanAttemptsStatus->setText(
+        ok ? QStringLiteral("触发次数已保存")
+           : QStringLiteral("触发次数保存失败：%1").arg(detail));
 }
 
 void ScanServicePage::onSaveForwardProgramClicked()
@@ -308,6 +375,14 @@ void ScanServicePage::refresh()
         case BarcodeState::NoCode:
             m_status->setText(QStringLiteral("扫码服务：本轮未识别到条码"));
             break;
+        case BarcodeState::CountMismatch:
+            // The retry (and how many attempts are left) is the caller's
+            // business; what matters here is why this capture was rejected.
+            m_status->setText(QStringLiteral("扫码服务：%1").arg(
+                m_result.detail.isEmpty()
+                    ? QStringLiteral("条码个数不符，本轮未外发")
+                    : m_result.detail));
+            break;
         case BarcodeState::Overlapped:
             m_status->setText(QStringLiteral("扫码服务：%1").arg(
                 m_result.detail.isEmpty()
@@ -364,6 +439,11 @@ void ScanServicePage::refresh()
     const QString scanReason = controlReasonText(m_scanProgramSavePending);
     m_saveScanProgram->setEnabledWithReason(scanReason.isEmpty(), scanReason);
     setUnavailableHint(m_saveScanProgram, scanReason.isEmpty(), scanReason);
+    const QString attemptsReason = controlReasonText(m_scanAttemptsSavePending);
+    m_saveScanAttempts->setEnabledWithReason(attemptsReason.isEmpty(), attemptsReason);
+    setUnavailableHint(m_saveScanAttempts, attemptsReason.isEmpty(), attemptsReason);
+    m_scanAttemptsSpin->setEnabled(attemptsReason.isEmpty());
+    setUnavailableHint(m_scanAttemptsSpin, attemptsReason.isEmpty(), attemptsReason);
     const QString forwardReason = controlReasonText(m_forwardProgramSavePending);
     m_saveForwardProgram->setEnabledWithReason(forwardReason.isEmpty(), forwardReason);
     setUnavailableHint(m_saveForwardProgram, forwardReason.isEmpty(), forwardReason);

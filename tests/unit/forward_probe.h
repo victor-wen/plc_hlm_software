@@ -61,6 +61,10 @@ inline const char *kProbeSleepEnv = "HLM_FORWARD_PROBE_SLEEP_MS";
 // for the vendor's scanner CLI (trigger_client.exe), whose JSON reply is read
 // from stdout rather than from a return buffer.
 inline const char *kProbeStdoutEnv = "HLM_FORWARD_PROBE_STDOUT";
+// Text the child writes into `Result.txt` NEXT TO ITSELF. Used when the child
+// stands in for the forward program (TCP_HMI), which reports its own verdict by
+// writing that file — the HMI reads it back and empties it.
+inline const char *kProbeReplyEnv = "HLM_FORWARD_PROBE_REPLY";
 
 // True when this process was started as the forward program rather than as the
 // test runner. Checked before any test object exists, so the child never runs
@@ -70,7 +74,8 @@ inline bool forwardProbeRequested()
     return !qEnvironmentVariable(kProbeOutEnv).isEmpty()
         || !qEnvironmentVariable(kProbeExitEnv).isEmpty()
         || !qEnvironmentVariable(kProbeSleepEnv).isEmpty()
-        || !qEnvironmentVariable(kProbeStdoutEnv).isEmpty();
+        || !qEnvironmentVariable(kProbeStdoutEnv).isEmpty()
+        || !qEnvironmentVariable(kProbeReplyEnv).isEmpty();
 }
 
 // The child's whole behaviour: record argv, optionally print a payload, hang,
@@ -88,6 +93,14 @@ inline int runForwardProbe()
             for (const QString &argument : arguments)
                 file.write(argument.toUtf8() + "\n");
         }
+    }
+    // The forward program's own reply channel: Result.txt beside this binary.
+    const QByteArray reply = qEnvironmentVariable(kProbeReplyEnv).toUtf8();
+    if (!reply.isEmpty()) {
+        QFile file(QCoreApplication::applicationDirPath()
+                   + QStringLiteral("/Result.txt"));
+        if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            file.write(reply);
     }
     const QByteArray payload = qEnvironmentVariable(kProbeStdoutEnv).toUtf8();
     if (!payload.isEmpty()) {
@@ -155,10 +168,17 @@ public:
         qunsetenv(kProbeOutEnv);
         qunsetenv(kProbeExitEnv);
         qunsetenv(kProbeSleepEnv);
+        qunsetenv(kProbeStdoutEnv);
+        qunsetenv(kProbeReplyEnv);
         if (!probeCopyPath().isEmpty()) {
             QFile::remove(probeCopyPath());
             probeCopyPath().clear();
         }
+        // The probe's reply file lives beside the test binary; the adapter
+        // empties it on every successful forward, but a case that never
+        // forwards would leave it behind.
+        QFile::remove(QCoreApplication::applicationDirPath()
+                      + QStringLiteral("/Result.txt"));
     }
 
     ForwardProbe(const ForwardProbe &) = delete;
@@ -168,6 +188,9 @@ public:
     void exitWith(int code) { qputenv(kProbeExitEnv, QByteArray::number(code)); }
     // Makes the next probe run hang for `ms` before exiting.
     void hangFor(int ms) { qputenv(kProbeSleepEnv, QByteArray::number(ms)); }
+    // Makes the next probe run report this verdict through Result.txt, exactly
+    // as the real forward program does.
+    void replyWith(const QByteArray &reply) { qputenv(kProbeReplyEnv, reply); }
 
     QString outputPath() const { return m_out; }
     bool ran() const { return QFile::exists(m_out); }

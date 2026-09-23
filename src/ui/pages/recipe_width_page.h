@@ -4,11 +4,14 @@
 #include <QHash>
 #include <QVector>
 
+#include <optional>
+
 #include "ui/pages/recipe_width_model.h"
 #include "ui/widgets/width_spin_box.h"
 
 class QLabel;
 class QLineEdit;
+class QSpinBox;
 class QListWidget;
 class QVBoxLayout;
 class QHideEvent;
@@ -51,6 +54,16 @@ public:
     // Raw 0.1 mm units: value() is the register value, the text shows
     // millimetres with one decimal (user decision 2026-09-21).
     WidthSpinBox *widthSpin() const { return m_widthSpin; }
+    // 条码个数 editor (user decision 2026-09-23). A plain integer spin box:
+    // the value is the count itself, with no 0.1-unit scaling like the width.
+    // 0 = do not check.
+    QSpinBox *barcodeCountSpin() const { return m_barcodeCountSpin; }
+    // The recipe currently loaded in the editors, or nullopt when none is
+    // selected. The composition root uses its 条码个数 to judge scan cycles.
+    std::optional<RecipeRecord> selectedRecipe() const
+    {
+        return m_pageModel.selectedRecipe();
+    }
     QListWidget *recipeList() const { return m_recipeList; }
 
     // --- recipe data feed (wired by the app shell, Task 20) --------------------
@@ -76,7 +89,10 @@ signals:
     void applyAdjustRequested(quint16 targetWidth);
     // Raw D128 units (0.1 mm) in and out of the database; the editor shows
     // millimetres with one decimal (user decision 2026-09-21).
-    void saveRecipeRequested(const QString &name, int targetWidthRaw);
+    // `barcodeCount` is the recipe's expected barcode count (0 = do not check);
+    // it is a plain count, not a scaled register value.
+    void saveRecipeRequested(const QString &name, int targetWidthRaw,
+                             int barcodeCount);
     void deleteRecipeRequested(qint64 recipeId);
 
 protected:
@@ -103,6 +119,7 @@ private:
     QListWidget *m_recipeList = nullptr;
     QLineEdit *m_nameEdit = nullptr;
     WidthSpinBox *m_widthSpin = nullptr;
+    QSpinBox *m_barcodeCountSpin = nullptr;
     PermissionButton *m_apply = nullptr;
     PermissionButton *m_save = nullptr;
     PermissionButton *m_delete = nullptr;

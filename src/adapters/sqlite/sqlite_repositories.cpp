@@ -191,10 +191,12 @@ bool SqliteRecipeRepository::saveRecipe(const RecipeRecord &r, QString *error)
     if (r.id < 0) {
         QSqlQuery q(m_db);
         q.prepare(QStringLiteral(
-            "INSERT INTO recipes(name, target_width_raw, created_by, updated_by,"
-            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"));
+            "INSERT INTO recipes(name, target_width_raw, barcode_count,"
+            " created_by, updated_by, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)"));
         q.addBindValue(r.name);
         q.addBindValue(r.targetWidthRaw);
+        q.addBindValue(r.barcodeCount);
         q.addBindValue(r.createdBy);
         q.addBindValue(r.updatedBy);
         q.addBindValue(nowIso());
@@ -205,10 +207,11 @@ bool SqliteRecipeRepository::saveRecipe(const RecipeRecord &r, QString *error)
     }
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
-        "UPDATE recipes SET name = ?, target_width_raw = ?, updated_by = ?,"
-        " updated_at = ? WHERE id = ?"));
+        "UPDATE recipes SET name = ?, target_width_raw = ?, barcode_count = ?,"
+        " updated_by = ?, updated_at = ? WHERE id = ?"));
     q.addBindValue(r.name);
     q.addBindValue(r.targetWidthRaw);
+    q.addBindValue(r.barcodeCount);
     q.addBindValue(r.updatedBy);
     q.addBindValue(nowIso());
     q.addBindValue(r.id);
@@ -241,8 +244,8 @@ std::optional<RecipeRecord> SqliteRecipeRepository::findByName(const QString &na
 {
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
-        "SELECT id, name, target_width_raw, created_by, updated_by, created_at,"
-        " updated_at FROM recipes WHERE name = ?"));
+        "SELECT id, name, target_width_raw, barcode_count, created_by,"
+        " updated_by, created_at, updated_at FROM recipes WHERE name = ?"));
     q.addBindValue(name);
     if (!q.exec() || !q.next())
         return std::nullopt;
@@ -250,10 +253,11 @@ std::optional<RecipeRecord> SqliteRecipeRepository::findByName(const QString &na
     r.id = q.value(0).toLongLong();
     r.name = q.value(1).toString();
     r.targetWidthRaw = q.value(2).toInt();
-    r.createdBy = q.value(3).toString();
-    r.updatedBy = q.value(4).toString();
-    r.createdAt = QDateTime::fromString(q.value(5).toString(), Qt::ISODateWithMs);
-    r.updatedAt = QDateTime::fromString(q.value(6).toString(), Qt::ISODateWithMs);
+    r.barcodeCount = q.value(3).toInt();
+    r.createdBy = q.value(4).toString();
+    r.updatedBy = q.value(5).toString();
+    r.createdAt = QDateTime::fromString(q.value(6).toString(), Qt::ISODateWithMs);
+    r.updatedAt = QDateTime::fromString(q.value(7).toString(), Qt::ISODateWithMs);
     return r;
 }
 
@@ -262,17 +266,18 @@ QVector<RecipeRecord> SqliteRecipeRepository::allRecipes() const
     QVector<RecipeRecord> out;
     QSqlQuery q(m_db);
     q.exec(QStringLiteral(
-        "SELECT id, name, target_width_raw, created_by, updated_by, created_at,"
-        " updated_at FROM recipes ORDER BY name"));
+        "SELECT id, name, target_width_raw, barcode_count, created_by,"
+        " updated_by, created_at, updated_at FROM recipes ORDER BY name"));
     while (q.next()) {
         RecipeRecord r;
         r.id = q.value(0).toLongLong();
         r.name = q.value(1).toString();
         r.targetWidthRaw = q.value(2).toInt();
-        r.createdBy = q.value(3).toString();
-        r.updatedBy = q.value(4).toString();
-        r.createdAt = QDateTime::fromString(q.value(5).toString(), Qt::ISODateWithMs);
-        r.updatedAt = QDateTime::fromString(q.value(6).toString(), Qt::ISODateWithMs);
+        r.barcodeCount = q.value(3).toInt();
+        r.createdBy = q.value(4).toString();
+        r.updatedBy = q.value(5).toString();
+        r.createdAt = QDateTime::fromString(q.value(6).toString(), Qt::ISODateWithMs);
+        r.updatedAt = QDateTime::fromString(q.value(7).toString(), Qt::ISODateWithMs);
         out.push_back(r);
     }
     return out;

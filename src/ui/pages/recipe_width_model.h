@@ -45,8 +45,13 @@ public:
     // Raw D128 units (0.1 mm), identical to the value written to the PLC
     // and to RecipeRecord::targetWidthRaw (user decision 2026-09-21).
     int editedWidth() const { return m_editedWidth; }
+    // 条码个数 (user decision 2026-09-23): how many barcodes this product
+    // carries. A plain integer — no unit conversion, unlike the width.
+    // 0 = do not check.
+    int editedBarcodeCount() const { return m_editedBarcodeCount; }
     void setEditedName(const QString &name);
     void setEditedWidth(int width);
+    void setEditedBarcodeCount(int count);
 
     // --- apply gating (permission + interlock + range, spec §10.3 step 1) -----
     bool canApply() const;
@@ -94,6 +99,7 @@ private:
     QString m_editedName;
     // Raw 0.1 mm units; the neutral value mirrors the PLC first-scan D128.
     int m_editedWidth = width_units::kNeutralTargetRaw;
+    int m_editedBarcodeCount = 0;
 
     std::optional<quint16> m_appliedTarget;
     bool m_adjustPending = false;

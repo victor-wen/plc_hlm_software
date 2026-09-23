@@ -58,6 +58,22 @@ constexpr const char *kBarcodeResultPath = "barcode.resultPath";
 // step does not run at all.
 constexpr const char *kBarcodeScanProgramPath = "barcode.sdkPath";
 constexpr const char *kBarcodeForwardExePath = "barcode.forwardExePath";
+// 触发次数 (user decision 2026-09-23): how many capture attempts one board gets
+// when the decoded count does not match the recipe. Never 0 — a board with no
+// attempt at all could never be scanned.
+constexpr const char *kBarcodeScanAttempts = "barcode.scanAttempts";
+
+// The PLC handshake coils (user decision 2026-09-23). M15 拍照结束 is written
+// ONLY on success — it is what lets the PLC advance — and M88 扫码失败标志 ONLY
+// on failure; the PLC clears both. Neither is in a polled block, so the write's
+// own transport completion is the only feedback there is.
+constexpr quint16 kM15Coil = 15;
+constexpr quint16 kM88Coil = 88;
+
+// 条码个数 mismatch → capture again (user decision 2026-09-23). Delayed because
+// the SDK decodes the camera's LATEST cached frame: an immediate retry would
+// read the very same one.
+constexpr int kScanRetryDelayMs = 300;
 
 constexpr quint16 kD122 = 122; // 皮带速度
 constexpr quint16 kD204 = 204; // 脉冲当量
@@ -355,12 +371,34 @@ void Application::wireSignals()
             &Application::handleBarcodePathSave);
     // 扫码服务 page (user decision 2026-09-23): the manual trigger and the two
     // deployment paths live there.
-    connect(m_scanPage, &ScanServicePage::collectRequested, this,
-            [this]() { submitScanCycle(QStringLiteral("手动采集")); });
+    connect(m_scanPage, &ScanServicePage::collectRequested, this, [this]() {
+        m_scanAttempt = 0;
+        submitScanCycle(QStringLiteral("手动采集"), /*automatic=*/false);
+    });
     connect(m_scanPage, &ScanServicePage::scanProgramSaveRequested, this,
             &Application::handleBarcodeScanProgramPathSave);
     connect(m_scanPage, &ScanServicePage::forwardProgramSaveRequested, this,
             &Application::handleBarcodeForwardExePathSave);
+    connect(m_scanPage, &ScanServicePage::scanAttemptsSaveRequested, this,
+            [this](int attempts) {
+                // Clamped here as well as on load: a persisted 0 must never
+                // reach the retry loop.
+                const int clamped = qMax(1, attempts);
+                if (m_scanPage != nullptr)
+                    m_scanPage->setScanAttemptsSavePending();
+                m_scanAttempts = clamped;
+                if (m_scanPage != nullptr)
+                    m_scanPage->setScanAttempts(clamped);
+                SettingRecord record;
+                record.key = QString::fromLatin1(kBarcodeScanAttempts);
+                record.typedValue = QString::number(clamped);
+                record.updatedBy = m_lifecycle ? m_lifecycle->currentUsername()
+                                               : QStringLiteral("anonymous");
+                record.updatedAt = QDateTime::currentDateTime();
+                m_db->setSetting(record);
+                if (m_scanPage != nullptr)
+                    m_scanPage->setScanAttemptsSaveResult(true, QString());
+            });
     connect(m_barcodeSource, &IBarcodeSource::resultReady, this,
             &Application::handleBarcodeResult);
     // settingSaved() carries no key: the three 扫码 settings share one
@@ -479,8 +517,18 @@ void Application::wireSignals()
             });
     connect(m_db, &DatabaseService::passwordChanged, m_usersPage,
             &UsersSettingsPage::setPasswordChangeResult);
-    connect(m_db, &DatabaseService::recipesLoaded, m_recipePage,
-            &RecipeWidthPage::setRecipes);
+    connect(m_db, &DatabaseService::recipesLoaded, this,
+            [this](const QVector<RecipeRecord> &recipes) {
+                m_recipePage->setRecipes(recipes);
+                // The selected recipe's 条码个数 is what a scan cycle is judged
+                // against (user decision 2026-09-23). No selection = no check.
+                if (m_barcodeSource == nullptr)
+                    return;
+                const std::optional<RecipeRecord> selected =
+                    m_recipePage->selectedRecipe();
+                m_barcodeSource->setExpectedBarcodeCount(
+                    selected.has_value() ? selected->barcodeCount : 0);
+            });
     connect(m_db, &DatabaseService::recipeSaved, this,
             [this](bool ok, const QString &error) {
                 // Route the database outcome into the page-local status; the
@@ -549,10 +597,17 @@ void Application::wireGateway(IPlcGateway *gw)
                 // M15 readback can never start a cycle, and edge-only so a held
                 // M15 does not restart one every poll. The manual 采集条码 button
                 // on the overview page submits through the same helper.
-                const bool scanComplete = m_shell->snapshotFresh() && s.m15();
-                if (scanComplete && !m_lastScanComplete)
-                    submitScanCycle(QStringLiteral("M15 扫码结束"));
-                m_lastScanComplete = scanComplete;
+                // M11 相机触发中 is the HMI's scan TRIGGER (user decision
+                // 2026-09-23). M15 is the HMI's ANSWER, written after the cycle
+                // succeeds — it is never an input here.
+                const bool cameraTrigger = m_shell->snapshotFresh() && s.m11();
+                if (cameraTrigger && !m_lastCameraTrigger) {
+                    m_autoScanCycle = true;
+                    m_scanAttempt = 0;
+                    submitScanCycle(QStringLiteral("M11 相机触发"),
+                                    /*automatic=*/true);
+                }
+                m_lastCameraTrigger = cameraTrigger;
                 m_db->feedPlcAlarmSnapshot(s.faultCode(), s.m14(), s.m4(),
                                            s.sequence());
             });
@@ -682,10 +737,11 @@ void Application::onReady()
     m_db->runRetentionCleanup();
     // Load the persisted settings for echo (spec §8.1): the seven serial keys
     // plus the three 扫码服务 keys (result path, library path, forward program).
-    m_pendingSettingLoads = 10;
+    m_pendingSettingLoads = 11;
     m_db->getSetting(QString::fromLatin1(kBarcodeResultPath));
     m_db->getSetting(QString::fromLatin1(kBarcodeScanProgramPath));
     m_db->getSetting(QString::fromLatin1(kBarcodeForwardExePath));
+    m_db->getSetting(QString::fromLatin1(kBarcodeScanAttempts));
     m_db->getSetting(QString::fromLatin1(kSerialComPort));
     m_db->getSetting(QString::fromLatin1(kSerialStation));
     m_db->getSetting(QString::fromLatin1(kSerialBaudRate));
@@ -798,6 +854,14 @@ void Application::handleSettingLoaded(const std::optional<SettingRecord> &settin
                 m_barcodeSource->setScannerProgramPath(m_barcodeScanProgramPath);
             if (m_overviewPage != nullptr)
                 m_scanPage->setScanProgramPath(m_barcodeScanProgramPath);
+        } else if (key == QString::fromLatin1(kBarcodeScanAttempts)) {
+            // 触发次数 (user decision 2026-09-23): clamped to >= 1, because a
+            // board with no attempt at all could never be scanned.
+            const int v = value.toInt(&ok);
+            if (ok)
+                m_scanAttempts = qMax(1, v);
+            if (m_scanPage != nullptr)
+                m_scanPage->setScanAttempts(m_scanAttempts);
         } else if (key == QString::fromLatin1(kBarcodeForwardExePath)) {
             // 外发程序路径 (user decision 2026-09-23): empty means the outbound
             // step does not run at all, which the page states visibly.
@@ -1041,6 +1105,10 @@ void Application::submitParameterWrite(quint16 address, quint16 value,
 void Application::reportParamWriteResult(const PendingParamWrite &pending,
                                          bool ok, const QString &detail)
 {
+    if (pending.sink == ParamWriteSink::ScanVerdict) {
+        reportScanVerdict(ok ? pending.verdictDetail : detail, ok);
+        return;
+    }
     if (pending.sink == ParamWriteSink::Manual) {
         // The manual page's only parameter is D220 调宽速度: name the confirmed
         // value in the success detail so the operator sees what was written.
@@ -1288,10 +1356,14 @@ void Application::failPendingBarcodePathSave(const QString &reason)
 // rising edge, or the overview page's manual 采集条码 button (user decision
 // 2026-09-23: both entries stay, and they share this one path so neither can
 // drift from the other).
-void Application::submitScanCycle(const QString &source)
+void Application::submitScanCycle(const QString &source, bool automatic)
 {
     if (m_barcodeSource == nullptr)
         return;
+    // A bench cycle must not forge a production completion, so the PLC verdict
+    // is written only for the automatic path (user decision 2026-09-23).
+    m_autoScanCycle = automatic;
+    ++m_scanAttempt;
     if (m_barcodeSource->requestRead()) {
         m_shell->setScanInProgress(true);
         return;
@@ -1315,19 +1387,137 @@ void Application::submitScanCycle(const QString &source)
         m_scanPage->setBarcodeResult(refused);
 }
 
+// The outcome of writing M15 / M88, shown through the persistent shell status
+// (the same surface every machine command uses), so the PLC handshake is never
+// silent — a failed answer means the PLC will wait forever.
+void Application::reportScanVerdict(const QString &detail, bool ok)
+{
+    publishOperatorStatus(Command::Count,
+                          ok ? OperatorCommandState::Succeeded
+                             : OperatorCommandState::Failed,
+                          detail, /*newRequest=*/true);
+}
+
 void Application::handleBarcodeResult(const BarcodeResult &result)
 {
     // Readback only: the scan program is the authoritative peer, so the
-    // outcome is displayed exactly as reported (Ok/NoCode/Failed), never turned
-    // into a success claim — and a NoCode cycle is never filled with an older
-    // barcode. The full barcode value is never logged (contract
-    // forbidden_change: no full barcode values in logs).
+    // outcome is displayed exactly as reported, never turned into a success
+    // claim — and a NoCode cycle is never filled with an older barcode. The
+    // full barcode value is never logged (contract forbidden_change: no full
+    // barcode values in logs).
     m_lastBarcode = result;
     m_shell->setScanInProgress(false);
     if (m_overviewPage != nullptr)
         m_overviewPage->setBarcodeResult(result);
     if (m_scanPage != nullptr)
         m_scanPage->setBarcodeResult(result);
+
+    // 条码个数 mismatch → capture again, up to 触发次数 attempts in total
+    // (user decision 2026-09-23: only a cycle with the RIGHT count is forwarded,
+    // and the attempt count may never be 0). The retry is delayed because the
+    // SDK decodes the camera's LATEST cached frame — triggering again within a
+    // millisecond would just re-read the same one.
+    if (result.state == BarcodeState::CountMismatch
+        && m_scanAttempt < m_scanAttempts) {
+        m_shell->setScanInProgress(true);
+        QTimer::singleShot(kScanRetryDelayMs, this, [this]() {
+            submitScanCycle(QStringLiteral("条码个数不符，重新采集"), m_autoScanCycle);
+        });
+        return;
+    }
+
+    // This cycle is final: tell the PLC what happened.
+    publishScanVerdict(result);
+}
+
+// The HMI's answer to the PLC (user decision 2026-09-23): M15 拍照结束=1 when
+// the scan succeeded, M88 扫码失败标志=1 when it failed. Only the automatic
+// path writes — a bench cycle is for the operator, not for the machine.
+void Application::publishScanVerdict(const BarcodeResult &result)
+{
+    if (!m_autoScanCycle)
+        return;
+
+    QString reason;
+    const bool ok = result.state == BarcodeState::Ok;
+    if (!ok) {
+        switch (result.state) {
+        case BarcodeState::Ok:
+            break;
+        case BarcodeState::CountMismatch:
+            // A final mismatch means the retries were used up.
+            reason = QStringLiteral("扫码失败：%1（已尝试 %2 次）")
+                         .arg(result.detail)
+                         .arg(m_scanAttempt);
+            break;
+        default:
+            reason = QStringLiteral("扫码失败：%1")
+                         .arg(result.detail.isEmpty()
+                                  ? QStringLiteral("本轮未能取得条码")
+                                  : result.detail);
+            break;
+        }
+    }
+    // A successful read whose handover was NOT acknowledged is a failure too:
+    // the downstream never confirmed it took the data, so the PLC must not be
+    // told the board is done.
+    if (ok && !result.forwarded) {
+        reportScanVerdict(
+            result.forwardDetail.isEmpty()
+                ? QStringLiteral("扫码失败：条码未成功发出")
+                : QStringLiteral("扫码失败：%1").arg(result.forwardDetail),
+            false);
+        return;
+    }
+    if (ok && !result.forwardAcknowledged) {
+        reportScanVerdict(
+            result.forwardDetail.isEmpty()
+                ? QStringLiteral("扫码失败：外发程序未确认收到（Result.txt 不是 OK）")
+                : QStringLiteral("扫码失败：%1").arg(result.forwardDetail),
+            false);
+        return;
+    }
+
+    const quint16 address = ok ? kM15Coil : kM88Coil;
+    const SubmissionResult submission =
+        m_gw->submitWriteCoil(address, true, CommandPriority::Normal);
+    if (!submission.accepted) {
+        const QString why = submission.immediate_rejection_reason.isEmpty()
+            ? QStringLiteral("写入被拒绝")
+            : submission.immediate_rejection_reason;
+        reportScanVerdict(
+            QStringLiteral("扫码结果未能回写给 PLC（%1）：%2").arg(address == kM15Coil
+                                                                     ? QStringLiteral("M15")
+                                                                     : QStringLiteral("M88"),
+                                                                 why),
+            false);
+        return;
+    }
+    PendingParamWrite pending;
+    pending.request_id = submission.request_id;
+    pending.gateway_generation = submission.gateway_generation;
+    pending.address = address;
+    pending.value = 1;
+    pending.sink = ParamWriteSink::ScanVerdict;
+    pending.deadline_ms =
+        QDateTime::currentMSecsSinceEpoch() + kParamWriteTimeoutMs;
+    pending.verdictDetail = ok ? QStringLiteral("扫码完成，已置 M15")
+                               : reason;
+    m_pendingParamWrites.append(pending);
+
+    const quint64 requestId = submission.request_id;
+    const quint64 generation = submission.gateway_generation;
+    QTimer::singleShot(kParamWriteTimeoutMs, this, [this, requestId, generation]() {
+        for (int i = 0; i < m_pendingParamWrites.size(); ++i) {
+            const PendingParamWrite p = m_pendingParamWrites.at(i);
+            if (p.request_id == requestId && p.gateway_generation == generation) {
+                m_pendingParamWrites.removeAt(i);
+                reportParamWriteResult(p, false,
+                                       QStringLiteral("扫码结果回写确认超时"));
+                return;
+            }
+        }
+    });
 }
 
 void Application::handleSubmissionCompleted(const SubmissionCompletion &completion)

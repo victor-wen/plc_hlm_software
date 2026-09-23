@@ -28,11 +28,17 @@ enum class BarcodeState : quint8 {
     // position it looked at and did not recognise. Never substitute an older
     // barcode for an empty one (SDK example_c.c warns about exactly this).
     NoCode,
-    // A 扫码结束 edge arrived while the previous cycle was still running, so
+    // A scan trigger arrived while the previous cycle was still running, so
     // this board's signal was refused rather than queued (the SDK rejects a
     // second trigger while one is pending, and a silent drop would violate the
     // no-silent-rejection rule). Carries no barcode.
     Overlapped,
+    // The cycle decoded a number of barcodes that does not match the recipe's
+    // 条码个数 (user decision 2026-09-23). A PARTIAL read is not a board
+    // result: this cycle is neither persisted nor forwarded, and the caller
+    // (which knows the recipe and how many attempts are allowed) decides
+    // whether to trigger again. `expectedCount` carries the number it wanted.
+    CountMismatch,
     Failed, // the trigger was rejected, the poll timed out, the SDK is absent…
 };
 
@@ -73,6 +79,16 @@ struct BarcodeResult {
     // fields stay at their defaults rather than claiming a delivery.
     QString forwardDetail;
     bool forwarded = false;
+    // The forward program's own reply, read from Result.txt next to it
+    // (user decision 2026-09-23): true only when that file contained OK, which
+    // is the downstream's acknowledgement. False when it said anything else,
+    // when it was missing, or when no forward program is configured at all —
+    // in which case no verification was attempted and `forwardDetail` stays
+    // empty so the surface can say "not checked" rather than "failed".
+    bool forwardAcknowledged = false;
+    // The 条码个数 this cycle was judged against (0 = not checked), and the
+    // number actually decoded, so the surface can state the mismatch.
+    int expectedCount = 0;
     QString requestId; // the cycle's SDK request id, for diagnosis
     QDateTime readAt;
     quint64 sequence = 0; // monotonic: lets the UI tell cycles apart

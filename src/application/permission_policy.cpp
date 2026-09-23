@@ -29,7 +29,7 @@ PermissionResult PermissionPolicy::check(Role role, Command cmd)
     case Command::SimDownstreamBoardRequest:
     case Command::SimUpstreamBoardRequest:
     case Command::SimDownstreamExitRequest:
-    case Command::SimScanComplete:
+
     case Command::ParameterChange:
         // 模式切换、复位、回原点、解除急停、配方调宽、手动、屏蔽、设置: 仅管理员
         // (spec §11.4).

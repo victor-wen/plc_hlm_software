@@ -30,7 +30,6 @@ constexpr quint16 kM109 = 109; // 手动挡停 (latch)
 constexpr quint16 kM110 = 110; // 光栅屏蔽
 constexpr quint16 kM111 = 111; // 门磁屏蔽
 // 测试信号 (user decision 2026-09-22): 台架测试用的脉冲信号.
-constexpr quint16 kM15 = 15;   // 拍照结束信号 (扫码结束)
 constexpr quint16 kM114 = 114; // 模拟前站进板信号
 constexpr quint16 kM115 = 115; // 模拟后站要板信号
 constexpr quint16 kM116 = 116; // 模拟前站要板请求信号
@@ -176,7 +175,6 @@ void ManualControlPage::buildLayout()
         {kM115, "模拟后站要板", "simDownstreamBoardRequestButton"},
         {kM116, "模拟前站要板请求", "simUpstreamBoardRequestButton"},
         {kM117, "模拟后站出站请求", "simDownstreamExitRequestButton"},
-        {kM15, "模拟拍照结束", "simScanCompleteButton"},
     };
     for (const auto &signal : simSignals) {
         auto *button = new PermissionButton(QString::fromUtf8(signal.text), simBox);

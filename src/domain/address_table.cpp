@@ -54,20 +54,32 @@ AddressTable::AddressTable()
         QStringLiteral("回原点完成映射(M61)"), AccessType::Read, ValueType::U16));
     m_defs.push_back(def(QStringLiteral("M"), 10, QStringLiteral("M10"),
         QStringLiteral("自动挡停伸出命令"), AccessType::Read, ValueType::U16));
+    // M11 相机触发中: the HMI's scan trigger (user decision 2026-09-23).
     m_defs.push_back(def(QStringLiteral("M"), 11, QStringLiteral("M11"),
-        QStringLiteral("相机触发中"), AccessType::Read, ValueType::U16));
+        QStringLiteral("相机触发中(上位机触发采集)"), AccessType::Read, ValueType::U16));
     m_defs.push_back(def(QStringLiteral("M"), 12, QStringLiteral("M12"),
         QStringLiteral("拍照超时标志"), AccessType::Read, ValueType::U16));
     m_defs.push_back(def(QStringLiteral("M"), 13, QStringLiteral("M13"),
         QStringLiteral("直通模式"), AccessType::Read, ValueType::U16));
     m_defs.push_back(def(QStringLiteral("M"), 14, QStringLiteral("M14"),
         QStringLiteral("故障锁存"), AccessType::Read, ValueType::U16));
-    // M15 拍照结束信号 (user decision 2026-09-22): the scan-complete coil the
-    // HMI reads in the home/scan block (M15-M53). ReadWrite because the 手动 page
-    // offers a test-only pulse that injects the signal for bench testing; on the
-    // machine the external scan program owns the coil.
+    // M11 is the HMI's scan TRIGGER: it reads it in the home block (M0-M53) and
+    // starts a capture on its rising edge (user decision 2026-09-23).
+    //
+    // M15 拍照结束 is the OPPOSITE direction — the HMI's ANSWER to the PLC,
+    // written only after a scan cycle succeeded, and the PLC clears it. It lives
+    // in the polled home block, so its own write is visible in the next snapshot;
+    // the HMI therefore never treats M15 as a trigger.
     m_defs.push_back(def(QStringLiteral("M"), 15, QStringLiteral("M15"),
-        QStringLiteral("拍照结束信号(扫码结束)"), AccessType::ReadWrite, ValueType::U16));
+        QStringLiteral("拍照结束信号(上位机回写)"), AccessType::ReadWrite, ValueType::U16));
+    // M88 扫码失败标志 (user decision 2026-09-23): the HMI's failure answer to
+    // the PLC, written when a cycle produced the wrong number of barcodes or the
+    // handover was not acknowledged. The PLC clears it. NOTE: M88 is outside
+    // every polled block (M0-M53, M100-M111), so the HMI cannot read it back —
+    // the write's own transport completion is the only feedback — and it needs a
+    // PLC rung to consume it, which the PLC engineer adds.
+    m_defs.push_back(def(QStringLiteral("M"), 88, QStringLiteral("M88"),
+        QStringLiteral("扫码失败标志(上位机回写)"), AccessType::ReadWrite, ValueType::U16));
     m_defs.push_back(def(QStringLiteral("M"), 30, QStringLiteral("M30"),
         QStringLiteral("手动皮带点动命令"), AccessType::Read, ValueType::U16));
     m_defs.push_back(def(QStringLiteral("M"), 31, QStringLiteral("M31"),

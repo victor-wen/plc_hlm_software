@@ -39,6 +39,10 @@ RecipeWidthModel::RecipeWidthModel(const ShellModel &model, QObject *parent)
     // D128/D130/D210 rendering in RecipeWidthPage::refresh() (D9/ARCH-017).
 }
 
+// The neutral value of the 条码个数 editor. 0 means "do not check", which is
+// also what every recipe authored before the field existed reads back as.
+constexpr int kNeutralBarcodeCount = 0;
+
 void RecipeWidthModel::setRecipes(const QVector<RecipeRecord> &recipes)
 {
     m_recipes = recipes;
@@ -61,6 +65,7 @@ void RecipeWidthModel::setRecipes(const QVector<RecipeRecord> &recipes)
     m_selected.reset();
     m_editedName.clear();
     m_editedWidth = width_units::kNeutralTargetRaw;
+    m_editedBarcodeCount = kNeutralBarcodeCount;
 }
 
 void RecipeWidthModel::selectRecipe(const RecipeRecord &r)
@@ -69,6 +74,7 @@ void RecipeWidthModel::selectRecipe(const RecipeRecord &r)
     m_selected = r;
     m_editedName = r.name;
     m_editedWidth = r.targetWidthRaw;
+    m_editedBarcodeCount = r.barcodeCount;
 }
 
 void RecipeWidthModel::setEditedName(const QString &name)
@@ -79,6 +85,11 @@ void RecipeWidthModel::setEditedName(const QString &name)
 void RecipeWidthModel::setEditedWidth(int width)
 {
     m_editedWidth = width;
+}
+
+void RecipeWidthModel::setEditedBarcodeCount(int count)
+{
+    m_editedBarcodeCount = count;
 }
 
 bool RecipeWidthModel::canEditRecipes() const

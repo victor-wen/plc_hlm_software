@@ -143,6 +143,13 @@ bool barcodeForwardArguments(const QVector<BarcodeRow> &rows,
     return true;
 }
 
+bool forwardAcknowledgedFromReply(const QByteArray &reply)
+{
+    return QString::fromUtf8(reply).trimmed().compare(
+               QStringLiteral("OK"), Qt::CaseInsensitive)
+        == 0;
+}
+
 // Production transport: the vendor's own CLI, run as a child process
 // (user decision 2026-09-23).
 //
@@ -358,6 +365,18 @@ QString BarcodeReaderSdkSource::forwardExePath() const
 {
     QMutexLocker lock(&m_mutex);
     return m_forwardPath;
+}
+
+void BarcodeReaderSdkSource::setExpectedBarcodeCount(int count)
+{
+    QMutexLocker lock(&m_mutex);
+    m_expectedCount = count > 0 ? count : 0; // <= 0 means "do not check"
+}
+
+int BarcodeReaderSdkSource::expectedBarcodeCount() const
+{
+    QMutexLocker lock(&m_mutex);
+    return m_expectedCount;
 }
 
 void BarcodeReaderSdkSource::applyPendingScannerProgramPath()
@@ -646,6 +665,18 @@ bool BarcodeReaderSdkSource::applyReply(const BarcodeSdkReply &reply,
             field = field.trimmed();
         break;
     }
+    // 条码个数 (user decision 2026-09-23): a partial read is not a board
+    // result. Converged as its own state so the caller can retry — it is NOT
+    // persisted and NOT forwarded (finishCycle skips both for this state).
+    const int expected = expectedBarcodeCount();
+    result->expectedCount = expected;
+    if (expected > 0 && result->decodedCount != expected) {
+        result->state = BarcodeState::CountMismatch;
+        result->detail = QStringLiteral("条码个数不符：本轮 %1 个，配方要求 %2 个")
+                             .arg(result->decodedCount)
+                             .arg(expected);
+        return true;
+    }
     result->state = BarcodeState::Ok;
     return true;
 }
@@ -766,6 +797,58 @@ void BarcodeReaderSdkSource::forwardRows(BarcodeResult *result)
         return;
     }
     result->forwarded = true;
+    readAndClearForwardReply(result);
+}
+
+// The forward program writes the peer's reply into Result.txt NEXT TO ITSELF
+// (TCP_HMI: `$RESULTPATH = @SCRIPTDIR & "\Result.txt"`) and expects `OK`
+// (its ini's ExpectedReply). The file is the program's reply channel, so this
+// cycle reads it and then EMPTIES it — a verdict left behind would be read as
+// the next board's acknowledgement.
+void BarcodeReaderSdkSource::readAndClearForwardReply(BarcodeResult *result)
+{
+    const QString program = forwardExePath().trimmed();
+    if (program.isEmpty())
+        return; // no forward program: nothing to verify, nothing to clear
+
+    const QFileInfo info(program);
+    const QString replyPath =
+        info.dir().filePath(QStringLiteral("Result.txt"));
+
+    QFile reply(replyPath);
+    if (!reply.exists()) {
+        result->forwardDetail =
+            QStringLiteral("传输未确认：外发程序没有写出 Result.txt");
+        return;
+    }
+    if (!reply.open(QIODevice::ReadOnly)) {
+        result->forwardDetail = QStringLiteral("传输未确认：Result.txt 无法读取（%1）")
+                                    .arg(reply.errorString());
+        return;
+    }
+    const QByteArray content = reply.readAll();
+    reply.close();
+    result->forwardAcknowledged = forwardAcknowledgedFromReply(content);
+    if (!result->forwardAcknowledged) {
+        const QString shown = QString::fromUtf8(content).trimmed();
+        result->forwardDetail =
+            shown.isEmpty()
+                ? QStringLiteral("传输未确认：Result.txt 为空")
+                : QStringLiteral("传输未确认：Result.txt 内容为 %1").arg(shown);
+    }
+    // Cleared either way, and the failure to clear is visible: a stale reply
+    // would be read as the NEXT board's acknowledgement.
+    QFile clear(replyPath);
+    if (!clear.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        const QString clearFailure =
+            QStringLiteral("Result.txt 无法清空（%1），下一轮可能误读")
+                .arg(clear.errorString());
+        result->forwardDetail = result->forwardDetail.isEmpty()
+            ? clearFailure
+            : result->forwardDetail + QStringLiteral("；") + clearFailure;
+        return;
+    }
+    clear.close();
 }
 
 // The single convergence path for a terminal cycle: file append, then forward,
@@ -773,8 +856,13 @@ void BarcodeReaderSdkSource::forwardRows(BarcodeResult *result)
 // what stops a future converge site from silently skipping the side effects.
 void BarcodeReaderSdkSource::finishCycle(BarcodeResult *result)
 {
-    persistRows(result);
-    forwardRows(result);
+    // A count mismatch is an INCOMPLETE read, not a board: nothing is appended
+    // to the traceability file and nothing is handed downstream. The caller
+    // decides whether to trigger again.
+    if (result->state != BarcodeState::CountMismatch) {
+        persistRows(result);
+        forwardRows(result);
+    }
     emitTerminal(*result);
 }
 

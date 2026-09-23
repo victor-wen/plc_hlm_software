@@ -101,6 +101,8 @@ public:
     QString scannerProgramPath() const override;
     void setForwardExePath(const QString &path) override;
     QString forwardExePath() const override;
+    void setExpectedBarcodeCount(int count) override;
+    int expectedBarcodeCount() const override;
 
     bool requestRead() override;
     bool cycleInProgress() const override;
@@ -129,10 +131,16 @@ private:
     // touches state: a failed write must not hide a decoded barcode.
     void persistRows(BarcodeResult *result);
     // Runs the configured forward program once for this cycle with one argument
-    // per decoded barcode. Never touches state either: a failed forward must not
-    // hide a barcode that was decoded (and the file append above has already
-    // happened).
+    // per decoded barcode, then reads the program's own reply so the cycle can
+    // say whether the handover was acknowledged. Never touches state either: a
+    // failed forward must not hide a barcode that was decoded (and the file
+    // append above has already happened).
     void forwardRows(BarcodeResult *result);
+    // Reads Result.txt next to the forward program and EMPTIES it (user decision
+    // 2026-09-23: the file is the program's own reply channel, so it must not
+    // carry this cycle's verdict into the next one). Failure to clear is
+    // reported, never swallowed.
+    void readAndClearForwardReply(BarcodeResult *result);
     // Rebuilds the owned transport when setScannerProgramPath() changed the
     // path. Runs on the worker thread at the start of a cycle, so the configured
     // program is only ever swapped between cycles, never under an in-flight
@@ -149,10 +157,11 @@ private:
     std::unique_ptr<IBarcodeSdk> m_ownedSdk;
     Config m_config;
 
-    mutable QMutex m_mutex; // guards m_path / m_forwardPath / m_scannerProgramPath / flags
+    mutable QMutex m_mutex; // guards the paths / m_expectedCount / flags
     QString m_path;
     QString m_forwardPath;
     QString m_scannerProgramPath;
+    int m_expectedCount = 0;
     bool m_scannerProgramDirty = false;
     bool m_cycleInProgress = false;
 

@@ -517,10 +517,11 @@ void ManualControlPageTest::simSignalPulsesAreAdminOnlyAndCarryTheAddress()
 {
     ShellModel model;
     ManualControlPage page(model);
-    // M15 拍照结束 is the scan-complete coil the HMI itself reads, so its button
-    // is the bench injection for the whole barcode path; M114-M117 simulate the
-    // neighbouring-station handshake.
-    const quint16 addresses[] = {114, 115, 116, 117, 15};
+    // M114-M117 simulate the neighbouring-station handshake. M15 is NOT here
+    // (user decision 2026-09-23): it is the HMI's own answer to the PLC, so the
+    // page must not offer a way to forge one. The bench scan trigger lives on
+    // the 扫码服务 page and drives the cycle without writing any coil.
+    const quint16 addresses[] = {114, 115, 116, 117};
 
     // Offline: every test-signal button is disabled with a visible reason.
     for (const quint16 address : addresses) {
@@ -548,8 +549,8 @@ void ManualControlPageTest::simSignalPulsesAreAdminOnlyAndCarryTheAddress()
         QVERIFY(button->isEnabled());
         clickAt(button);
     }
-    QCOMPARE(spy.count(), 5);
-    for (int i = 0; i < 5; ++i)
+    QCOMPARE(spy.count(), 4);
+    for (int i = 0; i < 4; ++i)
         QCOMPARE(spy.at(i).at(0).toUInt(), quint16(addresses[i]));
 }
 

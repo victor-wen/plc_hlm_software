@@ -93,6 +93,19 @@ QByteArray barcodePayloadFromBuffer(const QByteArray &raw, quint32 requiredBytes
 bool barcodeForwardArguments(const QVector<BarcodeRow> &rows,
                              QStringList *arguments);
 
+// Whether the forward program's own reply counts as acknowledgement.
+//
+// The supplied program (TCP_HMI V1.0.5) writes the peer's reply into
+// `Result.txt` next to itself and expects the peer to answer `OK`
+// (its ini's ExpectedReply). Anything else — a different word, an empty file, a
+// file that is not there — is NOT an acknowledgement.
+//
+// Compared case-insensitively after trimming, because a text file carries line
+// endings the writer chose and `OK` vs `ok` is not a distinction the downstream
+// protocol makes. Platform-neutral and outside any #ifdef: this is a pure data
+// transform, so the Linux dev loop tests the exact production decision.
+bool forwardAcknowledgedFromReply(const QByteArray &reply);
+
 class IBarcodeSdk
 {
 public:

@@ -48,7 +48,12 @@ using namespace hlm;
 
 namespace {
 
-constexpr quint16 kM15 = 15; // 扫码结束 (coil, read in the home/scan block)
+// M11 相机触发中 (user decision 2026-09-23): the HMI's scan TRIGGER. M15 is
+// what the HMI WRITES back on success, so the rig drives the trigger, not the
+// answer.
+constexpr quint16 kM11 = 11;
+constexpr quint16 kM15 = 15; // 拍照结束 — the HMI's answer, written by the app
+constexpr quint16 kM88 = 88; // 扫码失败标志 — the HMI's answer on failure
 
 // What the operator fills into 扫码程序路径. It is the feature's enable switch
 // (user decision 2026-09-23: the result file became optional), so the rig models
@@ -284,13 +289,13 @@ struct StartedApp
     // the rising edge, and the adapter runs one cycle on its own thread.
     void raiseScanComplete()
     {
-        gw->model().writeCoil(kM15, true);
+        gw->model().writeCoil(kM11, true);
         gw->tick();
     }
 
     void clearScanComplete()
     {
-        gw->model().writeCoil(kM15, false);
+        gw->model().writeCoil(kM11, false);
         gw->tick();
     }
 
@@ -577,17 +582,22 @@ void BarcodeIngestionDeveloperTest::manualScanTriggerDrivesTheWholePath()
     savePath(rig, path);
     rig.sdk.nextRows = {QStringLiteral("C3003090^M10^260224^002777")};
 
-    auto *manual = rig.app->window()->findChild<ManualControlPage *>();
-    QVERIFY2(manual != nullptr, "the 手动 page must exist");
-    PermissionButton *scan = manual->simSignalButton(kM15);
-    QVERIFY2(scan != nullptr, "the M15 拍照结束 test-signal button must exist");
-    QTRY_VERIFY_WITH_TIMEOUT(scan->isEnabled(), 5000); // 仅管理员 + 在线
+    // The bench trigger is the 扫码服务 page's 采集条码 button (user decision
+    // 2026-09-23: the 手动 page no longer pulses M15 — M15 is the HMI's own
+    // answer to the PLC, so pulsing it from the bench would forge a completion).
+    PermissionButton *scan = rig.scanPage->collectButton();
+    QVERIFY2(scan != nullptr, "the 采集条码 bench trigger must exist");
+    QTRY_VERIFY_WITH_TIMEOUT(scan->isEnabled(), 5000); // 仅管理员 + 无进行中轮次
 
-    // One click sends the same single pulse as the neighbouring-station test
-    // signals; the next snapshot carries M15=1 and the cycle runs.
+    // One click runs exactly the same cycle the PLC's M11 edge does.
     scan->click();
     QVERIFY(rig.waitForText(QStringLiteral("002777")));
     QCOMPARE(rig.sdk.triggerIds.size(), 1);
+    // A BENCH cycle must not forge the production handshake.
+    QVERIFY2(!rig.gw->model().readCoil(kM15),
+             "a manual cycle must not write the PLC's completion coil");
+    QVERIFY2(!rig.gw->model().readCoil(kM88),
+             "a manual cycle must not write the PLC's failure coil");
     QCOMPARE(fileLines(path).size(), 1);
     rig.shutdown();
 }

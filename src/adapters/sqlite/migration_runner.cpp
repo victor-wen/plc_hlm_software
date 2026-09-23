@@ -114,6 +114,16 @@ const QVector<Migration> &schemaMigrations()
              " created_at, updated_at FROM recipes;"
              "DROP TABLE recipes;"
              "ALTER TABLE recipes_new RENAME TO recipes;")},
+    {3, QStringLiteral("recipe_barcode_count"),
+     QStringLiteral(
+         // How many barcodes the product carries (user decision 2026-09-23):
+         // the HMI compares a scan cycle's decoded count against it and a
+         // mismatch is a scan failure. A plain column with a default, so ALTER
+         // is enough — no CHECK to rebuild for, and every recipe authored
+         // before this field existed reads back as 0 = do not check, which is
+         // exactly the wanted behaviour for existing rows.
+         "ALTER TABLE recipes ADD COLUMN barcode_count INTEGER NOT NULL"
+         " DEFAULT 0;")},
     };
     return migrations;
 }

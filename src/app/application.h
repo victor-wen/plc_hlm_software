@@ -107,7 +107,15 @@ private:
     void handleBarcodeForwardExePathSave(const QString &path);
     // Submits one scan cycle on behalf of `source` (M15 扫码结束 or the manual
     // button). A refused overlap is surfaced visibly, never dropped.
-    void submitScanCycle(const QString &source);
+    void submitScanCycle(const QString &source, bool automatic);
+    // Sends the PLC verdict of one finished cycle (user decision 2026-09-23):
+    // M15 拍照结束=1 on success — the answer the PLC waits for — M88 扫码失败=1
+    // on failure. Only the AUTOMATIC path writes: a bench cycle must not forge
+    // a production completion. Direct gateway write (not a user command), with
+    // the same request/generation correlation and defensive timeout as the
+    // parameter writes.
+    void publishScanVerdict(const BarcodeResult &result);
+    void reportScanVerdict(const QString &detail, bool ok);
     void handleBarcodeResult(const BarcodeResult &result);
     void failPendingBarcodePathSave(const QString &reason);
     void handleSettingLoaded(const std::optional<SettingRecord> &setting);
@@ -195,7 +203,17 @@ private:
     PendingSetting m_pendingSetting = PendingSetting::None;
     // M15 扫码结束 edge detection on the snapshot feed (rising edge only, and
     // only from a fresh snapshot).
-    bool m_lastScanComplete = false;
+    // M11 相机触发中 rising-edge detection (user decision 2026-09-23: M11 is the
+    // HMI's scan TRIGGER; M15 is what the HMI writes back).
+    bool m_lastCameraTrigger = false;
+    // Which entry started the cycle in flight (M11 edge vs a bench button), so
+    // the PLC verdict is written only for the automatic path and the retry
+    // countdown can name it.
+    bool m_autoScanCycle = false;
+    // 触发次数 (user decision 2026-09-23): a count mismatch retries the capture
+    // up to this many attempts in total; it is never 0.
+    int m_scanAttempt = 0;
+    int m_scanAttempts = 3;
     // Latest barcode readback, rendered by the overview page. Never a
     // machine-state value: the scanning program is the authoritative peer.
     BarcodeResult m_lastBarcode;
@@ -216,13 +234,19 @@ private:
     // users page and from the 手动控制 page), so each pending write remembers
     // which page asked: the result must surface where the operator clicked
     // (user decision 2026-09-22), never on the other page.
-    enum class ParamWriteSink { Users, Manual };
+    // ScanVerdict is not a page write: it is the HMI's answer to the PLC
+    // (M15/M88) after a scan cycle, reported through the shell status rather
+    // than a page-local line.
+    enum class ParamWriteSink { Users, Manual, ScanVerdict };
     struct PendingParamWrite {
         quint64 request_id = 0;
         quint64 gateway_generation = 0;
         quint16 address = 0;
         quint16 value = 0; // the written value, for the success detail
         qint64 deadline_ms = 0;
+        // Only the ScanVerdict sink uses these: the operator-facing text for the
+        // verdict that was written, so a success can name what was signalled.
+        QString verdictDetail;
         ParamWriteSink sink = ParamWriteSink::Users;
     };
     QVector<PendingParamWrite> m_pendingParamWrites;

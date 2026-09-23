@@ -57,6 +57,11 @@ struct RecipeRecord {
     // "greater than zero"; display formatting is the UI's business
     // (domain/width_units.h).
     int targetWidthRaw = 0;
+    // How many barcodes this product carries (user decision 2026-09-23): the
+    // HMI compares a scan cycle's decoded count against it, and a mismatch is a
+    // scan failure. 0 = do NOT check (the default for every recipe authored
+    // before this field existed).
+    int barcodeCount = 0;
     QString createdBy;
     QString updatedBy;
     QDateTime createdAt;

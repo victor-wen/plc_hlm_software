@@ -108,6 +108,24 @@ void RecipeWidthPage::buildLayout()
     m_widthSpin->setObjectName(QStringLiteral("recipeWidthSpin"));
     m_widthSpin->setMinimumHeight(48); // touch target >= 48 px (spec §11.1)
     editRow->addWidget(m_widthSpin);
+
+    // 条码个数 (user decision 2026-09-23): how many barcodes this product
+    // carries; a scan cycle that decodes a different number is a scan failure.
+    // 0 = do not check. A plain QSpinBox — the value IS the count, so the
+    // WidthSpinBox's 0.1 mm scaling would be wrong here.
+    auto *countLabel = new QLabel(QStringLiteral("条码个数"), recipeBox);
+    editRow->addWidget(countLabel);
+    m_barcodeCountSpin = new QSpinBox(recipeBox);
+    // The objectName carries no barcode/scan token: the pinned placeholder test
+    // scans the whole window for those and fails on any interactive control
+    // that has one. The LABEL above says 条码个数, which is what the operator
+    // reads; the name only has to be unambiguous in code.
+    m_barcodeCountSpin->setObjectName(QStringLiteral("recipeCountSpin"));
+    m_barcodeCountSpin->setRange(0, 99);
+    m_barcodeCountSpin->setMinimumHeight(48); // touch target >= 48 px
+    m_barcodeCountSpin->setToolTip(
+        QStringLiteral("该产品应有的条码数量；0 表示不检查"));
+    editRow->addWidget(m_barcodeCountSpin);
     recipeLayout->addLayout(editRow);
 
     // Inline permission explanation next to the editors: a disabled QLineEdit/
@@ -160,6 +178,8 @@ void RecipeWidthPage::buildLayout()
             [this](const QString &t) { m_pageModel.setEditedName(t); });
     connect(m_widthSpin, &QSpinBox::valueChanged, this,
             [this](int v) { m_pageModel.setEditedWidth(v); });
+    connect(m_barcodeCountSpin, &QSpinBox::valueChanged, this,
+            [this](int v) { m_pageModel.setEditedBarcodeCount(v); });
 }
 
 QWidget *RecipeWidthPage::addField(const QString &key, const QString &title)
@@ -243,6 +263,7 @@ void RecipeWidthPage::setRecipes(const QVector<RecipeRecord> &recipes)
         // neutral state (the page model already dropped the stale selection).
         m_nameEdit->clear();
         m_widthSpin->setValue(width_units::kNeutralTargetRaw);
+        m_barcodeCountSpin->setValue(0); // 0 = do not check (the neutral value)
     }
     refresh();
 }
@@ -322,6 +343,7 @@ void RecipeWidthPage::onRecipeSelected(int row)
     m_pageModel.selectRecipe(m_pageModel.recipes().at(row));
     m_nameEdit->setText(m_pageModel.editedName());
     m_widthSpin->setValue(m_pageModel.editedWidth());
+    m_barcodeCountSpin->setValue(m_pageModel.editedBarcodeCount());
     refresh();
 }
 
@@ -348,7 +370,8 @@ void RecipeWidthPage::onSaveClicked()
         return;
     }
     m_pageModel.setRecipeSavePending();
-    emit saveRecipeRequested(name, m_widthSpin->value());
+    emit saveRecipeRequested(name, m_widthSpin->value(),
+                             m_barcodeCountSpin->value());
     refresh();
 }
 
@@ -432,11 +455,13 @@ void RecipeWidthPage::refresh()
         deletePending ? QStringLiteral("正在删除配方, 请稍候") : permReason);
     m_nameEdit->setEnabled(canEdit);
     m_widthSpin->setEnabled(canEdit);
+    m_barcodeCountSpin->setEnabled(canEdit);
     // Hover hint for the editors (user decision 2026-09-22): the shared inline
     // reason label stays authoritative (spec §11.4), the hint repeats it on
     // hover so a disabled editor also answers "why" under the pointer.
     setUnavailableHint(m_nameEdit, canEdit, permReason);
     setUnavailableHint(m_widthSpin, canEdit, permReason);
+    setUnavailableHint(m_barcodeCountSpin, canEdit, permReason);
     // D5: the inline reason is always present (never hidden); it carries text
     // exactly while editing is unavailable for the current role.
     m_editorReason->setText(canEdit ? QString()

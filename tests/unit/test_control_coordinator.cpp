@@ -1721,15 +1721,18 @@ void ControlCoordinatorTest::simStationPulseIsAdminOnlyAndConvergesVisibly()
     QCOMPARE(terminals, 1); // exactly one terminal
     QVERIFY2(!gw.model().readCoil(114), "the pulse must end with the coil cleared");
 
-    // The other four signals are independent identities and addresses.
+    // The other three signals are independent identities and addresses.
     QVERIFY(c->simStationPulse(115).accepted);
     QVERIFY(c->simStationPulse(116).accepted);
     QVERIFY(c->simStationPulse(117).accepted);
-    // M15 拍照结束 (user decision 2026-09-22): the scan-complete coil the HMI
-    // itself reads, pulsed from the page for bench testing.
-    QVERIFY(c->simStationPulse(15).accepted);
-    gw.tick();
-    QVERIFY2(!gw.model().readCoil(15), "the pulse must end with the coil cleared");
+
+    // M15 is NOT a test signal any more (user decision 2026-09-23): it is the
+    // HMI's own answer to the PLC, written only after a scan cycle succeeded,
+    // so a bench pulse of it would forge a completion. The refusal must be
+    // visible, not silent.
+    const ControlCoordinator::CommandResult m15 = c->simStationPulse(15);
+    QVERIFY2(!m15.accepted, "M15 must not be pulsable from the bench any more");
+    QVERIFY(!m15.reason.isEmpty());
 
     // An address outside the defined signals is reported, never swallowed.
     const ControlCoordinator::CommandResult unknown = c->simStationPulse(113);

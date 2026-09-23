@@ -121,7 +121,7 @@ void RecipeDatabaseRoutingDeveloperTest::saveAndDeleteResultsRouteToPageAndReloa
     QVERIFY(page != nullptr);
 
     QSignalSpy savedSpy(db, &DatabaseService::recipeSaved);
-    emit page->saveRecipeRequested(QStringLiteral("路由配方"), 200);
+    emit page->saveRecipeRequested(QStringLiteral("路由配方"), 200, 0);
 
     // Pending is immediately visible and never claims success (D2).
     QVERIFY2(!page->statusText().trimmed().isEmpty(),
@@ -182,7 +182,7 @@ void RecipeDatabaseRoutingDeveloperTest::failureResultsRouteErrorDetailToPage()
     QSignalSpy savedSpy(db, &DatabaseService::recipeSaved);
     // Width 0 violates the schema CHECK constraint: the database reports a
     // real failure without any permission or PLC involvement.
-    emit page->saveRecipeRequested(QStringLiteral("坏宽度配方"), 0);
+    emit page->saveRecipeRequested(QStringLiteral("坏宽度配方"), 0, 0);
     QVERIFY(!page->statusText().contains(QStringLiteral("已保存")));
 
     QTRY_COMPARE_WITH_TIMEOUT(savedSpy.count(), 1, 5000);

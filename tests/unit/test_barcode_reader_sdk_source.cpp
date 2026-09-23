@@ -947,6 +947,7 @@ void BarcodeReaderSdkSourceTest::forwardingRunsTheProgramOncePerCycleWithEveryBa
     // program separately from its arguments, never through a shell. The probe
     // copy is made beside the original because Windows deploys the Qt DLLs
     // app-local next to the test executable.
+    probe.replyWith(QByteArrayLiteral("OK"));
     const QString program = hlm_test::probeProgramWithSpaceInPath();
     QVERIFY2(!program.isEmpty() && program.contains(QLatin1Char(' '))
                  && QFileInfo::exists(program),
@@ -962,7 +963,10 @@ void BarcodeReaderSdkSourceTest::forwardingRunsTheProgramOncePerCycleWithEveryBa
     QVERIFY2(result.forwarded,
              qPrintable(QStringLiteral("forward did not succeed: %1")
                             .arg(result.forwardDetail)));
-    QVERIFY(result.forwardDetail.isEmpty());
+    // The program answered OK through Result.txt, so the cycle is acknowledged
+    // and carries no failure detail.
+    QVERIFY(result.forwardAcknowledged);
+    QVERIFY2(result.forwardDetail.isEmpty(), qPrintable(result.forwardDetail));
 
     // ONE invocation carrying TWO arguments, in table order, each barcode
     // whole. `arguments()` has already dropped the probe's own argv[0].

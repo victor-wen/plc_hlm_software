@@ -6,6 +6,7 @@
 
 class QLabel;
 class QLineEdit;
+class QSpinBox;
 
 namespace hlm {
 
@@ -45,6 +46,11 @@ public:
     QLineEdit *scanProgramEdit() const { return m_scanProgramEdit; }
     PermissionButton *saveScanProgramButton() const { return m_saveScanProgram; }
     QString scanProgramStatusText() const;
+    // 触发次数 (user decision 2026-09-23): how many capture attempts one board
+    // gets when the decoded count does not match the recipe. Range 1..9.
+    QSpinBox *scanAttemptsSpin() const { return m_scanAttemptsSpin; }
+    PermissionButton *saveScanAttemptsButton() const { return m_saveScanAttempts; }
+    QString scanAttemptsStatusText() const;
     QLineEdit *forwardProgramEdit() const { return m_forwardProgramEdit; }
     PermissionButton *saveForwardProgramButton() const { return m_saveForwardProgram; }
     QString forwardProgramStatusText() const;
@@ -60,11 +66,14 @@ public slots:
     void setBarcodeResult(const BarcodeResult &result);
     // Persisted deployment paths, echoed from the composition root.
     void setScanProgramPath(const QString &path);
+    void setScanAttempts(int attempts);
     void setForwardProgramPath(const QString &path);
     // Page-local save handshakes, mirroring the settings page's result-path
     // editor: never silent, never optimistic.
     void setScanProgramSavePending();
     void setScanProgramSaveResult(bool ok, const QString &detail);
+    void setScanAttemptsSavePending();
+    void setScanAttemptsSaveResult(bool ok, const QString &detail);
     void setForwardProgramSavePending();
     void setForwardProgramSaveResult(bool ok, const QString &detail);
 
@@ -73,6 +82,7 @@ signals:
     // through IBarcodeSource and the two paths are persisted settings.
     void collectRequested();
     void scanProgramSaveRequested(const QString &path);
+    void scanAttemptsSaveRequested(int attempts);
     void forwardProgramSaveRequested(const QString &path);
 
 private:
@@ -83,6 +93,7 @@ private:
     QString controlReasonText(bool pending) const;
     void onCollectClicked();
     void onSaveScanProgramClicked();
+    void onSaveScanAttemptsClicked();
     void onSaveForwardProgramClicked();
 
     ShellModel &m_model;
@@ -96,6 +107,10 @@ private:
     PermissionButton *m_saveScanProgram = nullptr;
     QLabel *m_scanProgramStatus = nullptr;
     bool m_scanProgramSavePending = false;
+    QSpinBox *m_scanAttemptsSpin = nullptr;
+    PermissionButton *m_saveScanAttempts = nullptr;
+    QLabel *m_scanAttemptsStatus = nullptr;
+    bool m_scanAttemptsSavePending = false;
     QLineEdit *m_forwardProgramEdit = nullptr;
     PermissionButton *m_saveForwardProgram = nullptr;
     QLabel *m_forwardProgramStatus = nullptr;
