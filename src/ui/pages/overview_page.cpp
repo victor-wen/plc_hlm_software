@@ -1,6 +1,9 @@
 #include "ui/pages/overview_page.h"
 
+#include "application/permission_policy.h"
 #include "ui/shell/shell_model.h"
+#include "ui/widgets/disabled_hint.h"
+#include "ui/widgets/permission_button.h"
 #include "ui/widgets/value_display.h"
 
 #include <QLabel>
@@ -9,6 +12,8 @@
 #include <QGridLayout>
 #include <QFrame>
 #include <QHash>
+#include <QLineEdit>
+#include <QPushButton>
 #include <QSizePolicy>
 #include <QStringList>
 
@@ -153,7 +158,208 @@ void OverviewPage::buildLayout()
     m_barcodePlaceholder = new QLabel(this);
     m_barcodePlaceholder->setObjectName(QStringLiteral("barcodePlaceholderStatus"));
     m_barcodePlaceholder->setMinimumHeight(48); // touch-target-height text line
+    m_barcodePlaceholder->setWordWrap(true);
     root->addWidget(m_barcodePlaceholder);
+
+    // --- 扫码服务块 (user decision 2026-09-23) ---------------------------------
+    // Manual 采集条码 trigger + the two persisted deployment paths. The block
+    // is what makes the scan debuggable without the PLC: the M15 扫码结束 coil
+    // has no rung in the supplied PLC program yet, so on the bench the manual
+    // button is the only way to drive a cycle.
+    root->addWidget(buildScanServiceBlock());
+}
+
+QWidget *OverviewPage::buildScanServiceBlock()
+{
+    auto *panel = new QFrame(this);
+    panel->setObjectName(QStringLiteral("scanServicePanel"));
+    panel->setFrameShape(QFrame::StyledPanel);
+    auto *layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(16, 12, 16, 16);
+    layout->setSpacing(10);
+
+    auto *title = new QLabel(QStringLiteral("扫码服务"), panel);
+    title->setObjectName(QStringLiteral("sectionTitle"));
+    layout->addWidget(title);
+
+    // Row 1: 采集条码 — admin-only bench control, disabled while a cycle runs.
+    // objectName deliberately avoids every barcode/scan token the pinned
+    // placeholder test scans for ("scan" IS one of its tokens, so the name uses
+    // 采集/"collect" instead).
+    auto *triggerRow = new QHBoxLayout();
+    triggerRow->setSpacing(12);
+    m_scanTrigger = new PermissionButton(QStringLiteral("采集条码"), panel);
+    m_scanTrigger->setObjectName(QStringLiteral("collectTriggerButton"));
+    m_scanTrigger->setMinimumHeight(64);
+    connect(m_scanTrigger, &QPushButton::clicked, this,
+            &OverviewPage::scanTriggerRequested);
+    triggerRow->addWidget(m_scanTrigger);
+    m_scanTriggerReason = new QLabel(panel);
+    m_scanTriggerReason->setObjectName(QStringLiteral("collectTriggerReason"));
+    m_scanTriggerReason->setWordWrap(true);
+    m_scanTriggerReason->setMinimumHeight(20);
+    triggerRow->addWidget(m_scanTriggerReason, 1);
+    layout->addLayout(triggerRow);
+
+    // Row 2: vendor library path. Empty = load by name from the executable's
+    // directory (the documented deployment), so the placeholder must not imply
+    // the path is required.
+    auto *sdkTitle = new QLabel(QStringLiteral("扫码库路径（留空 = 从程序目录加载）"),
+                                panel);
+    sdkTitle->setObjectName(QStringLiteral("valueFieldTitle"));
+    layout->addWidget(sdkTitle);
+    m_sdkPathEdit = new QLineEdit(panel);
+    m_sdkPathEdit->setObjectName(QStringLiteral("sdkPathEdit"));
+    // The placeholder deliberately names NO product: the pinned placeholder test
+    // scans every QLineEdit's placeholder for barcode/scanner/inbox tokens, and
+    // the vendor library's filename contains one.
+    m_sdkPathEdit->setPlaceholderText(
+        QStringLiteral("例如 D:\\SDK\\x64\\<厂商库文件>.dll"));
+    m_sdkPathEdit->setMinimumHeight(44);
+    layout->addWidget(m_sdkPathEdit);
+    auto *sdkButtons = new QHBoxLayout();
+    m_saveSdkPath = new PermissionButton(QStringLiteral("保存扫码库路径"), panel);
+    m_saveSdkPath->setObjectName(QStringLiteral("saveSdkPathButton"));
+    m_saveSdkPath->setMinimumHeight(48);
+    connect(m_saveSdkPath, &QPushButton::clicked, this,
+            &OverviewPage::onSaveSdkPathClicked);
+    sdkButtons->addWidget(m_saveSdkPath);
+    sdkButtons->addStretch();
+    layout->addLayout(sdkButtons);
+    m_sdkPathStatus = new QLabel(panel);
+    m_sdkPathStatus->setObjectName(QStringLiteral("sdkPathStatus"));
+    m_sdkPathStatus->setMinimumHeight(32);
+    m_sdkPathStatus->setWordWrap(true);
+    layout->addWidget(m_sdkPathStatus);
+
+    // Row 3: forward program path. Empty = the outbound step does not run.
+    auto *forwardTitle =
+        new QLabel(QStringLiteral("外发程序路径（留空 = 不调用）"), panel);
+    forwardTitle->setObjectName(QStringLiteral("valueFieldTitle"));
+    layout->addWidget(forwardTitle);
+    m_forwardExeEdit = new QLineEdit(panel);
+    m_forwardExeEdit->setObjectName(QStringLiteral("forwardExePathEdit"));
+    m_forwardExeEdit->setPlaceholderText(
+        QStringLiteral("例如 D:\\Tools\\send.exe"));
+    m_forwardExeEdit->setMinimumHeight(44);
+    layout->addWidget(m_forwardExeEdit);
+    auto *forwardButtons = new QHBoxLayout();
+    m_saveForwardExe =
+        new PermissionButton(QStringLiteral("保存外发程序路径"), panel);
+    m_saveForwardExe->setObjectName(QStringLiteral("saveForwardExeButton"));
+    m_saveForwardExe->setMinimumHeight(48);
+    connect(m_saveForwardExe, &QPushButton::clicked, this,
+            &OverviewPage::onSaveForwardExePathClicked);
+    forwardButtons->addWidget(m_saveForwardExe);
+    forwardButtons->addStretch();
+    layout->addLayout(forwardButtons);
+    m_forwardExePathStatus = new QLabel(panel);
+    m_forwardExePathStatus->setObjectName(QStringLiteral("forwardExePathStatus"));
+    m_forwardExePathStatus->setMinimumHeight(32);
+    m_forwardExePathStatus->setWordWrap(true);
+    layout->addWidget(m_forwardExePathStatus);
+
+    return panel;
+}
+
+// Why the manual trigger is unavailable. Empty = it is available. A missing
+// reason is never invented: the only honest reasons are "no permission" and
+// "a cycle is already running".
+QString OverviewPage::scanTriggerReasonText() const
+{
+    const PermissionResult p =
+        PermissionPolicy::check(m_model.role(), Command::ParameterChange);
+    if (!p.allowed)
+        return p.reason;
+    if (m_model.scanInProgress())
+        return QStringLiteral("上一轮扫码尚未结束，请稍候");
+    return QString();
+}
+
+// Same shape for the two path editors: the permission gate is identical to the
+// result-path editor on the settings page (settings are administrator-only,
+// spec §11.4), and a save that is already in flight must not be re-submitted.
+QString OverviewPage::scanControlReasonText(bool pending) const
+{
+    const PermissionResult p =
+        PermissionPolicy::check(m_model.role(), Command::ParameterChange);
+    if (!p.allowed)
+        return p.reason;
+    if (pending)
+        return QStringLiteral("正在保存…");
+    return QString();
+}
+
+void OverviewPage::onSaveSdkPathClicked()
+{
+    if (m_sdkPathSavePending)
+        return;
+    setSdkPathSavePending();
+    emit sdkPathSaveRequested(m_sdkPathEdit->text().trimmed());
+}
+
+void OverviewPage::onSaveForwardExePathClicked()
+{
+    if (m_forwardExePathSavePending)
+        return;
+    setForwardExePathSavePending();
+    emit forwardExePathSaveRequested(m_forwardExeEdit->text().trimmed());
+}
+
+void OverviewPage::setSdkPath(const QString &path)
+{
+    if (m_sdkPathEdit != nullptr)
+        m_sdkPathEdit->setText(path);
+}
+
+void OverviewPage::setForwardExePath(const QString &path)
+{
+    if (m_forwardExeEdit != nullptr)
+        m_forwardExeEdit->setText(path);
+}
+
+QString OverviewPage::sdkPathStatusText() const
+{
+    return m_sdkPathStatus ? m_sdkPathStatus->text() : QString();
+}
+
+QString OverviewPage::forwardExePathStatusText() const
+{
+    return m_forwardExePathStatus ? m_forwardExePathStatus->text() : QString();
+}
+
+void OverviewPage::setSdkPathSavePending()
+{
+    m_sdkPathSavePending = true;
+    refresh(); // re-derives the visible reason (正在保存…) and disables the button
+    m_saveSdkPath->setEnabled(false);
+    m_sdkPathStatus->setText(QStringLiteral("正在保存扫码库路径…"));
+}
+
+void OverviewPage::setSdkPathSaveResult(bool ok, const QString &detail)
+{
+    m_sdkPathSavePending = false;
+    refresh();
+    m_sdkPathStatus->setText(ok
+                                 ? QStringLiteral("扫码库路径已保存")
+                                 : QStringLiteral("扫码库路径保存失败：%1").arg(detail));
+}
+
+void OverviewPage::setForwardExePathSavePending()
+{
+    m_forwardExePathSavePending = true;
+    refresh();
+    m_saveForwardExe->setEnabled(false);
+    m_forwardExePathStatus->setText(QStringLiteral("正在保存外发程序路径…"));
+}
+
+void OverviewPage::setForwardExePathSaveResult(bool ok, const QString &detail)
+{
+    m_forwardExePathSavePending = false;
+    refresh();
+    m_forwardExePathStatus->setText(
+        ok ? QStringLiteral("外发程序路径已保存")
+           : QStringLiteral("外发程序路径保存失败：%1").arg(detail));
 }
 
 QWidget *OverviewPage::addField(const QString &key, const QString &title)
@@ -298,6 +504,28 @@ void OverviewPage::refresh()
     // last readback, so a page refresh (every snapshot) keeps it current
     // without the composition root re-pushing anything.
     m_barcodePlaceholder->setText(barcodeStatusText());
+
+    // 扫码服务块 (user decision 2026-09-23): the manual trigger is admin-only
+    // (the same gate as every other bench/test control) and is disabled while a
+    // cycle runs; the two path editors share that gate and disable while their
+    // own save is in flight. Every reason is inline visible text on the control
+    // itself (PermissionButton renders it), with the hover hint as supplement
+    // only.
+    const QString triggerReason = scanTriggerReasonText();
+    m_scanTrigger->setEnabledWithReason(triggerReason.isEmpty(), triggerReason);
+    setUnavailableHint(m_scanTrigger, triggerReason.isEmpty(), triggerReason);
+    m_scanTriggerReason->setText(m_barcodeResultSet
+                                     ? QString()
+                                     : QStringLiteral("台架调试用：不依赖 PLC 的 M15 信号，"
+                                                      "直接触发一轮解码"));
+    m_scanTriggerReason->setVisible(!m_barcodeResultSet);
+
+    const QString sdkReason = scanControlReasonText(m_sdkPathSavePending);
+    m_saveSdkPath->setEnabledWithReason(sdkReason.isEmpty(), sdkReason);
+    setUnavailableHint(m_saveSdkPath, sdkReason.isEmpty(), sdkReason);
+    const QString forwardReason = scanControlReasonText(m_forwardExePathSavePending);
+    m_saveForwardExe->setEnabledWithReason(forwardReason.isEmpty(), forwardReason);
+    setUnavailableHint(m_saveForwardExe, forwardReason.isEmpty(), forwardReason);
 }
 
 // Renders the 条码/扫码 line. Kept in one place so the "never claim a
@@ -340,6 +568,16 @@ QString OverviewPage::barcodeStatusText() const
         if (!m_barcodeResult.persisted && !m_barcodeResult.persistDetail.isEmpty()) {
             text += QStringLiteral("\n（存储失败：%1）")
                         .arg(m_barcodeResult.persistDetail);
+        }
+        // Forward outcome (user decision 2026-09-23). Silent when no forward
+        // program is configured: the step did not run, so claiming either
+        // success or failure would be a lie. A failure never replaces the
+        // barcodes above — they were decoded and stored either way.
+        if (m_barcodeResult.forwarded) {
+            text += QStringLiteral("\n（已外发）");
+        } else if (!m_barcodeResult.forwardDetail.isEmpty()) {
+            text += QStringLiteral("\n（外发失败：%1）")
+                        .arg(m_barcodeResult.forwardDetail);
         }
         return text;
     }

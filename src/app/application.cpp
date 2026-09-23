@@ -51,6 +51,12 @@ constexpr const char *kSerialReadRetries = "serial.readRetries";
 // scan, so the HMI is the writer). One decoded barcode per line is appended
 // here; an empty value keeps the feature visibly 未配置.
 constexpr const char *kBarcodeResultPath = "barcode.resultPath";
+// 扫码服务块 (user decision 2026-09-23): the vendor library's location and the
+// forward program's path. Both empty by default —— empty DLL path loads by
+// name from the executable's directory; empty forward path means the outbound
+// step does not run at all.
+constexpr const char *kBarcodeSdkPath = "barcode.sdkPath";
+constexpr const char *kBarcodeForwardExePath = "barcode.forwardExePath";
 
 constexpr quint16 kD122 = 122; // 皮带速度
 constexpr quint16 kD204 = 204; // 脉冲当量
@@ -345,11 +351,19 @@ void Application::wireSignals()
             &Application::handleD204Write);
     connect(m_usersPage, &UsersSettingsPage::saveBarcodePathRequested, this,
             &Application::handleBarcodePathSave);
+    // 扫码服务块 (user decision 2026-09-23): the manual trigger and the two
+    // deployment paths live on the overview page.
+    connect(m_overviewPage, &OverviewPage::scanTriggerRequested, this,
+            [this]() { submitScanCycle(QStringLiteral("手动采集")); });
+    connect(m_overviewPage, &OverviewPage::sdkPathSaveRequested, this,
+            &Application::handleBarcodeSdkPathSave);
+    connect(m_overviewPage, &OverviewPage::forwardExePathSaveRequested, this,
+            &Application::handleBarcodeForwardExePathSave);
     connect(m_barcodeSource, &IBarcodeSource::resultReady, this,
             &Application::handleBarcodeResult);
-    // settingSaved() carries no key: the barcode path save is the only
-    // production user of DatabaseService::setSetting and is single-flight, so
-    // an arrival while none is pending is not ours and is ignored.
+    // settingSaved() carries no key: the three 扫码 settings share one
+    // single-flight guard, so at most one save is ever in flight and an arrival
+    // while none is pending is not ours and is ignored.
     connect(m_db, &DatabaseService::settingSaved, this,
             [this](bool ok, const QString &error) {
                 if (!m_barcodePathSavePending)
@@ -531,26 +545,11 @@ void Application::wireGateway(IPlcGateway *gw)
                 // M15 扫码结束 rising edge (user decision 2026-09-22, revised:
                 // the HMI drives the scan). Gated on a fresh snapshot so a stale
                 // M15 readback can never start a cycle, and edge-only so a held
-                // M15 does not restart one every poll.
+                // M15 does not restart one every poll. The manual 采集条码 button
+                // on the overview page submits through the same helper.
                 const bool scanComplete = m_shell->snapshotFresh() && s.m15();
-                if (scanComplete && !m_lastScanComplete
-                    && !m_barcodeSource->requestRead()) {
-                    // The previous cycle is still polling, so this board's
-                    // 扫码结束 signal was refused rather than queued. A refused
-                    // request must never be silent (contract: no silent
-                    // rejection), and it must not overwrite the last real
-                    // barcode either — so it is reported as its own outcome.
-                    BarcodeResult refused;
-                    refused.state = BarcodeState::Overlapped;
-                    refused.detail =
-                        QStringLiteral("上一轮扫码尚未结束，本次扫码结束信号未处理");
-                    refused.readAt = QDateTime::currentDateTime();
-                    // Deliberately NOT stored as m_lastBarcode: this carries no
-                    // barcode, and keeping it would make the next real result
-                    // look like a change from a value that never existed.
-                    if (m_overviewPage != nullptr)
-                        m_overviewPage->setBarcodeResult(refused);
-                }
+                if (scanComplete && !m_lastScanComplete)
+                    submitScanCycle(QStringLiteral("M15 扫码结束"));
                 m_lastScanComplete = scanComplete;
                 m_db->feedPlcAlarmSnapshot(s.faultCode(), s.m14(), s.m4(),
                                            s.sequence());
@@ -680,9 +679,11 @@ void Application::onReady()
     m_db->listRecipes();
     m_db->runRetentionCleanup();
     // Load the persisted settings for echo (spec §8.1): the seven serial keys
-    // plus the 扫码结果追加文件路径 (user decision 2026-09-22).
-    m_pendingSettingLoads = 8;
+    // plus the three 扫码服务 keys (result path, library path, forward program).
+    m_pendingSettingLoads = 10;
     m_db->getSetting(QString::fromLatin1(kBarcodeResultPath));
+    m_db->getSetting(QString::fromLatin1(kBarcodeSdkPath));
+    m_db->getSetting(QString::fromLatin1(kBarcodeForwardExePath));
     m_db->getSetting(QString::fromLatin1(kSerialComPort));
     m_db->getSetting(QString::fromLatin1(kSerialStation));
     m_db->getSetting(QString::fromLatin1(kSerialBaudRate));
@@ -784,6 +785,22 @@ void Application::handleSettingLoaded(const std::optional<SettingRecord> &settin
             // not only after the first scan cycle.
             if (m_overviewPage != nullptr)
                 m_overviewPage->setBarcodeResultPath(m_barcodePath);
+        } else if (key == QString::fromLatin1(kBarcodeSdkPath)) {
+            // 扫码库路径 (user decision 2026-09-23): empty keeps the documented
+            // "load by name from the executable's directory" behaviour.
+            m_barcodeSdkPath = value;
+            if (m_barcodeSource != nullptr)
+                m_barcodeSource->setDllPath(m_barcodeSdkPath);
+            if (m_overviewPage != nullptr)
+                m_overviewPage->setSdkPath(m_barcodeSdkPath);
+        } else if (key == QString::fromLatin1(kBarcodeForwardExePath)) {
+            // 外发程序路径 (user decision 2026-09-23): empty means the outbound
+            // step does not run at all, which the page states visibly.
+            m_barcodeForwardExePath = value;
+            if (m_barcodeSource != nullptr)
+                m_barcodeSource->setForwardExePath(m_barcodeForwardExePath);
+            if (m_overviewPage != nullptr)
+                m_overviewPage->setForwardExePath(m_barcodeForwardExePath);
         } else if (key == QString::fromLatin1(kSerialComPort)) {
             m_loadedSerialCfg.port_name = value;
         } else if (key == QString::fromLatin1(kSerialStation)) {
@@ -1064,7 +1081,8 @@ void Application::handleBarcodePathSave(const QString &path)
     if (m_barcodePathSavePending) {
         // Immediate visible rejection: the accepted request owns the save and
         // the duplicate is never queued or silently dropped. Single-flight is
-        // also what makes the key-less settingSaved() signal unambiguous.
+        // also what makes the key-less settingSaved() signal unambiguous — so it
+        // now spans all three persisted 扫码 settings, not just this one.
         m_usersPage->setBarcodePathSaveResult(
             false, QStringLiteral("已有路径保存请求正在处理中，本次请求未提交"));
         return;
@@ -1077,6 +1095,7 @@ void Application::handleBarcodePathSave(const QString &path)
     }
 
     m_barcodePathSavePending = true;
+    m_pendingSetting = PendingSetting::ResultPath;
     m_pendingBarcodePath = trimmed;
     SettingRecord record;
     record.key = QString::fromLatin1(kBarcodeResultPath);
@@ -1096,26 +1115,139 @@ void Application::handleBarcodePathSave(const QString &path)
     });
 }
 
+// 扫码库路径 / 外发程序路径 (user decision 2026-09-23). Same persisted-setting
+    // round trip as the result path above, sharing its single-flight guard so the
+    // key-less settingSaved() correlation stays unambiguous: at most one of the
+    // three is ever in flight.
+void Application::handleBarcodeSdkPathSave(const QString &path)
+{
+    if (m_lifecycle != nullptr
+        && !m_lifecycle->commandAllowed(Command::ParameterChange)) {
+        m_overviewPage->setSdkPathSaveResult(
+            false, m_lifecycle->commandRejectionReason());
+        return;
+    }
+    if (m_barcodePathSavePending) {
+        m_overviewPage->setSdkPathSaveResult(
+            false, QStringLiteral("已有保存请求正在处理中，本次请求未提交"));
+        return;
+    }
+    const QString trimmed = path.trimmed();
+    if (trimmed.contains(QLatin1Char('\n')) || trimmed.contains(QLatin1Char('\r'))) {
+        m_overviewPage->setSdkPathSaveResult(
+            false, QStringLiteral("路径不能包含换行符"));
+        return;
+    }
+
+    m_barcodePathSavePending = true;
+    m_pendingSetting = PendingSetting::SdkPath;
+    m_pendingBarcodePath = trimmed;
+    SettingRecord record;
+    record.key = QString::fromLatin1(kBarcodeSdkPath);
+    record.typedValue = trimmed;
+    record.updatedBy = m_lifecycle ? m_lifecycle->currentUsername()
+                                   : QStringLiteral("anonymous");
+    record.updatedAt = QDateTime::currentDateTime();
+    m_db->setSetting(record);
+
+    QTimer::singleShot(kParamWriteTimeoutMs, this, [this]() {
+        if (m_barcodePathSavePending)
+            failPendingBarcodePathSave(QStringLiteral("扫码库路径保存确认超时"));
+    });
+}
+
+void Application::handleBarcodeForwardExePathSave(const QString &path)
+{
+    if (m_lifecycle != nullptr
+        && !m_lifecycle->commandAllowed(Command::ParameterChange)) {
+        m_overviewPage->setForwardExePathSaveResult(
+            false, m_lifecycle->commandRejectionReason());
+        return;
+    }
+    if (m_barcodePathSavePending) {
+        m_overviewPage->setForwardExePathSaveResult(
+            false, QStringLiteral("已有保存请求正在处理中，本次请求未提交"));
+        return;
+    }
+    const QString trimmed = path.trimmed();
+    if (trimmed.contains(QLatin1Char('\n')) || trimmed.contains(QLatin1Char('\r'))) {
+        m_overviewPage->setForwardExePathSaveResult(
+            false, QStringLiteral("路径不能包含换行符"));
+        return;
+    }
+
+    m_barcodePathSavePending = true;
+    m_pendingSetting = PendingSetting::ForwardExePath;
+    m_pendingBarcodePath = trimmed;
+    SettingRecord record;
+    record.key = QString::fromLatin1(kBarcodeForwardExePath);
+    record.typedValue = trimmed;
+    record.updatedBy = m_lifecycle ? m_lifecycle->currentUsername()
+                                   : QStringLiteral("anonymous");
+    record.updatedAt = QDateTime::currentDateTime();
+    m_db->setSetting(record);
+
+    QTimer::singleShot(kParamWriteTimeoutMs, this, [this]() {
+        if (m_barcodePathSavePending)
+            failPendingBarcodePathSave(QStringLiteral("外发程序路径保存确认超时"));
+    });
+}
+
 void Application::handleBarcodePathSaved(bool ok, const QString &error)
 {
     m_barcodePathSavePending = false;
+    const PendingSetting pendingSetting = m_pendingSetting;
+    m_pendingSetting = PendingSetting::None;
     if (!ok) {
-        m_usersPage->setBarcodePathSaveResult(
-            false, error.isEmpty() ? QStringLiteral("扫码路径保存失败") : error);
+        const QString reason =
+            error.isEmpty() ? QStringLiteral("保存失败") : error;
+        switch (pendingSetting) {
+        case PendingSetting::SdkPath:
+            m_overviewPage->setSdkPathSaveResult(false, reason);
+            break;
+        case PendingSetting::ForwardExePath:
+            m_overviewPage->setForwardExePathSaveResult(false, reason);
+            break;
+        case PendingSetting::ResultPath:
+        case PendingSetting::None:
+            m_usersPage->setBarcodePathSaveResult(false, reason);
+            break;
+        }
+        m_pendingBarcodePath.clear();
         return;
     }
-    m_barcodePath = m_pendingBarcodePath;
+
+    switch (pendingSetting) {
+    case PendingSetting::SdkPath:
+        m_barcodeSdkPath = m_pendingBarcodePath;
+        if (m_barcodeSource != nullptr)
+            m_barcodeSource->setDllPath(m_barcodeSdkPath);
+        m_overviewPage->setSdkPath(m_barcodeSdkPath);
+        m_overviewPage->setSdkPathSaveResult(true, QString());
+        break;
+    case PendingSetting::ForwardExePath:
+        m_barcodeForwardExePath = m_pendingBarcodePath;
+        if (m_barcodeSource != nullptr)
+            m_barcodeSource->setForwardExePath(m_barcodeForwardExePath);
+        m_overviewPage->setForwardExePath(m_barcodeForwardExePath);
+        m_overviewPage->setForwardExePathSaveResult(true, QString());
+        break;
+    case PendingSetting::ResultPath:
+    case PendingSetting::None:
+        m_barcodePath = m_pendingBarcodePath;
+        if (m_barcodeSource != nullptr)
+            m_barcodeSource->setResultPath(m_barcodePath);
+        m_usersPage->setBarcodeResultPath(m_barcodePath);
+        m_usersPage->setBarcodePathSaveResult(true, QString());
+        // The displayed barcode belonged to the previous path: drop it back to
+        // the not-configured/awaiting state until the next scan cycle reads the
+        // new file (never show a value that the current path did not produce).
+        m_lastBarcode = BarcodeResult();
+        if (m_overviewPage != nullptr)
+            m_overviewPage->setBarcodeResultPath(m_barcodePath);
+        break;
+    }
     m_pendingBarcodePath.clear();
-    if (m_barcodeSource != nullptr)
-        m_barcodeSource->setResultPath(m_barcodePath);
-    m_usersPage->setBarcodeResultPath(m_barcodePath);
-    m_usersPage->setBarcodePathSaveResult(true, QString());
-    // The displayed barcode belonged to the previous path: drop it back to the
-    // not-configured/awaiting state until the next scan cycle reads the new
-    // file (never show a value that the current path did not produce).
-    m_lastBarcode = BarcodeResult();
-    if (m_overviewPage != nullptr)
-        m_overviewPage->setBarcodeResultPath(m_barcodePath);
 }
 
 void Application::failPendingBarcodePathSave(const QString &reason)
@@ -1123,8 +1255,48 @@ void Application::failPendingBarcodePathSave(const QString &reason)
     if (!m_barcodePathSavePending)
         return;
     m_barcodePathSavePending = false;
+    const PendingSetting pendingSetting = m_pendingSetting;
+    m_pendingSetting = PendingSetting::None;
     m_pendingBarcodePath.clear();
-    m_usersPage->setBarcodePathSaveResult(false, reason);
+    switch (pendingSetting) {
+    case PendingSetting::SdkPath:
+        m_overviewPage->setSdkPathSaveResult(false, reason);
+        break;
+    case PendingSetting::ForwardExePath:
+        m_overviewPage->setForwardExePathSaveResult(false, reason);
+        break;
+    case PendingSetting::ResultPath:
+    case PendingSetting::None:
+        m_usersPage->setBarcodePathSaveResult(false, reason);
+        break;
+    }
+}
+
+// One scan cycle, submitted on behalf of `source` — the PLC's M15 扫码结束
+// rising edge, or the overview page's manual 采集条码 button (user decision
+// 2026-09-23: both entries stay, and they share this one path so neither can
+// drift from the other).
+void Application::submitScanCycle(const QString &source)
+{
+    if (m_barcodeSource == nullptr)
+        return;
+    if (m_barcodeSource->requestRead()) {
+        m_shell->setScanInProgress(true);
+        return;
+    }
+    // The previous cycle is still polling, so this board's signal was refused
+    // rather than queued. A refused request must never be silent (contract: no
+    // silent rejection), and it must not overwrite the last real barcode either
+    // — so it is reported as its own outcome.
+    BarcodeResult refused;
+    refused.state = BarcodeState::Overlapped;
+    refused.detail = QStringLiteral("%1：上一轮扫码尚未结束，本次未处理").arg(source);
+    refused.readAt = QDateTime::currentDateTime();
+    // Deliberately NOT stored as m_lastBarcode: this carries no barcode, and
+    // keeping it would make the next real result look like a change from a
+    // value that never existed.
+    if (m_overviewPage != nullptr)
+        m_overviewPage->setBarcodeResult(refused);
 }
 
 void Application::handleBarcodeResult(const BarcodeResult &result)
@@ -1135,6 +1307,7 @@ void Application::handleBarcodeResult(const BarcodeResult &result)
     // barcode. The full barcode value is never logged (contract
     // forbidden_change: no full barcode values in logs).
     m_lastBarcode = result;
+    m_shell->setScanInProgress(false);
     if (m_overviewPage != nullptr)
         m_overviewPage->setBarcodeResult(result);
 }

@@ -43,6 +43,21 @@ public:
     virtual void setResultPath(const QString &path) = 0;
     virtual QString resultPath() const = 0;
 
+    // Deployment paths, set from the persisted settings (user decision
+    // 2026-09-23). These are plain PATH STRINGS, not handles: the
+    // `forbidden_fields: vendor_sdk_handle` rule still holds, because the
+    // loaded module and its exports never leave the adapter.
+    //
+    // DLL path: empty = load the vendor library by name (the executable's own
+    // directory is searched first); non-empty = load exactly that file.
+    virtual void setDllPath(const QString &path) = 0;
+    virtual QString dllPath() const = 0;
+    // Forward-program path: empty = the step does not run at all. Non-empty =
+    // after each cycle that decoded at least one barcode, run that program once
+    // with the cycle's barcodes as a single space-joined argument.
+    virtual void setForwardExePath(const QString &path) = 0;
+    virtual QString forwardExePath() const = 0;
+
     // A scan cycle ended (the PLC raised M15 扫码结束): run one trigger →
     // poll → decode-result cycle and report through resultReady(). Asynchronous;
     // returns immediately.

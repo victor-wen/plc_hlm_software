@@ -38,6 +38,16 @@ public:
     void setCommandPending(Command cmd, bool pending);
     bool hasPendingCommands() const { return !m_pending.isEmpty(); }
 
+    // --- scan cycle in progress (user decision 2026-09-23) -------------------
+    // True between submitting a scan cycle and its terminal result arriving.
+    // Not a machine command: the cycle is driven by the barcode adapter, so it
+    // is tracked here only so the manual 采集条码 button can show a visible
+    // reason while a cycle runs instead of letting the operator click and be
+    // silently refused. Never optimistic about a RESULT — it says "running",
+    // not "succeeded".
+    void setScanInProgress(bool inProgress);
+    bool scanInProgress() const { return m_scanInProgress; }
+
     // --- operator command lifecycle projection (contract OperatorCommandStatus) --
     // One persistent, non-modal status for the latest machine command, fed by
     // the composition root from the coordinator's accepted/rejected/pending/
@@ -90,6 +100,7 @@ private:
     std::optional<DeviceSnapshot> m_snapshot;
     DeviceSnapshot m_emptySnapshot{DeviceSnapshotData()};
     QHash<int, bool> m_pending; // Command as int for QHash
+    bool m_scanInProgress = false;
     OperatorCommandStatus m_operatorCommandStatus;
 };
 

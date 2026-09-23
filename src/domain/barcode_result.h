@@ -59,12 +59,20 @@ struct BarcodeResult {
     QVector<BarcodeRow> rows;
     int decodedCount = 0;   // rows with a non-empty barcode
     int emptyPositions = 0; // rows the SDK reported with an empty barcode
-    // Operator-facing reason for NoCode/Failed, and the file-write outcome of
-    // this cycle (writing is a separate step: a failed write must never hide a
-    // barcode that was in fact decoded).
+    // Operator-facing reason for NoCode/Failed, and the outcome of the two
+    // side effects of this cycle. Displaying, appending and forwarding are three
+    // SEPARATE steps: a failed append must never hide a decoded barcode, and a
+    // failed forward must never hide either the barcode or a successful append
+    // (user decision 2026-09-23: forward each board's barcodes to a local
+    // program by passing them as one argument).
     QString detail;
     QString persistDetail;
     bool persisted = false;
+    // Forward outcome: `forwarded` is true only after the program actually
+    // exited 0. Empty forward path means the step did not run at all, so both
+    // fields stay at their defaults rather than claiming a delivery.
+    QString forwardDetail;
+    bool forwarded = false;
     QString requestId; // the cycle's SDK request id, for diagnosis
     QDateTime readAt;
     quint64 sequence = 0; // monotonic: lets the UI tell cycles apart

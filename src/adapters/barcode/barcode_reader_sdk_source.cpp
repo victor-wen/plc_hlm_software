@@ -10,6 +10,7 @@
 #include <QJsonObject>
 #include <QMetaObject>
 #include <QMutexLocker>
+#include <QProcess>
 #include <QTimer>
 #include <QUuid>
 
@@ -18,6 +19,7 @@
 #endif
 
 namespace hlm {
+
 
 namespace {
 
@@ -108,6 +110,24 @@ QByteArray barcodePayloadFromBuffer(const QByteArray &raw, quint32 requiredBytes
     return raw.left(length);
 }
 
+bool barcodeForwardArgument(const QVector<BarcodeRow> &rows, QString *argument)
+{
+    QStringList decoded;
+    for (const BarcodeRow &row : rows) {
+        const QString code = row.barcode.trimmed();
+        if (code.isEmpty())
+            continue; // an empty position is not a barcode
+        // One space is the separator, so a barcode that itself contains one
+        // cannot be told apart from two barcodes downstream. Refusing is
+        // visible; sending it would corrupt the data silently.
+        if (code.contains(QLatin1Char(' ')))
+            return false;
+        decoded.append(code);
+    }
+    *argument = decoded.join(QLatin1Char(' '));
+    return true;
+}
+
 #ifdef _WIN32
 
 namespace {
@@ -127,9 +147,18 @@ using IdFn = int (*)(const wchar_t *, const char *, char *, unsigned int,
 class WindowsBarcodeSdk : public IBarcodeSdk
 {
 public:
-    WindowsBarcodeSdk()
+    explicit WindowsBarcodeSdk(const QString &dllPath)
     {
-        m_module = ::LoadLibraryW(L"BarcodeReaderTrigger.dll");
+        // Empty → load BY NAME, so Windows searches the running executable's
+        // own directory first ("put BarcodeReaderTrigger.dll next to
+        // hlm_app.exe"). Non-empty → load exactly that file, because the
+        // operator pointed at a DLL kept elsewhere (user decision 2026-09-23).
+        // A missing DLL (or a wrong-bitness one, which fails the export lookup)
+        // is a LibraryUnavailable reply, never silence.
+        const QString native = QDir::toNativeSeparators(dllPath.trimmed());
+        m_module = native.isEmpty()
+            ? ::LoadLibraryW(L"BarcodeReaderTrigger.dll")
+            : ::LoadLibraryW(reinterpret_cast<const wchar_t *>(native.utf16()));
         if (m_module == nullptr)
             return; // LibraryUnavailable for every call
         m_status = reinterpret_cast<StatusFn>(
@@ -227,9 +256,9 @@ private:
 
 } // namespace
 
-std::unique_ptr<IBarcodeSdk> makeSystemBarcodeSdk()
+std::unique_ptr<IBarcodeSdk> makeSystemBarcodeSdk(const QString &dllPath)
 {
-    return std::make_unique<WindowsBarcodeSdk>();
+    return std::make_unique<WindowsBarcodeSdk>(dllPath);
 }
 
 #else // !_WIN32
@@ -238,7 +267,7 @@ std::unique_ptr<IBarcodeSdk> makeSystemBarcodeSdk()
 // the same "not available" status. Every test injects a fake instead, so this
 // only ever shows up when someone runs the app on a non-Windows host — where
 // the operator-facing text still tells them to start the scan program.
-std::unique_ptr<IBarcodeSdk> makeSystemBarcodeSdk()
+std::unique_ptr<IBarcodeSdk> makeSystemBarcodeSdk(const QString &)
 {
     class UnavailableBarcodeSdk : public IBarcodeSdk
     {
@@ -272,7 +301,7 @@ BarcodeReaderSdkSource::BarcodeReaderSdkSource(IBarcodeSdk *sdk, Config config,
         // AppConfig::plcGateway / serialPortDiscovery).
         m_sdk = sdk;
     } else {
-        m_ownedSdk = makeSystemBarcodeSdk();
+        m_ownedSdk = makeSystemBarcodeSdk(QString());
         m_sdk = m_ownedSdk.get();
     }
 }
@@ -326,6 +355,62 @@ QString BarcodeReaderSdkSource::resultPath() const
     return m_path;
 }
 
+void BarcodeReaderSdkSource::setDllPath(const QString &path)
+{
+    QMutexLocker lock(&m_mutex);
+    const QString trimmed = path.trimmed();
+    if (trimmed == m_dllPath)
+        return;
+    m_dllPath = trimmed;
+    // Only a flag here: the module itself is loaded and freed on the worker
+    // thread, at the start of the next cycle (applyPendingDllPath). Doing it
+    // from this (caller) thread could free the library under an in-flight call.
+    m_sdkPathDirty = true;
+}
+
+QString BarcodeReaderSdkSource::dllPath() const
+{
+    QMutexLocker lock(&m_mutex);
+    return m_dllPath;
+}
+
+void BarcodeReaderSdkSource::setForwardExePath(const QString &path)
+{
+    QMutexLocker lock(&m_mutex);
+    m_forwardPath = path.trimmed();
+}
+
+QString BarcodeReaderSdkSource::forwardExePath() const
+{
+    QMutexLocker lock(&m_mutex);
+    return m_forwardPath;
+}
+
+void BarcodeReaderSdkSource::applyPendingDllPath()
+{
+    QString path;
+    {
+        QMutexLocker lock(&m_mutex);
+        if (!m_sdkPathDirty)
+            return;
+        m_sdkPathDirty = false;
+        path = m_dllPath;
+    }
+    if (m_ownedSdk == nullptr) {
+        // An injected SDK is caller-owned and knows nothing about paths; the
+        // setting is still recorded above so the UI round-trip stays honest.
+        return;
+    }
+    // The old module is freed by this assignment, on the worker thread, between
+    // cycles — never while one of its calls is in flight. The cached serverId
+    // is NOT cleared: if the new library really is a different server instance,
+    // the next reply's serverId differs and the cycle converges as "扫码服务已
+    // 重启，本轮结果无法确认" — which is exactly the honest outcome. Clearing it
+    // would disable that check and let the old server's result through.
+    m_ownedSdk = makeSystemBarcodeSdk(path);
+    m_sdk = m_ownedSdk.get();
+}
+
 bool BarcodeReaderSdkSource::cycleInProgress() const
 {
     QMutexLocker lock(&m_mutex);
@@ -347,6 +432,10 @@ bool BarcodeReaderSdkSource::requestRead()
 
 void BarcodeReaderSdkSource::performCycle()
 {
+    // A DLL-path change takes effect here, on the worker thread, between
+    // cycles: never while a call into the previous module is in flight.
+    applyPendingDllPath();
+
     BarcodeResult result;
     {
         QMutexLocker lock(&m_mutex);
@@ -358,7 +447,7 @@ void BarcodeReaderSdkSource::performCycle()
     if (path.isEmpty()) {
         // Visibly 未配置: nothing is triggered, and the surface says so.
         result.state = BarcodeState::NotConfigured;
-        emitTerminal(result);
+        finishCycle(&result);
         return;
     }
 
@@ -369,7 +458,7 @@ void BarcodeReaderSdkSource::performCycle()
     if (status.status != BarcodeSdkStatus::Ok) {
         result.state = BarcodeState::Failed;
         result.detail = transportReason(status.status);
-        emitTerminal(result);
+        finishCycle(&result);
         return;
     }
     QJsonParseError statusError{};
@@ -384,13 +473,11 @@ void BarcodeReaderSdkSource::performCycle()
     const BarcodeSdkReply triggered = m_sdk->trigger(m_requestId);
     bool keepPolling = false;
     if (applyReply(triggered, &result, &keepPolling, /*isTriggerReply=*/true)) {
-        persistRows(&result);
-        emitTerminal(result);
+        finishCycle(&result);
         return;
     }
     if (!keepPolling) {
-        persistRows(&result);
-        emitTerminal(result);
+        finishCycle(&result);
         return;
     }
 
@@ -425,7 +512,7 @@ void BarcodeReaderSdkSource::onPollTimeout()
         result.detail =
             QStringLiteral("扫码结果等待超时（%1 秒）")
                 .arg(m_config.cycleDeadlineMs / 1000);
-        emitTerminal(result);
+        finishCycle(&result);
         return;
     }
 
@@ -442,15 +529,13 @@ void BarcodeReaderSdkSource::onPollTimeout()
                    /*isTriggerReply=*/false)) {
         if (m_poll != nullptr)
             m_poll->stop();
-        persistRows(&result);
-        emitTerminal(result);
+        finishCycle(&result);
         return;
     }
     if (!keepPolling) {
         if (m_poll != nullptr)
             m_poll->stop();
-        persistRows(&result);
-        emitTerminal(result);
+        finishCycle(&result);
         return;
     }
     // Otherwise keep the timer running: pending / busy / a retryable transport
@@ -627,6 +712,83 @@ void BarcodeReaderSdkSource::persistRows(BarcodeResult *result)
         return;
     }
     result->persisted = true;
+}
+
+// Runs the configured program once, with this cycle's barcodes as ONE
+// space-joined argument (user decision 2026-09-23). Everything here is
+// non-blocking except the start and the bounded wait, and both run on the
+// worker thread — never on the UI thread (contract forbidden_change).
+void BarcodeReaderSdkSource::forwardRows(BarcodeResult *result)
+{
+    if (result->decodedCount == 0)
+        return; // nothing decoded: there is nothing to hand downstream
+
+    const QString program = forwardExePath().trimmed();
+    if (program.isEmpty())
+        return; // not configured: neither field claims anything happened
+
+    QString argument;
+    if (!barcodeForwardArgument(result->rows, &argument)) {
+        result->forwardDetail =
+            QStringLiteral("条码含空格，按空格拼接会串位，本轮未外发");
+        return;
+    }
+    if (argument.isEmpty()) {
+        result->forwardDetail = QStringLiteral("本轮无可外发条码");
+        return;
+    }
+    // Check the path ourselves: QProcess would report this as a generic
+    // "failed to start", which is not something the operator can act on.
+    if (!QFileInfo::exists(program)) {
+        result->forwardDetail =
+            QStringLiteral("外发程序不存在：%1").arg(program);
+        return;
+    }
+
+    QProcess process;
+#ifdef _WIN32
+    // Without this every board flashes a console window over the HMI.
+    process.setCreateProcessArgumentsModifier(
+        [](QProcess::CreateProcessArguments *args) {
+            args->flags |= CREATE_NO_WINDOW;
+        });
+#endif
+    // Program and argument are passed separately: no shell is involved, so a
+    // program path containing spaces still works.
+    process.start(program, QStringList{argument});
+    if (!process.waitForStarted(2000)) {
+        result->forwardDetail =
+            QStringLiteral("外发程序无法启动（%1）").arg(process.errorString());
+        return;
+    }
+    if (!process.waitForFinished(m_config.forwardTimeoutMs)) {
+        // A hung program must not hold the cycle open; kill and report.
+        process.kill();
+        process.waitForFinished(1000);
+        result->forwardDetail =
+            QStringLiteral("外发超时（%1 秒）").arg(m_config.forwardTimeoutMs / 1000);
+        return;
+    }
+    if (process.exitStatus() != QProcess::NormalExit) {
+        result->forwardDetail = QStringLiteral("外发程序异常终止");
+        return;
+    }
+    if (process.exitCode() != 0) {
+        result->forwardDetail =
+            QStringLiteral("外发程序返回 %1").arg(process.exitCode());
+        return;
+    }
+    result->forwarded = true;
+}
+
+// The single convergence path for a terminal cycle: file append, then forward,
+// then exactly one terminal result. Keeping the three steps in one place is
+// what stops a future converge site from silently skipping the side effects.
+void BarcodeReaderSdkSource::finishCycle(BarcodeResult *result)
+{
+    persistRows(result);
+    forwardRows(result);
+    emitTerminal(*result);
 }
 
 void BarcodeReaderSdkSource::emitTerminal(const BarcodeResult &result)

@@ -45,6 +45,14 @@ void ShellModel::setCommandPending(Command cmd, bool pending)
     emit stateChanged();
 }
 
+void ShellModel::setScanInProgress(bool inProgress)
+{
+    if (m_scanInProgress == inProgress)
+        return;
+    m_scanInProgress = inProgress;
+    emit stateChanged();
+}
+
 void ShellModel::setOperatorCommandStatus(const OperatorCommandStatus &status)
 {
     m_operatorCommandStatus = status;

@@ -150,6 +150,15 @@ private slots:
     void busyKeepsPollingTheSameRequestId();
     void twoCyclesUseDifferentRequestIds();
     void failedWriteStillShowsTheBarcode();
+    void forwardArgumentJoinsBarcodesInTableOrder();
+    void forwardArgumentRefusesABarcodeContainingASpace();
+    void emptyForwardPathNeverRunsTheProgram();
+    void missingForwardProgramIsAVisibleFailure();
+    void forwardingRunsTheProgramOncePerCycleWithEveryBarcode();
+    void nonZeroExitIsAVisibleFailure();
+    void timeoutKillsTheProgramAndIsAVisibleFailure();
+    void barcodeContainingASpaceIsNotForwardedButIsStillStored();
+    void noCodeCycleDoesNotForward();
     void overlappingCycleIsRejectedNotQueued();
     void sdkCallsRunOffTheCallingThread();
 };
@@ -626,6 +635,351 @@ void BarcodeReaderSdkSourceTest::failedWriteStillShowsTheBarcode()
     QCOMPARE(result.line, QStringLiteral("C3003090^M10^260224^002695"));
     QVERIFY(!result.persisted);
     QVERIFY(!result.persistDetail.isEmpty());
+    source.stop();
+}
+
+void BarcodeReaderSdkSourceTest::forwardArgumentJoinsBarcodesInTableOrder()
+{
+    // The exact join the forward program receives (user decision 2026-09-23):
+    // table order, ONE space between barcodes, empty positions skipped, nothing
+    // added around the whole string. A platform-neutral helper, so this is the
+    // production code path, not a re-implementation.
+    QVector<BarcodeRow> rows;
+    const auto addRow = [&rows](const QString &barcode) {
+        BarcodeRow row;
+        row.barcode = barcode;
+        rows.append(row);
+    };
+    addRow(QStringLiteral("C3003090^M10^260224^002695"));
+    addRow(QString());                       // a looked-at but empty position
+    addRow(QStringLiteral("C3003090^M10^260224^002696"));
+
+    QString argument;
+    QVERIFY(barcodeForwardArgument(rows, &argument));
+    QCOMPARE(argument,
+             QStringLiteral("C3003090^M10^260224^002695 "
+                            "C3003090^M10^260224^002696"));
+
+    // One barcode: no separator, no padding.
+    QVector<BarcodeRow> single;
+    addRow(QStringLiteral("ONLY"));
+    BarcodeRow only;
+    only.barcode = QStringLiteral("ONLY");
+    single.append(only);
+    QVERIFY(barcodeForwardArgument(single, &argument));
+    QCOMPARE(argument, QStringLiteral("ONLY"));
+
+    // Nothing decoded: an empty argument, which the caller treats as "nothing
+    // to forward" rather than starting a program with an empty parameter.
+    QVERIFY(barcodeForwardArgument({}, &argument));
+    QVERIFY(argument.isEmpty());
+}
+
+void BarcodeReaderSdkSourceTest::forwardArgumentRefusesABarcodeContainingASpace()
+{
+    // One space is the separator, so a barcode that itself contains one cannot
+    // be told apart from two barcodes by the receiving program. Refusing is a
+    // visible failure; sending it would corrupt the data silently.
+    QVector<BarcodeRow> rows;
+    BarcodeRow clean;
+    clean.barcode = QStringLiteral("C3003090^M10^260224^002695");
+    BarcodeRow dirty;
+    dirty.barcode = QStringLiteral("BAD CODE");
+    rows.append(clean);
+    rows.append(dirty);
+
+    QString argument;
+    QVERIFY(!barcodeForwardArgument(rows, &argument));
+}
+
+void BarcodeReaderSdkSourceTest::emptyForwardPathNeverRunsTheProgram()
+{
+    // No forward program configured: the step does not run, and the result says
+    // nothing about forwarding at all — claiming either success or failure would
+    // be inventing an outcome for something that never happened.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FakeBarcodeSdk sdk;
+    sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
+    sdk.triggerReplies = {okReply(acceptedJson(QStringLiteral("job-1")))};
+    sdk.resultReplies = {okReply(completedJson(
+        QStringLiteral("job-1"), {QStringLiteral("C3003090^M10^260224^002695")}))};
+
+    BarcodeReaderSdkSource source(&sdk);
+    source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
+    source.start();
+    QSignalSpy spy(&source, &IBarcodeSource::resultReady);
+
+    QVERIFY(source.requestRead());
+    QTRY_COMPARE_WITH_TIMEOUT(spy.size(), 1, 5000);
+    const BarcodeResult result = spy[0][0].value<BarcodeResult>();
+    QCOMPARE(result.state, BarcodeState::Ok);
+    QVERIFY(result.persisted);
+    QVERIFY(!result.forwarded);
+    QVERIFY(result.forwardDetail.isEmpty());
+    source.stop();
+}
+
+void BarcodeReaderSdkSourceTest::missingForwardProgramIsAVisibleFailure()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FakeBarcodeSdk sdk;
+    sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
+    sdk.triggerReplies = {okReply(acceptedJson(QStringLiteral("job-1")))};
+    sdk.resultReplies = {okReply(completedJson(
+        QStringLiteral("job-1"), {QStringLiteral("C3003090^M10^260224^002695")}))};
+
+    BarcodeReaderSdkSource source(&sdk);
+    source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
+    source.setForwardExePath(dir.filePath(QStringLiteral("no-such-program")));
+    source.start();
+    QSignalSpy spy(&source, &IBarcodeSource::resultReady);
+
+    QVERIFY(source.requestRead());
+    QTRY_COMPARE_WITH_TIMEOUT(spy.size(), 1, 5000);
+    const BarcodeResult result = spy[0][0].value<BarcodeResult>();
+    // The barcode is still reported and still stored: a forward failure must
+    // never hide data that was read successfully.
+    QCOMPARE(result.state, BarcodeState::Ok);
+    QVERIFY(result.persisted);
+    QVERIFY(!result.forwarded);
+    QVERIFY(result.forwardDetail.contains(QStringLiteral("外发程序不存在")));
+    source.stop();
+}
+
+void BarcodeReaderSdkSourceTest::forwardingRunsTheProgramOncePerCycleWithEveryBarcode()
+{
+    // A real program, on whichever platform this runs: a shell script that
+    // records its argv verbatim. QProcess is a real process on every platform,
+    // so this exercises the production invocation, path and all.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString output = dir.filePath(QStringLiteral("argv.txt"));
+    const QString program = dir.filePath(QStringLiteral("record-argv.sh"));
+    {
+        QFile script(program);
+        QVERIFY(script.open(QIODevice::WriteOnly));
+        script.write("#!/bin/sh\n");
+        // One line per argument, prefixed with the count on the first line, so
+        // the test can prove BOTH the argument count and the exact text.
+        script.write("echo \"argc=$#\" > \"$OUT\"\n");
+        script.write("for a in \"$@\"; do echo \"$a\" >> \"$OUT\"; done\n");
+        script.close();
+        QVERIFY(script.setPermissions(QFileDevice::ReadOwner
+                                      | QFileDevice::WriteOwner
+                                      | QFileDevice::ExeOwner));
+    }
+    qputenv("OUT", output.toUtf8());
+
+    FakeBarcodeSdk sdk;
+    sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
+    sdk.triggerReplies = {okReply(acceptedJson(QStringLiteral("job-1")))};
+    sdk.resultReplies = {okReply(completedJson(
+        QStringLiteral("job-1"),
+        {QStringLiteral("C3003090^M10^260224^002695"),
+         QStringLiteral("C3003090^M10^260224^002696")}))};
+
+    BarcodeReaderSdkSource source(&sdk);
+    source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
+    source.setForwardExePath(program);
+    source.setForwardExePath(program); // idempotent: the same path twice is fine
+    source.start();
+    QSignalSpy spy(&source, &IBarcodeSource::resultReady);
+
+    QVERIFY(source.requestRead());
+    QTRY_COMPARE_WITH_TIMEOUT(spy.size(), 1, 5000);
+    const BarcodeResult result = spy[0][0].value<BarcodeResult>();
+    QVERIFY2(result.forwarded,
+             qPrintable(QStringLiteral("forward did not succeed: %1")
+                            .arg(result.forwardDetail)));
+    QVERIFY(result.forwardDetail.isEmpty());
+
+    // Exactly ONE argument, carrying both barcodes space-joined in table order.
+    QFile recorded(output);
+    QVERIFY(recorded.open(QIODevice::ReadOnly));
+    const QStringList lines =
+        QString::fromUtf8(recorded.readAll())
+            .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    recorded.close();
+    QCOMPARE(lines.size(), 2);
+    QCOMPARE(lines[0], QStringLiteral("argc=1"));
+    QCOMPARE(lines[1], QStringLiteral("C3003090^M10^260224^002695 "
+                                      "C3003090^M10^260224^002696"));
+    source.stop();
+}
+
+// A cycle that decoded nothing has nothing to hand downstream. Starting the
+// program with an empty argument would look like a board with no barcodes.
+void BarcodeReaderSdkSourceTest::nonZeroExitIsAVisibleFailure()
+{
+    // A program that ran and rejected the data (a failed downstream handover)
+    // must be reported, not silently treated as delivered.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString program = dir.filePath(QStringLiteral("fail.sh"));
+    {
+        QFile script(program);
+        QVERIFY(script.open(QIODevice::WriteOnly));
+        script.write("#!/bin/sh\nexit 3\n");
+        script.close();
+        QVERIFY(script.setPermissions(QFileDevice::ReadOwner
+                                      | QFileDevice::WriteOwner
+                                      | QFileDevice::ExeOwner));
+    }
+
+    FakeBarcodeSdk sdk;
+    sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
+    sdk.triggerReplies = {okReply(acceptedJson(QStringLiteral("job-1")))};
+    sdk.resultReplies = {okReply(completedJson(
+        QStringLiteral("job-1"), {QStringLiteral("C3003090^M10^260224^002695")}))};
+
+    BarcodeReaderSdkSource source(&sdk);
+    source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
+    source.setForwardExePath(program);
+    source.start();
+    QSignalSpy spy(&source, &IBarcodeSource::resultReady);
+
+    QVERIFY(source.requestRead());
+    QTRY_COMPARE_WITH_TIMEOUT(spy.size(), 1, 5000);
+    const BarcodeResult result = spy[0][0].value<BarcodeResult>();
+    QVERIFY(result.persisted);
+    QVERIFY(!result.forwarded);
+    QCOMPARE(result.forwardDetail, QStringLiteral("外发程序返回 3"));
+    source.stop();
+}
+
+void BarcodeReaderSdkSourceTest::timeoutKillsTheProgramAndIsAVisibleFailure()
+{
+    // A hung program must not hold the cycle open forever. The timeout is
+    // injected through Config for the same reason the cycle deadline is: the
+    // production default (10 s) would make this test take ten seconds.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString program = dir.filePath(QStringLiteral("hang.sh"));
+    {
+        QFile script(program);
+        QVERIFY(script.open(QIODevice::WriteOnly));
+        script.write("#!/bin/sh\nsleep 30\n");
+        script.close();
+        QVERIFY(script.setPermissions(QFileDevice::ReadOwner
+                                      | QFileDevice::WriteOwner
+                                      | QFileDevice::ExeOwner));
+    }
+
+    FakeBarcodeSdk sdk;
+    sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
+    sdk.triggerReplies = {okReply(acceptedJson(QStringLiteral("job-1")))};
+    sdk.resultReplies = {okReply(completedJson(
+        QStringLiteral("job-1"), {QStringLiteral("C3003090^M10^260224^002695")}))};
+
+    BarcodeSdkSourceConfig config;
+    config.forwardTimeoutMs = 500;
+    BarcodeReaderSdkSource source(&sdk, config);
+    source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
+    source.setForwardExePath(program);
+    source.start();
+    QSignalSpy spy(&source, &IBarcodeSource::resultReady);
+
+    QVERIFY(source.requestRead());
+    QTRY_COMPARE_WITH_TIMEOUT(spy.size(), 1, 10000);
+    const BarcodeResult result = spy[0][0].value<BarcodeResult>();
+    QVERIFY(result.persisted);
+    QVERIFY(!result.forwarded);
+    // 500 ms / 1000 is 0 whole seconds, so the message reads "外发超时（0 秒）";
+    // the important part is that it says 超时 and the cycle converged.
+    QVERIFY2(result.forwardDetail.contains(QStringLiteral("外发超时")),
+             qPrintable(result.forwardDetail));
+    source.stop();
+}
+
+void BarcodeReaderSdkSourceTest::barcodeContainingASpaceIsNotForwardedButIsStillStored()
+{
+    // The join cannot represent a barcode that contains the separator. Refusing
+    // is visible; sending it would hand the downstream program a value it would
+    // silently split in the wrong place.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString output = dir.filePath(QStringLiteral("argv.txt"));
+    const QString program = dir.filePath(QStringLiteral("record-argv.sh"));
+    {
+        QFile script(program);
+        QVERIFY(script.open(QIODevice::WriteOnly));
+        script.write("#!/bin/sh\necho \"argc=$#\" > \"$OUT\"\n");
+        script.close();
+        QVERIFY(script.setPermissions(QFileDevice::ReadOwner
+                                      | QFileDevice::WriteOwner
+                                      | QFileDevice::ExeOwner));
+    }
+    qputenv("OUT", output.toUtf8());
+
+    FakeBarcodeSdk sdk;
+    sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
+    sdk.triggerReplies = {okReply(acceptedJson(QStringLiteral("job-1")))};
+    sdk.resultReplies = {okReply(completedJson(
+        QStringLiteral("job-1"),
+        {QStringLiteral("C3003090^M10^260224^002695"), QStringLiteral("BAD CODE")}))};
+
+    BarcodeReaderSdkSource source(&sdk);
+    const QString resultPath = dir.filePath(QStringLiteral("Barcode.txt"));
+    source.setResultPath(resultPath);
+    source.setForwardExePath(program);
+    source.start();
+    QSignalSpy spy(&source, &IBarcodeSource::resultReady);
+
+    QVERIFY(source.requestRead());
+    QTRY_COMPARE_WITH_TIMEOUT(spy.size(), 1, 5000);
+    const BarcodeResult result = spy[0][0].value<BarcodeResult>();
+    QVERIFY(!result.forwarded);
+    QVERIFY(result.forwardDetail.contains(QStringLiteral("空格")));
+    // …and both barcodes — including the one that blocked the forward — are
+    // still displayed and still stored.
+    QCOMPARE(result.state, BarcodeState::Ok);
+    QVERIFY(result.persisted);
+    QCOMPARE(resultLines(resultPath),
+             QStringList({QStringLiteral("C3003090^M10^260224^002695"),
+                          QStringLiteral("BAD CODE")}));
+    QVERIFY2(!QFile::exists(output), "the forward program ran despite the "
+                                     "ambiguous join");
+    source.stop();
+}
+
+void BarcodeReaderSdkSourceTest::noCodeCycleDoesNotForward()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString output = dir.filePath(QStringLiteral("argv.txt"));
+    const QString program = dir.filePath(QStringLiteral("record-argv.sh"));
+    {
+        QFile script(program);
+        QVERIFY(script.open(QIODevice::WriteOnly));
+        script.write("#!/bin/sh\necho \"argc=$#\" > \"$OUT\"\n");
+        script.close();
+        QVERIFY(script.setPermissions(QFileDevice::ReadOwner
+                                      | QFileDevice::WriteOwner
+                                      | QFileDevice::ExeOwner));
+    }
+    qputenv("OUT", output.toUtf8());
+
+    FakeBarcodeSdk sdk;
+    sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
+    sdk.triggerReplies = {okReply(acceptedJson(QStringLiteral("job-1")))};
+    sdk.resultReplies = {okReply(completedJson(QStringLiteral("job-1"), {}))};
+
+    BarcodeReaderSdkSource source(&sdk);
+    source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
+    source.setForwardExePath(program);
+    source.start();
+    QSignalSpy spy(&source, &IBarcodeSource::resultReady);
+
+    QVERIFY(source.requestRead());
+    QTRY_COMPARE_WITH_TIMEOUT(spy.size(), 1, 5000);
+    const BarcodeResult result = spy[0][0].value<BarcodeResult>();
+    QCOMPARE(result.state, BarcodeState::NoCode);
+    QVERIFY(!result.forwarded);
+    QVERIFY(result.forwardDetail.isEmpty());
+    QVERIFY2(!QFile::exists(output), "the forward program was started for a "
+                                     "cycle that decoded nothing");
     source.stop();
 }
 

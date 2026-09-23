@@ -278,6 +278,31 @@ QStringList fileLines(const QString &path)
     return text.split(QLatin1String("\r\n"), Qt::SkipEmptyParts);
 }
 
+// Drives the overview page's 扫码服务 block the way an administrator does:
+// type the path, click save, wait for the CONFIRMED echo (never optimistic).
+void saveOverviewPath(StartedApp &rig, bool sdkPath, const QString &path,
+                      const QString &confirmedText)
+{
+    QLineEdit *edit = sdkPath ? rig.overview->sdkPathEdit()
+                              : rig.overview->forwardExePathEdit();
+    PermissionButton *button = sdkPath ? rig.overview->saveSdkPathButton()
+                                       : rig.overview->saveForwardExePathButton();
+    QVERIFY(edit != nullptr);
+    QVERIFY(button != nullptr);
+    QTRY_VERIFY_WITH_TIMEOUT(button->isEnabled(), 5000);
+    edit->setText(path);
+    button->click();
+    const auto statusText = [&]() {
+        return sdkPath ? rig.overview->sdkPathStatusText()
+                       : rig.overview->forwardExePathStatusText();
+    };
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < 5000 && !statusText().contains(confirmedText))
+        QTest::qWait(20);
+    QVERIFY2(statusText().contains(confirmedText), qPrintable(statusText()));
+}
+
 } // namespace
 
 class BarcodeIngestionDeveloperTest : public QObject
@@ -294,6 +319,10 @@ private slots:
     void persistedPathIsRestoredAtStartup();
     void manualScanTriggerDrivesTheWholePath();
     void refusedOverlappingScanIsVisible();
+    void overviewManualButtonDrivesTheWholePathWithoutThePlc();
+    void forwardProgramReceivesTheBarcodesAsOneArgument();
+    void forwardFailureStaysVisibleAndKeepsTheBarcode();
+    void persistedServicePathsAreRestoredAtStartup();
 };
 
 void BarcodeIngestionDeveloperTest::unconfiguredPathStaysNotConfigured()
@@ -542,6 +571,149 @@ void BarcodeIngestionDeveloperTest::refusedOverlappingScanIsVisible()
     rig.sdk.holdResults = nullptr;
     QVERIFY(rig.waitForText(QStringLiteral("002801")));
     QCOMPARE(fileLines(path).size(), 1);
+    rig.shutdown();
+}
+
+// 扫码服务块 (user decision 2026-09-23): the overview page's 采集条码 button
+// drives exactly the same cycle as the PLC's M15 扫码结束 edge — with NO PLC
+// signal at all. This is what makes the scan debuggable on the bench, where the
+// supplied PLC program has no M15 rung yet.
+void BarcodeIngestionDeveloperTest::overviewManualButtonDrivesTheWholePathWithoutThePlc()
+{
+    StartedApp rig;
+    rig.start();
+    rig.advanceUntilOnline();
+    rig.loginAsAdmin();
+
+    const QString path = rig.dir.filePath(QStringLiteral("Barcode.txt"));
+    savePath(rig, path);
+    rig.sdk.nextRows = {QStringLiteral("C3003090^M10^260224^002901"),
+                        QStringLiteral("C3003090^M10^260224^002902")};
+
+    PermissionButton *trigger = rig.overview->scanTriggerButton();
+    QVERIFY(trigger != nullptr);
+    QTRY_VERIFY_WITH_TIMEOUT(trigger->isEnabled(), 5000);
+
+    trigger->click();
+    QVERIFY(rig.waitForText(QStringLiteral("002901")));
+
+    // One cycle, one trigger, and the PLC never raised M15.
+    QCOMPARE(rig.sdk.triggerIds.size(), 1);
+    QVERIFY(!rig.gw->model().readCoil(kM15));
+    QCOMPARE(fileLines(path).size(), 2);
+    // The surface lists both barcodes of the board.
+    QVERIFY(rig.overview->barcodeText().contains(QStringLiteral("002902")));
+    rig.shutdown();
+}
+
+// The forward step (user decision 2026-09-23): after a cycle that decoded
+// barcodes, the configured program runs ONCE with all of them as a single
+// space-joined argument, in table order.
+void BarcodeIngestionDeveloperTest::forwardProgramReceivesTheBarcodesAsOneArgument()
+{
+    StartedApp rig;
+    rig.start();
+    rig.advanceUntilOnline();
+    rig.loginAsAdmin();
+
+    const QString path = rig.dir.filePath(QStringLiteral("Barcode.txt"));
+    savePath(rig, path);
+
+    // A real program: it records its argv so the assertion is on the bytes the
+    // process actually received, not on what the HMI intended to send.
+    const QString output = rig.dir.filePath(QStringLiteral("argv.txt"));
+    const QString program = rig.dir.filePath(QStringLiteral("send.sh"));
+    {
+        QFile script(program);
+        QVERIFY(script.open(QIODevice::WriteOnly));
+        script.write("#!/bin/sh\n");
+        script.write("echo \"argc=$#\" > \"$OUT\"\n");
+        script.write("for a in \"$@\"; do echo \"$a\" >> \"$OUT\"; done\n");
+        script.close();
+        QVERIFY(script.setPermissions(QFileDevice::ReadOwner
+                                      | QFileDevice::WriteOwner
+                                      | QFileDevice::ExeOwner));
+    }
+    qputenv("OUT", output.toUtf8());
+    saveOverviewPath(rig, /*sdkPath=*/false, program,
+                     QStringLiteral("已保存"));
+
+    rig.sdk.nextRows = {QStringLiteral("C3003090^M10^260224^002911"),
+                        QString(),
+                        QStringLiteral("C3003090^M10^260224^002912")};
+    rig.overview->scanTriggerButton()->click();
+    QVERIFY(rig.waitForText(QStringLiteral("002911")));
+    QVERIFY(rig.waitForText(QStringLiteral("已外发")));
+
+    QFile recorded(output);
+    QVERIFY(recorded.open(QIODevice::ReadOnly));
+    const QStringList lines =
+        QString::fromUtf8(recorded.readAll())
+            .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    recorded.close();
+    // ONE argument, both decoded barcodes, the empty position skipped.
+    QCOMPARE(lines.size(), 2);
+    QCOMPARE(lines[0], QStringLiteral("argc=1"));
+    QCOMPARE(lines[1], QStringLiteral("C3003090^M10^260224^002911 "
+                                      "C3003090^M10^260224^002912"));
+    rig.shutdown();
+}
+
+// A forward that fails must not hide the barcode: the code was decoded and
+// stored, so it stays on screen with a separate failure line next to it.
+void BarcodeIngestionDeveloperTest::forwardFailureStaysVisibleAndKeepsTheBarcode()
+{
+    StartedApp rig;
+    rig.start();
+    rig.advanceUntilOnline();
+    rig.loginAsAdmin();
+
+    const QString path = rig.dir.filePath(QStringLiteral("Barcode.txt"));
+    savePath(rig, path);
+    saveOverviewPath(rig, /*sdkPath=*/false,
+                     rig.dir.filePath(QStringLiteral("does-not-exist.exe")),
+                     QStringLiteral("已保存"));
+
+    rig.sdk.nextRows = {QStringLiteral("C3003090^M10^260224^002921")};
+    rig.overview->scanTriggerButton()->click();
+    QVERIFY(rig.waitForText(QStringLiteral("外发失败")));
+
+    const QString text = rig.overview->barcodeText();
+    QVERIFY2(text.contains(QStringLiteral("002921")), qPrintable(text));
+    QVERIFY2(text.contains(QStringLiteral("外发程序不存在")), qPrintable(text));
+    // Stored anyway: a forward failure never costs the traceability record.
+    QCOMPARE(fileLines(path).size(), 1);
+    rig.shutdown();
+}
+
+// Both 扫码服务 paths are persisted settings: they survive a restart and are
+// echoed into the overview block, exactly like the result path.
+void BarcodeIngestionDeveloperTest::persistedServicePathsAreRestoredAtStartup()
+{
+    const QString forwardPath = QStringLiteral("D:/Tools/send.exe");
+    StartedApp rig;
+    rig.start();
+    rig.advanceUntilOnline();
+    rig.loginAsAdmin();
+
+    saveOverviewPath(rig, /*sdkPath=*/true, QStringLiteral("D:/SDK/x64/lib.dll"),
+                     QStringLiteral("已保存"));
+    saveOverviewPath(rig, /*sdkPath=*/false, forwardPath,
+                     QStringLiteral("已保存"));
+    rig.shutdown();
+
+    // Restart against the same database: both 扫码服务 paths must come back, so
+    // the operator never has to retype a deployment path after an update.
+    rig.app.reset(); // the shutdown() in ~StartedApp guards on a live app
+    rig.start();
+    rig.advanceUntilOnline();
+    QTRY_COMPARE_WITH_TIMEOUT(rig.overview->sdkPathEdit()->text(),
+                              QStringLiteral("D:/SDK/x64/lib.dll"), 5000);
+    QCOMPARE(rig.overview->forwardExePathEdit()->text(), forwardPath);
+    // The adapter received them too. (The DLL itself is loaded on the worker
+    // thread at the next cycle; the configured value is recorded at once.)
+    QCOMPARE(rig.source->dllPath(), QStringLiteral("D:/SDK/x64/lib.dll"));
+    QCOMPARE(rig.source->forwardExePath(), forwardPath);
     rig.shutdown();
 }
 

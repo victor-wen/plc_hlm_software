@@ -96,11 +96,17 @@ private:
     void persistSerialSettings(const SerialConnectionSettings &settings);
     void handleSerialSettingsBatchSaved(const SettingsBatchResult &result);
     void handleEnumerationCompleted(const SerialEnumerationResult &result);
-    // 扫码 (user decision 2026-09-22): the result-file path is a persisted
-    // setting; the scan cycle is driven by the PLC's M15 扫码结束 coil, and the
-    // result file is read on the adapter's own worker thread.
+    // 扫码 (user decision 2026-09-22; scan-service block added 2026-09-23): the
+    // result-file path, the vendor library path and the forward-program path are
+    // persisted settings; the scan cycle is driven by the PLC's M15 扫码结束
+    // coil OR by the overview page's manual 采集条码 button.
     void handleBarcodePathSave(const QString &path);
     void handleBarcodePathSaved(bool ok, const QString &error);
+    void handleBarcodeSdkPathSave(const QString &path);
+    void handleBarcodeForwardExePathSave(const QString &path);
+    // Submits one scan cycle on behalf of `source` (M15 扫码结束 or the manual
+    // button). A refused overlap is surfaced visibly, never dropped.
+    void submitScanCycle(const QString &source);
     void handleBarcodeResult(const BarcodeResult &result);
     void failPendingBarcodePathSave(const QString &reason);
     void handleSettingLoaded(const std::optional<SettingRecord> &setting);
@@ -166,14 +172,25 @@ private:
     // Configured result-file path (empty = 未配置). Loaded from app_settings at
     // startup and echoed to the settings page and the overview page.
     QString m_barcodePath;
-    // Single-flight guard for the path save: the DB reports settingSaved()
-    // without echoing a key, so at most one save may be in flight for the
-    // correlation to be unambiguous (contract: never correlate only by FIFO
-    // position when overlapping requests can occur).
+    // 扫码服务块 (user decision 2026-09-23): the vendor library path (empty =
+    // load by name from the executable's directory) and the forward program
+    // path (empty = do not forward).
+    QString m_barcodeSdkPath;
+    QString m_barcodeForwardExePath;
+    // Single-flight guard across ALL three persisted settings: the DB reports
+    // settingSaved() without echoing a key, so at most one save may be in flight
+    // for the correlation to be unambiguous (contract: never correlate only by
+    // FIFO position when overlapping requests can occur). Adding a second
+    // producer is what made this a shared guard rather than a per-setting one.
     bool m_barcodePathSavePending = false;
     // Value being saved (settingSaved() carries no key, so the single in-flight
     // save's value is remembered here to render the confirmed echo).
     QString m_pendingBarcodePath;
+    // Which of the three settings the in-flight save belongs to, so its result
+    // is rendered on the right editor. `PendingSetting` names it; the value
+    // itself is in m_pendingBarcodePath.
+    enum class PendingSetting { None, ResultPath, SdkPath, ForwardExePath };
+    PendingSetting m_pendingSetting = PendingSetting::None;
     // M15 扫码结束 edge detection on the snapshot feed (rising edge only, and
     // only from a fresh snapshot).
     bool m_lastScanComplete = false;

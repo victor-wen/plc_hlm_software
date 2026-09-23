@@ -41,15 +41,21 @@ class QTimer;
 namespace hlm {
 
 // Builds the production SDK façade: on Windows a LoadLibraryW/GetProcAddress
-// wrapper over BarcodeReaderTrigger.dll, elsewhere a stub that reports every
-// call as unavailable. Declared here so the composition root never needs to
-// know which one it got.
-std::unique_ptr<IBarcodeSdk> makeSystemBarcodeSdk();
+// wrapper over the vendor library, elsewhere a stub that reports every call as
+// unavailable. Declared here so the composition root never needs to know which
+// one it got.
+//
+// `dllPath` empty loads the library BY NAME, so Windows searches the running
+// executable's own directory first (the documented deployment). Non-empty loads
+// exactly that file (user decision 2026-09-23: the operator can point the HMI at
+// a DLL kept elsewhere).
+std::unique_ptr<IBarcodeSdk> makeSystemBarcodeSdk(const QString &dllPath = QString());
 
-// Poll cadence and per-cycle budget for one scan cycle. The defaults are the
-// vendor sample's (TriggerClient.cs:62,73). They are injectable so a test can
-// prove the deadline path in milliseconds instead of waiting 35 s — the values
-// are otherwise file-local constants no test can reach.
+// Poll cadence, per-cycle budget and forward-program budget for one scan cycle.
+// The first two defaults are the vendor sample's (TriggerClient.cs:62,73). They
+// are injectable so a test can prove the deadline path in milliseconds instead
+// of waiting 35 s — the values are otherwise file-local constants no test can
+// reach.
 //
 // Declared at namespace scope rather than nested: a nested type's default
 // member initializers may not be used by a default argument of a member
@@ -57,6 +63,10 @@ std::unique_ptr<IBarcodeSdk> makeSystemBarcodeSdk();
 struct BarcodeSdkSourceConfig {
     int pollIntervalMs = 50;
     qint64 cycleDeadlineMs = 35000;
+    // How long the forward program may run before it is killed and the cycle
+    // reports a visible timeout (user decision 2026-09-23). Injectable for the
+    // same reason as the deadline above.
+    qint64 forwardTimeoutMs = 10000;
 };
 
 class BarcodeReaderSdkSource : public IBarcodeSource
@@ -80,6 +90,10 @@ public:
 
     void setResultPath(const QString &path) override;
     QString resultPath() const override;
+    void setDllPath(const QString &path) override;
+    QString dllPath() const override;
+    void setForwardExePath(const QString &path) override;
+    QString forwardExePath() const override;
 
     bool requestRead() override;
     bool cycleInProgress() const override;
@@ -101,6 +115,20 @@ private:
     // Appends one line per decoded barcode to the configured path. Never
     // touches state: a failed write must not hide a decoded barcode.
     void persistRows(BarcodeResult *result);
+    // Runs the configured forward program once for this cycle with the decoded
+    // barcodes as one space-joined argument. Never touches state either: a
+    // failed forward must not hide a barcode that was decoded (and the file
+    // append above has already happened).
+    void forwardRows(BarcodeResult *result);
+    // Rebuilds the owned SDK when setDllPath() changed the path. Runs on the
+    // worker thread at the start of a cycle, so the module is only ever loaded
+    // or unloaded between cycles and never under an in-flight call.
+    void applyPendingDllPath();
+    // The single convergence path for a terminal cycle: append the decoded
+    // barcodes to the file, forward them to the configured program, then emit
+    // exactly one terminal result. Repeating the three steps at every converge
+    // site is what would let one of them be forgotten.
+    void finishCycle(BarcodeResult *result);
     void emitTerminal(const BarcodeResult &result);
     static QString transportReason(BarcodeSdkStatus status);
 
@@ -108,8 +136,11 @@ private:
     std::unique_ptr<IBarcodeSdk> m_ownedSdk;
     Config m_config;
 
-    mutable QMutex m_mutex; // guards m_path / m_cycleInProgress
+    mutable QMutex m_mutex; // guards m_path / m_forwardPath / m_dllPath / flags
     QString m_path;
+    QString m_forwardPath;
+    QString m_dllPath;
+    bool m_sdkPathDirty = false;
     bool m_cycleInProgress = false;
 
     quint64 m_sequence = 0;
