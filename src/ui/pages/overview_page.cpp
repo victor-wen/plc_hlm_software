@@ -514,11 +514,11 @@ void OverviewPage::refresh()
     const QString triggerReason = scanTriggerReasonText();
     m_scanTrigger->setEnabledWithReason(triggerReason.isEmpty(), triggerReason);
     setUnavailableHint(m_scanTrigger, triggerReason.isEmpty(), triggerReason);
-    m_scanTriggerReason->setText(m_barcodeResultSet
-                                     ? QString()
-                                     : QStringLiteral("台架调试用：不依赖 PLC 的 M15 信号，"
-                                                      "直接触发一轮解码"));
-    m_scanTriggerReason->setVisible(!m_barcodeResultSet);
+    // The label next to the button explains what it is for. The disabled REASON
+    // is rendered inside the PermissionButton itself (never tooltip-only), so
+    // the two never compete for the same line.
+    m_scanTriggerReason->setText(QStringLiteral("台架调试用：不依赖 PLC 的 M15 信号，"
+                                                "直接触发一轮解码"));
 
     const QString sdkReason = scanControlReasonText(m_sdkPathSavePending);
     m_saveSdkPath->setEnabledWithReason(sdkReason.isEmpty(), sdkReason);
