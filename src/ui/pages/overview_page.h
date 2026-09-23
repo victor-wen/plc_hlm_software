@@ -9,30 +9,26 @@
 #include "ui/widgets/status_light.h"
 
 class QLabel;
-class QLineEdit;
-class QPushButton;
 class QVBoxLayout;
 
 namespace hlm {
 
 class ValueDisplay;
-class PermissionButton;
 class ShellModel;
 
 // 总览 page (spec §11.3): 关键状态、设备示意、D120 当前步骤、目标/当前宽度、
 // 差值、皮带速度、累计产量、最新报警.
 //
-// Display-only for machine state: it renders exclusively from
-// OverviewModel/ShellModel — every stateChanged() re-renders ALL fields from
+// Strictly read-only: the page declares NO signals and contains no command
+// widgets — it can never emit a write intent. It renders exclusively from
+// OverviewModel/ShellModel: every stateChanged() re-renders ALL fields from
 // the current snapshot (full-snapshot update, no per-field or optimistic
 // updates, spec §9). Stale/invalid fields show "—" (spec §9, §11.2).
 //
-// 扫码服务块 (user decision 2026-09-23): the page additionally carries the scan
-// service controls — a manual 采集条码 trigger, the vendor-library path and the
-// forward-program path. These emit INTENT signals only; none of them is a
-// machine command and none of them writes through Modbus. The page still
-// declares no machine-command signal, and interacting with it still produces no
-// ControlCoordinator command (asserted by the existing page tests).
+// The 扫码服务 controls used to live here; they moved to their own page
+// (user decision 2026-09-23: "条码服务要单独做一栏 … 总体要单独为一页"). What
+// stays is the display-only 条码 line, which the contract requires on the
+// overview surface.
 class OverviewPage : public QWidget
 {
     Q_OBJECT
@@ -52,16 +48,6 @@ public:
     QLabel *barcodePlaceholderLabel() const;
     QString barcodeText() const;
 
-    // --- 扫码服务块 inspection API (user decision 2026-09-23) -----------------
-    PermissionButton *scanTriggerButton() const { return m_scanTrigger; }
-    QString scanTriggerReasonText() const;
-    QLineEdit *sdkPathEdit() const { return m_sdkPathEdit; }
-    PermissionButton *saveSdkPathButton() const { return m_saveSdkPath; }
-    QString sdkPathStatusText() const;
-    QLineEdit *forwardExePathEdit() const { return m_forwardExeEdit; }
-    PermissionButton *saveForwardExePathButton() const { return m_saveForwardExe; }
-    QString forwardExePathStatusText() const;
-
 public slots:
     // Re-renders every field from the model's current snapshot.
     void refresh();
@@ -71,37 +57,13 @@ public slots:
     // a readback, never an optimistic success.
     void setBarcodeResultPath(const QString &path);
     void setBarcodeResult(const BarcodeResult &result);
-    // Persisted deployment paths, echoed from the composition root (user
-    // decision 2026-09-23). Empty means "load by name" / "do not forward".
-    void setSdkPath(const QString &path);
-    void setForwardExePath(const QString &path);
-    // Page-local save handshakes, mirroring the settings page's result-path
-    // editor: never silent, and never optimistic.
-    void setSdkPathSavePending();
-    void setSdkPathSaveResult(bool ok, const QString &detail);
-    void setForwardExePathSavePending();
-    void setForwardExePathSaveResult(bool ok, const QString &detail);
-
-signals:
-    // 扫码服务 intents for the composition root (user decision 2026-09-23).
-    // None of these is a machine command: the scan cycle is driven through
-    // IBarcodeSource and the two paths are persisted settings.
-    void scanTriggerRequested();
-    void sdkPathSaveRequested(const QString &path);
-    void forwardExePathSaveRequested(const QString &path);
 
 private:
     void buildLayout();
-    QWidget *buildScanServiceBlock();
     QWidget *addField(const QString &key, const QString &title);
     // Composes the 条码/扫码 line from the configured path, M11 and the last
     // readback (never claims a connection).
     QString barcodeStatusText() const;
-    // Why a 扫码服务 control is unavailable: empty = available. Only two honest
-    // reasons exist — no permission, or the operation is already in flight.
-    QString scanControlReasonText(bool pending) const;
-    void onSaveSdkPathClicked();
-    void onSaveForwardExePathClicked();
 
     ShellModel &m_model;
     OverviewModel m_pageModel;
@@ -117,18 +79,6 @@ private:
     bool m_barcodeResultSet = false;
     QVector<StatusLight *> m_statusLights; // online, mode, running, fault
     QHash<QString, ValueDisplay *> m_displays;
-
-    // --- 扫码服务块 (user decision 2026-09-23) --------------------------------
-    PermissionButton *m_scanTrigger = nullptr;
-    QLabel *m_scanTriggerReason = nullptr;
-    QLineEdit *m_sdkPathEdit = nullptr;
-    PermissionButton *m_saveSdkPath = nullptr;
-    QLabel *m_sdkPathStatus = nullptr;
-    bool m_sdkPathSavePending = false;
-    QLineEdit *m_forwardExeEdit = nullptr;
-    PermissionButton *m_saveForwardExe = nullptr;
-    QLabel *m_forwardExePathStatus = nullptr;
-    bool m_forwardExePathSavePending = false;
 };
 
 } // namespace hlm

@@ -7,6 +7,7 @@
 #include "ui/shell/action_bar.h"
 #include "ui/pages/overview_page.h"
 #include "ui/pages/recipe_width_page.h"
+#include "ui/pages/scan_service_page.h"
 #include "ui/pages/manual_control_page.h"
 #include "ui/pages/alarm_page.h"
 #include "ui/pages/audit_log_page.h"
@@ -106,7 +107,7 @@ void MainWindow::buildLayout()
 
 void MainWindow::createPages()
 {
-    // Order must match NavPanel's 7 items (spec §11.1, §11.3). Each page lives
+    // Order must match NavPanel's 8 items (spec §11.1, §11.3). Each page lives
     // inside a widget-resizable QScrollArea so a page taller/wider than the
     // presented envelope scrolls instead of forcing a minimum window size
     // (F-02/NF-01 responsive envelope, PLC-HMI-006 D1/D2). Pages must not
@@ -124,6 +125,10 @@ void MainWindow::createPages()
     m_pages->addWidget(wrapPageInScrollArea(new AuditLogPage(this)));
     m_pages->addWidget(wrapPageInScrollArea(new DiagnosticsPage(*m_model, this)));
     m_pages->addWidget(wrapPageInScrollArea(new UsersSettingsPage(*m_model, this)));
+    // 扫码服务 (user decision 2026-09-23: "条码服务要单独做一栏 … 总体要单独为
+    // 一页"). Appended LAST so every existing page keeps its stack index — the
+    // restricted-mode and first-run flows route to 用户与设置 by index.
+    m_pages->addWidget(wrapPageInScrollArea(new ScanServicePage(*m_model, this)));
 }
 
 QScrollArea *MainWindow::wrapPageInScrollArea(QWidget *page)

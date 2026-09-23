@@ -57,6 +57,10 @@ inline const char *kProbeExitEnv = "HLM_FORWARD_PROBE_EXIT";
 // Milliseconds the child sleeps before exiting (default 0). Used to prove the
 // adapter's timeout kills a hung program instead of waiting forever.
 inline const char *kProbeSleepEnv = "HLM_FORWARD_PROBE_SLEEP_MS";
+// Text the child prints on stdout before exiting. Used when the child stands in
+// for the vendor's scanner CLI (trigger_client.exe), whose JSON reply is read
+// from stdout rather than from a return buffer.
+inline const char *kProbeStdoutEnv = "HLM_FORWARD_PROBE_STDOUT";
 
 // True when this process was started as the forward program rather than as the
 // test runner. Checked before any test object exists, so the child never runs
@@ -65,11 +69,12 @@ inline bool forwardProbeRequested()
 {
     return !qEnvironmentVariable(kProbeOutEnv).isEmpty()
         || !qEnvironmentVariable(kProbeExitEnv).isEmpty()
-        || !qEnvironmentVariable(kProbeSleepEnv).isEmpty();
+        || !qEnvironmentVariable(kProbeSleepEnv).isEmpty()
+        || !qEnvironmentVariable(kProbeStdoutEnv).isEmpty();
 }
 
-// The child's whole behaviour: record argv, optionally hang, then exit with the
-// requested code. Never returns to the test runner.
+// The child's whole behaviour: record argv, optionally print a payload, hang,
+// then exit with the requested code. Never returns to the test runner.
 inline int runForwardProbe()
 {
     const QString out = qEnvironmentVariable(kProbeOutEnv);
@@ -83,6 +88,11 @@ inline int runForwardProbe()
             for (const QString &argument : arguments)
                 file.write(argument.toUtf8() + "\n");
         }
+    }
+    const QByteArray payload = qEnvironmentVariable(kProbeStdoutEnv).toUtf8();
+    if (!payload.isEmpty()) {
+        fwrite(payload.constData(), 1, size_t(payload.size()), stdout);
+        fflush(stdout);
     }
     const int sleepMs = qEnvironmentVariableIntValue(kProbeSleepEnv);
     if (sleepMs > 0)

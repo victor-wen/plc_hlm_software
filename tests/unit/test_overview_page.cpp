@@ -19,7 +19,6 @@
 #include "ui/pages/overview_model.h"
 #include "ui/pages/overview_page.h"
 #include "ui/widgets/value_display.h"
-#include "ui/widgets/permission_button.h"
 #include "ui/MainWindow.h"
 
 using namespace hlm;
@@ -83,9 +82,8 @@ private slots:
     // --- 条码/扫码 status line (user decision 2026-09-22) ----------------------
     void barcodeStatusLineFollowsPathAndResult();
 
-    // --- read-only machine state; 扫码服务 intents only (user decision
-    //     2026-09-23, which narrowed pageDeclaresNoSignals) ---------------------
-    void pageDeclaresNoMachineCommandSignals();
+    // --- read-only page (no write intents) ------------------------------------
+    void pageDeclaresNoSignals();
     void pageNeverSendsWriteIntents();
 
     // --- MainWindow integration ------------------------------------------------
@@ -375,44 +373,26 @@ void OverviewPageTest::barcodeStatusLineFollowsPathAndResult()
     QVERIFY(!page.barcodeText().contains(QStringLiteral("已连接")));
 }
 
-// --- read-only machine state; 扫码服务 intents only -----------------------------
+// --- read-only page (no write intents) -----------------------------------------
 
-void OverviewPageTest::pageDeclaresNoMachineCommandSignals()
+void OverviewPageTest::pageDeclaresNoSignals()
 {
-    // Narrowed 2026-09-23 (user decision: 扫码服务块 on the overview page).
+    // The 总览 page is read-only (spec §11.3): it must not declare any signal
+    // that could carry a write intent. Slots (refresh) are fine.
     //
-    // The original invariant was "the 总览 page declares NO signals at all"
-    // (spec §11.3, 只读页面). The user then asked for a scan-service block on
-    // this page: a manual 采集条码 trigger plus two persisted deployment paths.
-    // Those are real intents, so the page now declares exactly three signals —
-    // and this case pins the part of the old invariant that still matters:
-    //
-    //   the page declares NO MACHINE COMMAND signal. It can never carry a
-    //   ControlCoordinator command (start/stop/reset/home/adjust/mode), no
-    //   Modbus write and no PLC address. Scan and settings intents are not
-    //   machine state and are routed to IBarcodeSource / the settings store.
-    const QStringList permitted{
-        QStringLiteral("scanTriggerRequested()"),
-        QStringLiteral("sdkPathSaveRequested(QString)"),
-        QStringLiteral("forwardExePathSaveRequested(QString)"),
-    };
+    // This invariant was briefly narrowed on 2026-09-23 when the scan-service
+    // controls sat on this page; they now have their own page (扫码服务), so the
+    // original, stricter form is back — and it is the one worth keeping, because
+    // it is the page's whole contract.
     const QMetaObject *mo = &OverviewPage::staticMetaObject;
     for (int i = QWidget::staticMetaObject.methodCount();
          i < mo->methodCount(); ++i) {
         const QMetaMethod m = mo->method(i);
-        if (m.methodType() != QMetaMethod::Signal)
-            continue;
-        QVERIFY2(permitted.contains(QString::fromLatin1(m.methodSignature())),
-                 qPrintable(QStringLiteral("OverviewPage declares a signal outside "
-                                           "the approved 扫码服务 intent set: %1")
+        QVERIFY2(m.methodType() != QMetaMethod::Signal,
+                 qPrintable(QStringLiteral("OverviewPage must not declare "
+                                          "signals, found: %1")
                                 .arg(m.methodSignature())));
     }
-    // The three approved intents must actually exist, so this stays a
-    // whitelist of a real surface rather than an empty one.
-    for (const QString &signature : permitted)
-        QVERIFY2(mo->indexOfSignal(signature.toLatin1().constData()) >= 0,
-                 qPrintable(QStringLiteral("missing approved intent %1")
-                                .arg(signature)));
 }
 
 void OverviewPageTest::pageNeverSendsWriteIntents()
@@ -427,11 +407,7 @@ void OverviewPageTest::pageNeverSendsWriteIntents()
     OverviewPage *page = w.findChild<OverviewPage *>();
     QVERIFY(page != nullptr);
 
-    // Click every child widget of the page. The 扫码服务 intent signals are
-    // watched here too: none of them may turn into a MainWindow command.
-    QSignalSpy scanSpy(page, &OverviewPage::scanTriggerRequested);
-    QSignalSpy sdkSpy(page, &OverviewPage::sdkPathSaveRequested);
-    QSignalSpy forwardSpy(page, &OverviewPage::forwardExePathSaveRequested);
+    // Click every child widget of the page.
     const QList<QWidget *> children = page->findChildren<QWidget *>();
     for (QWidget *child : children)
         clickAt(child);
@@ -446,30 +422,6 @@ void OverviewPageTest::pageNeverSendsWriteIntents()
     QCOMPARE(cmdSpy.count(), 0);
     QCOMPARE(modeSpy.count(), 0);
     QVERIFY(!model->hasPendingCommands());
-    // The blind click ran as an anonymous user, so the 扫码服务 controls were
-    // disabled and produced nothing at all — a control that acts without
-    // permission would show up right here.
-    QCOMPARE(scanSpy.count(), 0);
-    QCOMPARE(sdkSpy.count(), 0);
-    QCOMPARE(forwardSpy.count(), 0);
-
-    // 扫码服务块 (user decision 2026-09-23): as an administrator with no cycle
-    // running the manual 采集条码 control IS live — and clicking it must emit
-    // exactly the page's own scan intent and still no MainWindow command, so the
-    // page can never drive the PLC through it.
-    QVERIFY(page->scanTriggerButton() != nullptr);
-    QVERIFY2(page->scanTriggerButton()->isEnabled(),
-             qPrintable(QStringLiteral("the manual trigger is disabled for an "
-                                       "administrator outside a running cycle; "
-                                       "reason='%1'")
-                            .arg(page->scanTriggerReasonText())));
-    page->scanTriggerButton()->click();
-    QApplication::processEvents();
-    QCOMPARE(scanSpy.count(), 1);
-    QCOMPARE(cmdSpy.count(), 0);
-    QCOMPARE(modeSpy.count(), 0);
-    QVERIFY(!model->hasPendingCommands());
-
     // The page still renders the snapshot inside the real shell.
     QCOMPARE(page->fieldDisplay(QStringLiteral("step"))->text(),
              QStringLiteral("2"));

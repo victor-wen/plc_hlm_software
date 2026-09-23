@@ -63,6 +63,7 @@ class AlarmPage;
 class AuditLogPage;
 class DiagnosticsPage;
 class OverviewPage;
+class ScanServicePage;
 
 class Application : public QObject
 {
@@ -96,10 +97,10 @@ private:
     void persistSerialSettings(const SerialConnectionSettings &settings);
     void handleSerialSettingsBatchSaved(const SettingsBatchResult &result);
     void handleEnumerationCompleted(const SerialEnumerationResult &result);
-    // 扫码 (user decision 2026-09-22; scan-service block added 2026-09-23): the
-    // result-file path, the vendor library path and the forward-program path are
+    // 扫码 (user decision 2026-09-22; its own page added 2026-09-23): the
+    // result-file path, the scanner program path and the forward-program path are
     // persisted settings; the scan cycle is driven by the PLC's M15 扫码结束
-    // coil OR by the overview page's manual 采集条码 button.
+    // coil, and the 扫码服务 page's 采集条码 button exists for bench work.
     void handleBarcodePathSave(const QString &path);
     void handleBarcodePathSaved(bool ok, const QString &error);
     void handleBarcodeSdkPathSave(const QString &path);
@@ -150,6 +151,7 @@ private:
     AuditLogPage *m_auditPage = nullptr;
     DiagnosticsPage *m_diagPage = nullptr;
     OverviewPage *m_overviewPage = nullptr;
+    ScanServicePage *m_scanPage = nullptr;
 
     // Current session user id (for D204 re-verification, spec §11.3).
     qint64 m_currentUserId = -1;

@@ -104,6 +104,12 @@ public:
     bool requestRead() override;
     bool cycleInProgress() const override;
 
+    // The operator-facing reason for a transport status. Public because it is
+    // the single place that decides what a failure MEANS to the operator, and
+    // the tests pin each wording: "the scan program is closed" and "the scanner
+    // CLI could not be started" are different problems with different fixes.
+    static QString transportReason(BarcodeSdkStatus status);
+
 private slots:
     // Runs on the worker thread: begins one cycle.
     void performCycle();
@@ -136,7 +142,6 @@ private:
     // site is what would let one of them be forgotten.
     void finishCycle(BarcodeResult *result);
     void emitTerminal(const BarcodeResult &result);
-    static QString transportReason(BarcodeSdkStatus status);
 
     IBarcodeSdk *m_sdk = nullptr;
     std::unique_ptr<IBarcodeSdk> m_ownedSdk;
@@ -150,6 +155,9 @@ private:
     bool m_cycleInProgress = false;
 
     quint64 m_sequence = 0;
+    // Monotonic suffix for the timestamp request id (see makeRequestId): makes
+    // two cycles in the same millisecond still get distinct ids.
+    quint64 m_idSequence = 0;
     QString m_requestId;
     QString m_serverId;
     QElapsedTimer *m_deadline = nullptr;

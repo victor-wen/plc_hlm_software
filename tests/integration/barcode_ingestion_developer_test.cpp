@@ -39,6 +39,7 @@
 #include "ui/MainWindow.h"
 #include "ui/pages/manual_control_page.h"
 #include "ui/pages/overview_page.h"
+#include "ui/pages/scan_service_page.h"
 #include "ui/pages/users_settings_page.h"
 #include "ui/widgets/permission_button.h"
 #include "forward_probe.h"
@@ -58,7 +59,7 @@ public:
     BarcodeSdkReply status() override
     {
         if (!available) {
-            return {BarcodeSdkStatus::LibraryUnavailable, QByteArray()};
+            return down();
         }
         ++statusCalls;
         return {BarcodeSdkStatus::Ok,
@@ -69,7 +70,7 @@ public:
     BarcodeSdkReply trigger(const QString &requestId) override
     {
         if (!available) {
-            return {BarcodeSdkStatus::LibraryUnavailable, QByteArray()};
+            return down();
         }
         triggerIds.append(requestId);
         return {BarcodeSdkStatus::Ok,
@@ -82,7 +83,7 @@ public:
     BarcodeSdkReply result(const QString &requestId) override
     {
         if (!available) {
-            return {BarcodeSdkStatus::LibraryUnavailable, QByteArray()};
+            return down();
         }
         // A test can park the cycle here to hold one open across a second M15
         // edge. The wait is bounded so a failing assertion can never leave the
@@ -106,6 +107,14 @@ public:
     QStringList resultIds;
 
 private:
+    // The CLI transport reports "scan program closed" as BR_NOT_CONNECTED
+    // (exit 2), not as a missing program — that is what the real
+    // trigger_client.exe does when the pipe has no server at the other end.
+    BarcodeSdkReply down() const
+    {
+        return {BarcodeSdkStatus::NotConnected, QByteArray()};
+    }
+
     QByteArray completedJson(const QString &requestId) const
     {
         QStringList rows;
@@ -137,6 +146,7 @@ struct StartedApp
     SimulatedPlcGateway *gw = nullptr;
     OverviewPage *overview = nullptr;
     UsersSettingsPage *settings = nullptr;
+    ScanServicePage *scanPage = nullptr;
 
     StartedApp()
     {
@@ -166,6 +176,7 @@ struct StartedApp
         gw = qobject_cast<SimulatedPlcGateway *>(app->gateway());
         overview = app->window()->findChild<OverviewPage *>();
         settings = app->window()->findChild<UsersSettingsPage *>();
+        scanPage = app->window()->findChild<ScanServicePage *>();
     }
 
     ~StartedApp()
@@ -284,18 +295,18 @@ QStringList fileLines(const QString &path)
 void saveOverviewPath(StartedApp &rig, bool sdkPath, const QString &path,
                       const QString &confirmedText)
 {
-    QLineEdit *edit = sdkPath ? rig.overview->sdkPathEdit()
-                              : rig.overview->forwardExePathEdit();
-    PermissionButton *button = sdkPath ? rig.overview->saveSdkPathButton()
-                                       : rig.overview->saveForwardExePathButton();
+    QLineEdit *edit = sdkPath ? rig.scanPage->scanProgramEdit()
+                              : rig.scanPage->forwardProgramEdit();
+    PermissionButton *button = sdkPath ? rig.scanPage->saveScanProgramButton()
+                                       : rig.scanPage->saveForwardProgramButton();
     QVERIFY(edit != nullptr);
     QVERIFY(button != nullptr);
     QTRY_VERIFY_WITH_TIMEOUT(button->isEnabled(), 5000);
     edit->setText(path);
     button->click();
     const auto statusText = [&]() {
-        return sdkPath ? rig.overview->sdkPathStatusText()
-                       : rig.overview->forwardExePathStatusText();
+        return sdkPath ? rig.scanPage->scanProgramStatusText()
+                       : rig.scanPage->forwardProgramStatusText();
     };
     QElapsedTimer timer;
     timer.start();
@@ -592,7 +603,7 @@ void BarcodeIngestionDeveloperTest::overviewManualButtonDrivesTheWholePathWithou
     rig.sdk.nextRows = {QStringLiteral("C3003090^M10^260224^002901"),
                         QStringLiteral("C3003090^M10^260224^002902")};
 
-    PermissionButton *trigger = rig.overview->scanTriggerButton();
+    PermissionButton *trigger = rig.scanPage->collectButton();
     QVERIFY(trigger != nullptr);
     QTRY_VERIFY_WITH_TIMEOUT(trigger->isEnabled(), 5000);
 
@@ -633,7 +644,7 @@ void BarcodeIngestionDeveloperTest::forwardProgramReceivesEveryBarcodeAsItsOwnAr
     rig.sdk.nextRows = {QStringLiteral("C3003090^M10^260224^002911"),
                         QString(),
                         QStringLiteral("C3003090^M10^260224^002912")};
-    rig.overview->scanTriggerButton()->click();
+    rig.scanPage->collectButton()->click();
     QVERIFY(rig.waitForText(QStringLiteral("002911")));
     QVERIFY(rig.waitForText(QStringLiteral("已外发")));
 
@@ -687,7 +698,7 @@ void BarcodeIngestionDeveloperTest::forwardFailureStaysVisibleAndKeepsTheBarcode
                      QStringLiteral("已保存"));
 
     rig.sdk.nextRows = {QStringLiteral("C3003090^M10^260224^002921")};
-    rig.overview->scanTriggerButton()->click();
+    rig.scanPage->collectButton()->click();
     QVERIFY(rig.waitForText(QStringLiteral("外发失败")));
 
     const QString text = rig.overview->barcodeText();
@@ -719,9 +730,9 @@ void BarcodeIngestionDeveloperTest::persistedServicePathsAreRestoredAtStartup()
     rig.app.reset(); // the shutdown() in ~StartedApp guards on a live app
     rig.start();
     rig.advanceUntilOnline();
-    QTRY_COMPARE_WITH_TIMEOUT(rig.overview->sdkPathEdit()->text(),
+    QTRY_COMPARE_WITH_TIMEOUT(rig.scanPage->scanProgramEdit()->text(),
                               QStringLiteral("D:/SDK/x64/lib.dll"), 5000);
-    QCOMPARE(rig.overview->forwardExePathEdit()->text(), forwardPath);
+    QCOMPARE(rig.scanPage->forwardProgramEdit()->text(), forwardPath);
     // The adapter received them too. (The DLL itself is loaded on the worker
     // thread at the next cycle; the configured value is recorded at once.)
     QCOMPARE(rig.source->dllPath(), QStringLiteral("D:/SDK/x64/lib.dll"));

@@ -30,6 +30,7 @@
 #include "ui/pages/manual_control_page.h"
 #include "ui/pages/overview_page.h"
 #include "ui/pages/recipe_width_page.h"
+#include "ui/pages/scan_service_page.h"
 #include "ui/pages/users_settings_page.h"
 #include "ui/shell/shell_model.h"
 
@@ -139,6 +140,7 @@ void Application::createObjects()
     m_auditPage = m_window->findChild<AuditLogPage *>();
     m_diagPage = m_window->findChild<DiagnosticsPage *>();
     m_overviewPage = m_window->findChild<OverviewPage *>();
+    m_scanPage = m_window->findChild<ScanServicePage *>();
 
     // Passive serial discovery (spec §8.1, C-11): the configuration carries
     // only the port pointer; the real adapter is composed here unless an
@@ -351,13 +353,13 @@ void Application::wireSignals()
             &Application::handleD204Write);
     connect(m_usersPage, &UsersSettingsPage::saveBarcodePathRequested, this,
             &Application::handleBarcodePathSave);
-    // 扫码服务块 (user decision 2026-09-23): the manual trigger and the two
-    // deployment paths live on the overview page.
-    connect(m_overviewPage, &OverviewPage::scanTriggerRequested, this,
+    // 扫码服务 page (user decision 2026-09-23): the manual trigger and the two
+    // deployment paths live there.
+    connect(m_scanPage, &ScanServicePage::collectRequested, this,
             [this]() { submitScanCycle(QStringLiteral("手动采集")); });
-    connect(m_overviewPage, &OverviewPage::sdkPathSaveRequested, this,
+    connect(m_scanPage, &ScanServicePage::scanProgramSaveRequested, this,
             &Application::handleBarcodeSdkPathSave);
-    connect(m_overviewPage, &OverviewPage::forwardExePathSaveRequested, this,
+    connect(m_scanPage, &ScanServicePage::forwardProgramSaveRequested, this,
             &Application::handleBarcodeForwardExePathSave);
     connect(m_barcodeSource, &IBarcodeSource::resultReady, this,
             &Application::handleBarcodeResult);
@@ -781,10 +783,13 @@ void Application::handleSettingLoaded(const std::optional<SettingRecord> &settin
             if (m_barcodeSource != nullptr)
                 m_barcodeSource->setResultPath(m_barcodePath);
             m_usersPage->setBarcodeResultPath(m_barcodePath);
-            // The overview surface must reflect a persisted path at startup,
-            // not only after the first scan cycle.
+            // Both surfaces must reflect a persisted path at startup, not only
+            // after the first scan cycle (the overview line and the service
+            // page's "结果文件：" echo).
             if (m_overviewPage != nullptr)
                 m_overviewPage->setBarcodeResultPath(m_barcodePath);
+            if (m_scanPage != nullptr)
+                m_scanPage->setResultPath(m_barcodePath);
         } else if (key == QString::fromLatin1(kBarcodeSdkPath)) {
             // 扫码库路径 (user decision 2026-09-23): empty keeps the documented
             // "load by name from the executable's directory" behaviour.
@@ -792,7 +797,7 @@ void Application::handleSettingLoaded(const std::optional<SettingRecord> &settin
             if (m_barcodeSource != nullptr)
                 m_barcodeSource->setDllPath(m_barcodeSdkPath);
             if (m_overviewPage != nullptr)
-                m_overviewPage->setSdkPath(m_barcodeSdkPath);
+                m_scanPage->setScanProgramPath(m_barcodeSdkPath);
         } else if (key == QString::fromLatin1(kBarcodeForwardExePath)) {
             // 外发程序路径 (user decision 2026-09-23): empty means the outbound
             // step does not run at all, which the page states visibly.
@@ -800,7 +805,7 @@ void Application::handleSettingLoaded(const std::optional<SettingRecord> &settin
             if (m_barcodeSource != nullptr)
                 m_barcodeSource->setForwardExePath(m_barcodeForwardExePath);
             if (m_overviewPage != nullptr)
-                m_overviewPage->setForwardExePath(m_barcodeForwardExePath);
+                m_scanPage->setForwardProgramPath(m_barcodeForwardExePath);
         } else if (key == QString::fromLatin1(kSerialComPort)) {
             m_loadedSerialCfg.port_name = value;
         } else if (key == QString::fromLatin1(kSerialStation)) {
@@ -1121,20 +1126,22 @@ void Application::handleBarcodePathSave(const QString &path)
     // three is ever in flight.
 void Application::handleBarcodeSdkPathSave(const QString &path)
 {
+    if (m_scanPage == nullptr)
+        return;
     if (m_lifecycle != nullptr
         && !m_lifecycle->commandAllowed(Command::ParameterChange)) {
-        m_overviewPage->setSdkPathSaveResult(
+        m_scanPage->setScanProgramSaveResult(
             false, m_lifecycle->commandRejectionReason());
         return;
     }
     if (m_barcodePathSavePending) {
-        m_overviewPage->setSdkPathSaveResult(
+        m_scanPage->setScanProgramSaveResult(
             false, QStringLiteral("已有保存请求正在处理中，本次请求未提交"));
         return;
     }
     const QString trimmed = path.trimmed();
     if (trimmed.contains(QLatin1Char('\n')) || trimmed.contains(QLatin1Char('\r'))) {
-        m_overviewPage->setSdkPathSaveResult(
+        m_scanPage->setScanProgramSaveResult(
             false, QStringLiteral("路径不能包含换行符"));
         return;
     }
@@ -1158,20 +1165,22 @@ void Application::handleBarcodeSdkPathSave(const QString &path)
 
 void Application::handleBarcodeForwardExePathSave(const QString &path)
 {
+    if (m_scanPage == nullptr)
+        return;
     if (m_lifecycle != nullptr
         && !m_lifecycle->commandAllowed(Command::ParameterChange)) {
-        m_overviewPage->setForwardExePathSaveResult(
+        m_scanPage->setForwardProgramSaveResult(
             false, m_lifecycle->commandRejectionReason());
         return;
     }
     if (m_barcodePathSavePending) {
-        m_overviewPage->setForwardExePathSaveResult(
+        m_scanPage->setForwardProgramSaveResult(
             false, QStringLiteral("已有保存请求正在处理中，本次请求未提交"));
         return;
     }
     const QString trimmed = path.trimmed();
     if (trimmed.contains(QLatin1Char('\n')) || trimmed.contains(QLatin1Char('\r'))) {
-        m_overviewPage->setForwardExePathSaveResult(
+        m_scanPage->setForwardProgramSaveResult(
             false, QStringLiteral("路径不能包含换行符"));
         return;
     }
@@ -1203,10 +1212,10 @@ void Application::handleBarcodePathSaved(bool ok, const QString &error)
             error.isEmpty() ? QStringLiteral("保存失败") : error;
         switch (pendingSetting) {
         case PendingSetting::SdkPath:
-            m_overviewPage->setSdkPathSaveResult(false, reason);
+            m_scanPage->setScanProgramSaveResult(false, reason);
             break;
         case PendingSetting::ForwardExePath:
-            m_overviewPage->setForwardExePathSaveResult(false, reason);
+            m_scanPage->setForwardProgramSaveResult(false, reason);
             break;
         case PendingSetting::ResultPath:
         case PendingSetting::None:
@@ -1222,15 +1231,15 @@ void Application::handleBarcodePathSaved(bool ok, const QString &error)
         m_barcodeSdkPath = m_pendingBarcodePath;
         if (m_barcodeSource != nullptr)
             m_barcodeSource->setDllPath(m_barcodeSdkPath);
-        m_overviewPage->setSdkPath(m_barcodeSdkPath);
-        m_overviewPage->setSdkPathSaveResult(true, QString());
+        m_scanPage->setScanProgramPath(m_barcodeSdkPath);
+        m_scanPage->setScanProgramSaveResult(true, QString());
         break;
     case PendingSetting::ForwardExePath:
         m_barcodeForwardExePath = m_pendingBarcodePath;
         if (m_barcodeSource != nullptr)
             m_barcodeSource->setForwardExePath(m_barcodeForwardExePath);
-        m_overviewPage->setForwardExePath(m_barcodeForwardExePath);
-        m_overviewPage->setForwardExePathSaveResult(true, QString());
+        m_scanPage->setForwardProgramPath(m_barcodeForwardExePath);
+        m_scanPage->setForwardProgramSaveResult(true, QString());
         break;
     case PendingSetting::ResultPath:
     case PendingSetting::None:
@@ -1260,10 +1269,10 @@ void Application::failPendingBarcodePathSave(const QString &reason)
     m_pendingBarcodePath.clear();
     switch (pendingSetting) {
     case PendingSetting::SdkPath:
-        m_overviewPage->setSdkPathSaveResult(false, reason);
+        m_scanPage->setScanProgramSaveResult(false, reason);
         break;
     case PendingSetting::ForwardExePath:
-        m_overviewPage->setForwardExePathSaveResult(false, reason);
+        m_scanPage->setForwardProgramSaveResult(false, reason);
         break;
     case PendingSetting::ResultPath:
     case PendingSetting::None:
@@ -1297,6 +1306,10 @@ void Application::submitScanCycle(const QString &source)
     // value that never existed.
     if (m_overviewPage != nullptr)
         m_overviewPage->setBarcodeResult(refused);
+    // The service page owns the per-position display, so the refusal has to
+    // land there too — that is the surface the operator is watching.
+    if (m_scanPage != nullptr)
+        m_scanPage->setBarcodeResult(refused);
 }
 
 void Application::handleBarcodeResult(const BarcodeResult &result)
@@ -1310,6 +1323,8 @@ void Application::handleBarcodeResult(const BarcodeResult &result)
     m_shell->setScanInProgress(false);
     if (m_overviewPage != nullptr)
         m_overviewPage->setBarcodeResult(result);
+    if (m_scanPage != nullptr)
+        m_scanPage->setBarcodeResult(result);
 }
 
 void Application::handleSubmissionCompleted(const SubmissionCompletion &completion)

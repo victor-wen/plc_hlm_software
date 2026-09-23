@@ -776,8 +776,8 @@ void FullFlowTest::mainWindowOffscreenShell()
     w.show();
     QApplication::processEvents();
 
-    // 7 nav items (spec §11.1).
-    QCOMPARE(w.navItemCount(), 7);
+    // 8 nav items (spec §11.1 + 扫码服务, user decision 2026-09-23).
+    QCOMPARE(w.navItemCount(), 8);
 
     // Page switch clears hold intents (spec §10.7).
     HoldButton held(QStringLiteral("点动"));

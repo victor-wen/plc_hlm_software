@@ -28,6 +28,8 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QDateTime>
+#include <QSet>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QThread>
@@ -149,6 +151,7 @@ private slots:
     void emptyPositionsAreCountedAndNeverWritten();
     void completedCycleWithoutAnyBarcodeIsNoCode();
     void absentSdkConvergesToTheOperatorReason();
+    void missingScannerProgramIsItsOwnActionableReason();
     void rejectedTriggerCarriesTheBusinessReason();
     void serverRestartNeverTrustsTheResult();
     void truncatedResultIsAFailureNotNoCode();
@@ -157,6 +160,7 @@ private slots:
     void busyTriggerIsTerminalBecauseNothingWasAccepted();
     void busyKeepsPollingTheSameRequestId();
     void twoCyclesUseDifferentRequestIds();
+    void requestIdIsATimestampThatNeverRepeats();
     void failedWriteStillShowsTheBarcode();
     void forwardArgumentKeepsOnePerBarcodeInTableOrder();
     void forwardArgumentRefusesATabOrNewline();
@@ -169,6 +173,15 @@ private slots:
     void noCodeCycleDoesNotForward();
     void overlappingCycleIsRejectedNotQueued();
     void sdkCallsRunOffTheCallingThread();
+
+    // --- the production CLI transport (user decision 2026-09-23) ---------------
+    // These drive makeSystemBarcodeSdk() — the object the shipped HMI actually
+    // uses — with this test binary standing in for trigger_client.exe.
+    void cliReadsTheJsonReplyFromStdout();
+    void cliExitCodeIsTheTransportStatus();
+    void cliPassesEndpointCommandAndRequestId();
+    void cliMissingProgramIsItsOwnActionableReason();
+    void cliTimeoutKillsTheWedgedProgram();
 };
 
 void BarcodeReaderSdkSourceTest::paddedReplyBufferYieldsExactlyThePayload()
@@ -347,7 +360,11 @@ void BarcodeReaderSdkSourceTest::absentSdkConvergesToTheOperatorReason()
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     FakeBarcodeSdk sdk;
-    sdk.statusReplies = {{BarcodeSdkStatus::LibraryUnavailable, QByteArray()}};
+    // The scanner program is closed. Over the CLI transport that is
+    // BR_NOT_CONNECTED (2) — the CLI reaches the pipe, finds nobody home, and
+    // exits 2 — not ProgramUnavailable, which now means the CLI itself could not
+    // be started at all.
+    sdk.statusReplies = {{BarcodeSdkStatus::NotConnected, QByteArray()}};
 
     BarcodeReaderSdkSource source(&sdk);
     source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
@@ -361,6 +378,29 @@ void BarcodeReaderSdkSourceTest::absentSdkConvergesToTheOperatorReason()
     // The operator gets something actionable, not a status code.
     QVERIFY(result.detail.contains(QStringLiteral("扫码服务未启动")));
     QVERIFY(result.detail.contains(QStringLiteral("BarcodeReader")));
+    source.stop();
+}
+
+void BarcodeReaderSdkSourceTest::missingScannerProgramIsItsOwnActionableReason()
+{
+    // ProgramUnavailable is the DEPLOYMENT failure — the configured CLI is
+    // missing or not executable — and must not be reported as "start the scan
+    // program", which would send the operator to the wrong fix.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FakeBarcodeSdk sdk;
+    sdk.statusReplies = {{BarcodeSdkStatus::ProgramUnavailable, QByteArray()}};
+
+    BarcodeReaderSdkSource source(&sdk);
+    source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
+    source.start();
+    QSignalSpy spy(&source, &IBarcodeSource::resultReady);
+
+    QVERIFY(source.requestRead());
+    QTRY_COMPARE_WITH_TIMEOUT(spy.size(), 1, 5000);
+    const BarcodeResult result = spy[0][0].value<BarcodeResult>();
+    QCOMPARE(result.state, BarcodeState::Failed);
+    QVERIFY(result.detail.contains(QStringLiteral("扫码程序无法启动")));
     source.stop();
 }
 
@@ -613,6 +653,59 @@ void BarcodeReaderSdkSourceTest::twoCyclesUseDifferentRequestIds()
     // Both cycles appended their own line.
     QCOMPARE(resultLines(path).size(), 2);
     source.stop();
+}
+
+void BarcodeReaderSdkSourceTest::requestIdIsATimestampThatNeverRepeats()
+{
+    // USER DECISION 2026-09-23: the request id is a TIMESTAMP the operator can
+    // read (yyyyMMddHHmmsszzz), not an opaque UUID — the same id shows up in the
+    // scanner program's own logs, so a cycle can be traced by eye.
+    //
+    // It must also never repeat. The SDK answers a repeated id from its
+    // 64-entry cache with the PREVIOUS result, so a collision would hand the
+    // operator the last board's barcodes as if they were this board's. The
+    // millisecond field plus a monotonic suffix make that impossible even for
+    // two cycles inside one millisecond — which is why this drives many cycles
+    // back to back rather than two.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FakeBarcodeSdk sdk;
+    sdk.statusReplies = {okReply(statusJson(QStringLiteral("server-1")))};
+
+    BarcodeReaderSdkSource source(&sdk);
+    source.setResultPath(dir.filePath(QStringLiteral("Barcode.txt")));
+    source.start();
+    QSignalSpy spy(&source, &IBarcodeSource::resultReady);
+
+    constexpr int kCycles = 8;
+    for (int cycle = 0; cycle < kCycles; ++cycle) {
+        sdk.triggerReplies = {okReply(acceptedJson(QStringLiteral("placeholder")))};
+        sdk.resultReplies = {okReply(completedJson(
+            QStringLiteral("placeholder"),
+            {QStringLiteral("C3003090^M10^260224^002%1").arg(cycle)}))};
+        const int before = spy.size();
+        QVERIFY(source.requestRead());
+        QTRY_VERIFY_WITH_TIMEOUT(spy.size() > before, 5000);
+    }
+    source.stop();
+
+    QCOMPARE(sdk.triggerIds.size(), kCycles);
+    QSet<QString> unique;
+    for (const QString &id : sdk.triggerIds) {
+        unique.insert(id);
+        // The vendor's charset (README_CN.md:105) and length cap.
+        QVERIFY(id.size() <= 64);
+        for (const QChar c : id) {
+            QVERIFY2(c.isLetterOrNumber() || c == QLatin1Char('-')
+                         || c == QLatin1Char('_'),
+                     qPrintable(QStringLiteral("illegal character in id '%1'").arg(id)));
+        }
+        // A readable timestamp: yyyyMMddHHmmss + milliseconds + '-' + sequence.
+        QVERIFY2(id.size() >= 17, qPrintable(id));
+        QVERIFY2(id.left(8) == QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd")),
+                 qPrintable(QStringLiteral("id '%1' is not a date").arg(id)));
+    }
+    QCOMPARE(unique.size(), kCycles);
 }
 
 void BarcodeReaderSdkSourceTest::failedWriteStillShowsTheBarcode()
@@ -1058,6 +1151,128 @@ void BarcodeReaderSdkSourceTest::sdkCallsRunOffTheCallingThread()
     QCOMPARE(sdk.statusThread, sdk.triggerThread);
     QCOMPARE(sdk.statusThread, sdk.resultThread);
     source.stop();
+}
+
+// The production CLI transport (user decision 2026-09-23). These call
+// makeSystemBarcodeSdk() directly — the very object the shipped HMI builds —
+// with this test binary standing in for the vendor's trigger_client.exe, so
+// what is exercised is the production process invocation, not a fake.
+void BarcodeReaderSdkSourceTest::cliReadsTheJsonReplyFromStdout()
+{
+    hlm_test::ForwardProbe probe(QDir::tempPath());
+    const QByteArray reply = R"({"ok":true,"code":"completed","decodedCount":6})";
+    qputenv(hlm_test::kProbeStdoutEnv, reply);
+
+    std::unique_ptr<IBarcodeSdk> sdk = makeSystemBarcodeSdk(hlm_test::probeProgramPath());
+    QVERIFY(sdk != nullptr);
+    const BarcodeSdkReply status = sdk->status();
+    QCOMPARE(status.status, BarcodeSdkStatus::Ok);
+    QCOMPARE(status.json, reply);
+
+    const BarcodeSdkReply result = sdk->result(QStringLiteral("20260923103040123-1"));
+    QCOMPARE(result.status, BarcodeSdkStatus::Ok);
+    QCOMPARE(result.json, reply);
+
+    const BarcodeSdkReply triggered = sdk->trigger(QStringLiteral("20260923103040123-1"));
+    QCOMPARE(triggered.status, BarcodeSdkStatus::Ok);
+    QCOMPARE(triggered.json, reply);
+
+    // argv: [endpoint, command] or [endpoint, command, requestId].
+    const QStringList arguments = probe.arguments();
+    QCOMPARE(arguments.size(), 3);
+    QCOMPARE(arguments.at(0), QStringLiteral("BarcodeReader.Trigger.v1"));
+    QCOMPARE(arguments.at(1), QStringLiteral("trigger"));
+    QCOMPARE(arguments.at(2), QStringLiteral("20260923103040123-1"));
+
+    // A CLI moved or renamed since it was configured: its own actionable reason,
+    // NOT "start the scan program", which would send the operator to the wrong
+    // fix.
+    std::unique_ptr<IBarcodeSdk> gone =
+        makeSystemBarcodeSdk(QDir::tempPath() + QStringLiteral("/no-such-scanner.exe"));
+    QCOMPARE(gone->status().status, BarcodeSdkStatus::ProgramUnavailable);
+}
+
+void BarcodeReaderSdkSourceTest::cliExitCodeIsTheTransportStatus()
+{
+    // example_c.c returns the BR_* code, so the CLI's exit status IS the
+    // transport status — the two error channels never overlap and no stdout
+    // parsing is needed for failures.
+    hlm_test::ForwardProbe probe(QDir::tempPath());
+    probe.exitWith(2); // BR_NOT_CONNECTED: the scan program is closed
+
+    std::unique_ptr<IBarcodeSdk> sdk = makeSystemBarcodeSdk(hlm_test::probeProgramPath());
+    const BarcodeSdkReply reply = sdk->status();
+    QCOMPARE(reply.status, BarcodeSdkStatus::NotConnected);
+    QVERIFY(reply.json.isEmpty());
+    QCOMPARE(BarcodeReaderSdkSource::transportReason(reply.status),
+             QStringLiteral("扫码服务未启动，请先打开 BarcodeReader 并点击运行"));
+}
+
+void BarcodeReaderSdkSourceTest::cliPassesEndpointCommandAndRequestId()
+{
+    hlm_test::ForwardProbe probe(QDir::tempPath());
+
+    std::unique_ptr<IBarcodeSdk> sdk = makeSystemBarcodeSdk(hlm_test::probeProgramPath());
+    const QString id = QStringLiteral("20260923103040123-7");
+
+    // `status` takes no request id; `trigger`/`result` take exactly that id and
+    // keep it identical across calls — the SDK dedups by id, so a changed id
+    // would be a different job.
+    QVERIFY(sdk->status().json.isEmpty() || true);
+    QStringList arguments = probe.arguments();
+    QCOMPARE(arguments,
+             QStringList({QStringLiteral("BarcodeReader.Trigger.v1"),
+                          QStringLiteral("status")}));
+
+    sdk->trigger(id);
+    arguments = probe.arguments();
+    QCOMPARE(arguments,
+             QStringList({QStringLiteral("BarcodeReader.Trigger.v1"),
+                          QStringLiteral("trigger"), id}));
+
+    sdk->result(id);
+    arguments = probe.arguments();
+    QCOMPARE(arguments,
+             QStringList({QStringLiteral("BarcodeReader.Trigger.v1"),
+                          QStringLiteral("result"), id}));
+}
+
+void BarcodeReaderSdkSourceTest::cliMissingProgramIsItsOwnActionableReason()
+{
+    std::unique_ptr<IBarcodeSdk> sdk =
+        makeSystemBarcodeSdk(QDir::tempPath() + QStringLiteral("/no-such-scanner.exe"));
+    const BarcodeSdkReply reply = sdk->status();
+    QCOMPARE(reply.status, BarcodeSdkStatus::ProgramUnavailable);
+    QCOMPARE(BarcodeReaderSdkSource::transportReason(reply.status),
+             QStringLiteral("扫码程序无法启动，请检查扫码程序路径"));
+    // The same reply for every command: a deployment problem is not per-command.
+    QCOMPARE(sdk->trigger(QStringLiteral("id")).status, BarcodeSdkStatus::ProgramUnavailable);
+    QCOMPARE(sdk->result(QStringLiteral("id")).status, BarcodeSdkStatus::ProgramUnavailable);
+}
+
+void BarcodeReaderSdkSourceTest::cliTimeoutKillsTheWedgedProgram()
+{
+    // A wedged scan program must not hold the HMI's cycle open. The timeout is
+    // the adapter's own kCallTimeoutMs (3 s), and the probe hangs for far longer,
+    // so the elapsed time is the proof the process was killed rather than waited
+    // out. The decode itself is NOT cancelled: the cycle keeps querying the SAME
+    // request id, which is what the vendor documents for a timeout.
+    hlm_test::ForwardProbe probe(QDir::tempPath());
+    probe.hangFor(30000);
+
+    std::unique_ptr<IBarcodeSdk> sdk = makeSystemBarcodeSdk(hlm_test::probeProgramPath());
+    QElapsedTimer timer;
+    timer.start();
+    const BarcodeSdkReply reply = sdk->status();
+    const qint64 elapsed = timer.elapsed();
+
+    QCOMPARE(reply.status, BarcodeSdkStatus::Timeout);
+    QVERIFY2(elapsed < 15000,
+             qPrintable(QStringLiteral("waited %1 ms for a program that asked for "
+                                       "30 s").arg(elapsed)));
+    QVERIFY2(elapsed >= 2000,
+             qPrintable(QStringLiteral("returned after %1 ms, so the call budget "
+                                       "was not applied at all").arg(elapsed)));
 }
 
 // A hand-written main instead of QTEST_MAIN so the binary can also act as the

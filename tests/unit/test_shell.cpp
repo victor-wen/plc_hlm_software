@@ -135,7 +135,7 @@ private slots:
     void modelFlagsUseOwningBlockOnly();
 
     // --- MainWindow navigation ----------------------------------------------
-    void navigationHasSevenItems();
+    void navigationHasEightItems();
     void navigationSwitchesPages();
     void navigationUpdatesVisiblePageTitle();
     void navigationClearsHoldIntents();
@@ -311,10 +311,12 @@ void ShellTest::modelFlagsUseOwningBlockOnly()
 
 // --- MainWindow navigation ---------------------------------------------------
 
-void ShellTest::navigationHasSevenItems()
+void ShellTest::navigationHasEightItems()
 {
+    // 7 production pages + 扫码服务 (user decision 2026-09-23: the scan service
+    // gets its own page rather than a block on 总览).
     MainWindow w;
-    QCOMPARE(w.navItemCount(), 7);
+    QCOMPARE(w.navItemCount(), 8);
 }
 
 void ShellTest::navigationSwitchesPages()

@@ -1,20 +1,27 @@
 #pragma once
 
 // The vendor BarcodeReader Trigger SDK, reduced to the calls this HMI makes and
-// expressed as a plain C++ interface (user decision 2026-09-22).
+// expressed as a plain C++ interface.
 //
-// WHY A FACADE: the SDK is a Windows named-pipe DLL loaded with
-// LoadLibraryW/GetProcAddress. Everything platform-specific stays in the
-// production implementation inside barcode_reader_sdk_source.cpp, and tests
-// inject a fake, so the adapter's whole cycle — trigger, poll, parse, persist,
-// converge — is exercisable on the Linux dev loop with no DLL present. This
-// mirrors how hlm_vision isolates OpenCV; the vendor handle is explicitly a
-// forbidden field on the public port (IBarcodeSource), so it never leaks out.
+// WHY A FACADE: everything vendor-specific stays behind this interface, so the
+// adapter's whole cycle — trigger, poll, parse, persist, forward, converge — is
+// exercisable on the Linux dev loop with no vendor binary present, and tests
+// inject a fake. The vendor handle is a forbidden field on the public port
+// (IBarcodeSource), so it never leaks out.
+//
+// TRANSPORT (user decision 2026-09-23): the production implementation drives
+// the vendor's own CLI, `trigger_client.exe`, instead of loading
+// `BarcodeReaderTrigger.dll` in-process. The DLL route failed in the field for
+// reasons the operator could not diagnose, while the CLI is the exact thing
+// that already worked on that machine — so the HMI runs what the operator runs
+// and reads its stdout. Two further consequences, both good: the CLI's exit
+// code IS the BR_* transport code (example_c.c returns `rc`), and the
+// implementation is plain QProcess, so it is the same code on every platform
+// and no `#ifdef _WIN32` is needed.
 //
 // Reference: 需求/扫码相关/BarcodeReader_TriggerSDK_1.1.0_20260911_BarcodeRead/
-// (README_CN.md, BarcodeReaderTrigger.h). Do not re-derive the protocol here —
-// that header is the authority and this facade mirrors three of its six
-// exports.
+// (README_CN.md:114-138 is the CLI's documented usage, example_c.c is its
+// source). Do not re-derive the protocol here — those files are the authority.
 
 #include <QByteArray>
 #include <QString>
@@ -33,33 +40,37 @@ enum class BarcodeSdkStatus : int {
     NotConnected = 2,   // app not running / not authorised / endpoint missing
     Timeout = 3,        // does NOT cancel an accepted decode
     IoError = 4,
-    BufferTooSmall = 5, // retry with the size reported in requiredBytes
+    BufferTooSmall = 5, // the CLI never reports this; kept so the enum mirrors the header
     ResponseTooLarge = 6,
-    // Not an SDK code: this adapter could not load the DLL at all (missing,
-    // wrong bitness, blocked). Callers treat it exactly like NotConnected —
-    // the operator-facing reason is the same "start the scan program" one.
-    LibraryUnavailable = 100,
+    // Not an SDK code: the scanner program could not be started at all
+    // (missing, not executable, blocked). Callers treat it exactly like
+    // NotConnected — the operator-facing reason is the same "start the scan
+    // program" one.
+    ProgramUnavailable = 100,
 };
 
 // One call's outcome: the transport status plus the raw UTF-8 JSON body.
 struct BarcodeSdkReply {
-    BarcodeSdkStatus status = BarcodeSdkStatus::LibraryUnavailable;
+    BarcodeSdkStatus status = BarcodeSdkStatus::ProgramUnavailable;
     QByteArray json;
 };
 
 // Cuts the JSON payload out of an SDK response buffer.
 //
-// The SDK writes its JSON at the front of a caller-provided buffer and leaves
-// the rest as it found it, so the buffer is NUL-PADDED. Handing the whole thing
-// to QJsonDocument fails with GarbageAtEnd: Qt's parser does not treat NUL as
-// whitespace, so it stops at the first NUL and then reports that the document
-// did not end there. The payload is `requiredBytes - 1` bytes (requiredBytes
-// includes the NUL — README_CN.md:28).
+// Cuts the JSON payload out of an in-process SDK response buffer.
 //
-// This is deliberately platform-neutral and NOT inside the #ifdef: a fake SDK
-// returns exactly the JSON with no padding, so without a shared, testable
-// helper the DLL-less Linux dev loop can never catch a padding mistake — and
-// the only place it bites is real Windows hardware.
+// Kept because the vendor DLL writes its JSON at the front of a caller-provided
+// buffer and leaves the rest as it found it, so that buffer is NUL-PADDED, and
+// handing the whole thing to QJsonDocument fails with GarbageAtEnd: Qt's parser
+// does not treat NUL as whitespace, so it stops at the first NUL and then
+// reports that the document did not end there. The payload is
+// `requiredBytes - 1` bytes (requiredBytes includes the NUL — README_CN.md:28).
+//
+// The production transport no longer goes through that buffer (it runs the
+// vendor CLI and reads stdout, which `puts()` terminates cleanly), so nothing
+// calls this today. It stays as the documented shape of the DLL contract and as
+// the helper any future in-process transport must use — the failure it prevents
+// is invisible to a fake that returns an exactly-sized QByteArray.
 QByteArray barcodePayloadFromBuffer(const QByteArray &raw, quint32 requiredBytes);
 
 // Collects one cycle's decoded barcodes into the argument list the forward
@@ -87,13 +98,13 @@ class IBarcodeSdk
 public:
     virtual ~IBarcodeSdk() = default;
 
-    // BR_GetStatusW: project / running / busy / ready / serverId.
+    // `status`: project / running / busy / ready / serverId.
     virtual BarcodeSdkReply status() = 0;
-    // BR_TriggerW: submit one decode for `requestId`; replies accepted/pending,
-    // or the remembered outcome of a repeated request id.
+    // `trigger`: submit one decode for `requestId`; replies accepted/pending, or
+    // the remembered outcome of a repeated request id.
     virtual BarcodeSdkReply trigger(const QString &requestId) = 0;
-    // BR_GetResultW: the outcome of that same request id. It never triggers a
-    // new decode, so polling with the SAME id is always safe.
+    // `result`: the outcome of that same request id. It never triggers a new
+    // decode, so polling with the SAME id is always safe.
     virtual BarcodeSdkReply result(const QString &requestId) = 0;
 };
 

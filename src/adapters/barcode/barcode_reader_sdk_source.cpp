@@ -23,27 +23,41 @@ namespace hlm {
 
 namespace {
 
-// Vendor-recommended response buffer (README_CN.md:28): 1 MiB + 1. The SDK's
-// requiredBytes includes the trailing NUL.
-constexpr int kResponseCapacity = 1024 * 1024 + 1;
-// The SDK blocks in the calling thread; its own C/C++ examples pass 2000 ms.
-constexpr unsigned int kCallTimeoutMs = 2000;
 // Largest response this adapter will parse (matches the sample's MaxJsonLength).
 constexpr qint64 kMaxJsonBytes = 1024 * 1024;
+// How long one CLI invocation may take before it is killed and reported as a
+// transport timeout. The vendor's own examples pass 2000 ms to the DLL and the
+// CLI inherits that budget; the extra second covers process start-up on a busy
+// shop-floor machine.
+constexpr qint64 kCallTimeoutMs = 3000;
 
 // BR_* transport return codes this adapter reasons about (BarcodeReaderTrigger.h).
 // BR_OK is transport success only; the JSON's ok/code/state decides the business
-// outcome. The other codes only travel through as BarcodeSdkStatus.
+// outcome. The other codes only travel through as BarcodeSdkStatus, and the
+// whole range is what the CLI can legally exit with.
 constexpr int kBrOk = 0;
-constexpr int kBrBufferTooSmall = 5;
+constexpr int kBrResponseTooLarge = 6;
 
-// The SDK requires 1..64 ASCII letters/digits/_/- (README_CN.md:105), and the
-// vendor recommends a GUID: the server dedups repeats within its 64-entry
-// cache, so an id reused across a restart would be answered from the previous
-// run's result. A UUID makes that impossible rather than merely unlikely.
-QString makeRequestId()
+// A unique request id for one scan cycle. The SDK accepts 1..64 ASCII
+// letters/digits/_/- (README_CN.md:105) and the server dedups repeats within its
+// 64-entry cache, so the id must not be reused across cycles OR across runs.
+//
+// USER DECISION 2026-09-23: this is a TIMESTAMP — `yyyyMMddHHmmsszzz`
+// (millisecond precision, e.g. 20260923103040123). The operator asked for a
+// timestamp rather than an opaque UUID because it is readable: the same id shows
+// up in the scanner program's own logs, so a cycle can be traced by eye.
+//
+// The millisecond field is load-bearing, not decoration. A cycle can finish in
+// ~2 ms (the observed bench timing) while a second-triggered cycle would land in
+// the same second; two cycles sharing an id would make the server answer the
+// second trigger from its cache with the FIRST board's barcodes. Milliseconds
+// make that a 1-in-1000 collision instead of a 1-in-1 one, and the sequence
+// suffix below removes it entirely for two cycles inside the SAME millisecond.
+QString makeRequestId(quint64 sequence)
 {
-    return QUuid::createUuid().toString(QUuid::WithoutBraces).remove(QLatin1Char('-'));
+    const QString stamp =
+        QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMddHHmmsszzz"));
+    return QStringLiteral("%1-%2").arg(stamp).arg(sequence);
 }
 
 QString businessCodeReason(const QString &code)
@@ -129,167 +143,126 @@ bool barcodeForwardArguments(const QVector<BarcodeRow> &rows,
     return true;
 }
 
-#ifdef _WIN32
-
-namespace {
-
-using StatusFn = int (*)(const wchar_t *, char *, unsigned int,
-                         unsigned int *, unsigned int);
-using IdFn = int (*)(const wchar_t *, const char *, char *, unsigned int,
-                     unsigned int *, unsigned int);
-
-// Production façade over the real DLL (README_CN.md:131 sanctions
-// LoadLibraryW/GetProcAddress; the exports are undecorated __cdecl).
+// Production transport: the vendor's own CLI, run as a child process
+// (user decision 2026-09-23).
 //
-// The DLL is loaded BY NAME so Windows searches the running executable's own
-// directory first — deployment is "put BarcodeReaderTrigger.dll next to
-// hlm_app.exe". A missing DLL (or a wrong-bitness one, which fails the export
-// lookup) is a LibraryUnavailable reply, never silence.
-class WindowsBarcodeSdk : public IBarcodeSdk
+// WHY NOT THE DLL: loading BarcodeReaderTrigger.dll in-process failed on the
+// operator's machine for reasons the HMI could not diagnose, while
+// `trigger_client.exe` — the vendor's own reference client, built from
+// example_c.c — is the exact command that machine had already run by hand. So
+// the HMI runs what the operator runs and reads its stdout. Same code on every
+// platform, no FreeLibrary/reload machinery, and the program the operator can
+// test from a cmd prompt is the program the HMI drives.
+//
+// The CLI's shape (README_CN.md:134-138, example_c.c):
+//   trigger_client.exe <endpoint> status|barcodes|trigger|result [requestId]
+// It prints the UTF-8 JSON response on stdout and returns the BR_* transport
+// code as its exit status — so a non-zero exit IS the transport failure, and the
+// two error channels do not overlap. The endpoint may be the empty string, which
+// selects the default BarcodeReader.Trigger.v1 (BarcodeReaderTrigger.h:26), so
+// the operator never has to know that name.
+class BarcodeCliClient : public IBarcodeSdk
 {
 public:
-    explicit WindowsBarcodeSdk(const QString &dllPath)
+    BarcodeCliClient(QString program, qint64 callTimeoutMs)
+        : m_program(std::move(program))
+        , m_callTimeoutMs(callTimeoutMs)
     {
-        // Empty → load BY NAME, so Windows searches the running executable's
-        // own directory first ("put BarcodeReaderTrigger.dll next to
-        // hlm_app.exe"). Non-empty → load exactly that file, because the
-        // operator pointed at a DLL kept elsewhere (user decision 2026-09-23).
-        // A missing DLL (or a wrong-bitness one, which fails the export lookup)
-        // is a LibraryUnavailable reply, never silence.
-        const QString native = QDir::toNativeSeparators(dllPath.trimmed());
-        m_module = native.isEmpty()
-            ? ::LoadLibraryW(L"BarcodeReaderTrigger.dll")
-            : ::LoadLibraryW(reinterpret_cast<const wchar_t *>(native.utf16()));
-        if (m_module == nullptr)
-            return; // LibraryUnavailable for every call
-        m_status = reinterpret_cast<StatusFn>(
-            ::GetProcAddress(m_module, "BR_GetStatusW"));
-        m_trigger = reinterpret_cast<IdFn>(
-            ::GetProcAddress(m_module, "BR_TriggerW"));
-        m_result = reinterpret_cast<IdFn>(
-            ::GetProcAddress(m_module, "BR_GetResultW"));
-        if (m_status == nullptr || m_trigger == nullptr || m_result == nullptr) {
-            ::FreeLibrary(m_module);
-            m_module = nullptr;
-        }
-    }
-
-    ~WindowsBarcodeSdk() override
-    {
-        if (m_module != nullptr)
-            ::FreeLibrary(m_module);
     }
 
     BarcodeSdkReply status() override
     {
-        if (m_status == nullptr)
-            return unavailable();
-        QByteArray buffer(kResponseCapacity, '\0');
-        unsigned int required = 0;
-        const int rc = m_status(nullptr, buffer.data(),
-                                static_cast<unsigned int>(buffer.size()),
-                                &required, kCallTimeoutMs);
-        return replyFrom(static_cast<BarcodeSdkStatus>(rc), buffer, required);
+        return run(QStringLiteral("status"), QString());
     }
-
     BarcodeSdkReply trigger(const QString &requestId) override
     {
-        return callWithId(m_trigger, requestId);
+        return run(QStringLiteral("trigger"), requestId);
     }
     BarcodeSdkReply result(const QString &requestId) override
     {
-        return callWithId(m_result, requestId);
+        return run(QStringLiteral("result"), requestId);
     }
 
 private:
-    static BarcodeSdkReply unavailable()
+    BarcodeSdkReply run(const QString &command, const QString &requestId)
     {
-        BarcodeSdkReply out;
-        out.status = BarcodeSdkStatus::LibraryUnavailable;
-        return out;
-    }
-
-    // A transport failure carries no payload; a success carries exactly the
-    // payload the SDK reported, never the whole NUL-padded buffer.
-    static BarcodeSdkReply replyFrom(BarcodeSdkStatus status,
-                                     const QByteArray &buffer, unsigned int required)
-    {
-        BarcodeSdkReply out;
-        out.status = status;
-        if (status == BarcodeSdkStatus::Ok)
-            out.json = barcodePayloadFromBuffer(buffer, required);
-        return out;
-    }
-
-    BarcodeSdkReply callWithId(IdFn fn, const QString &requestId)
-    {
-        if (fn == nullptr)
-            return unavailable();
-        const QByteArray id = requestId.toUtf8();
-        QByteArray buffer(kResponseCapacity, '\0');
-        for (int attempt = 0; attempt < 2; ++attempt) {
-            unsigned int required = 0;
-            const int rc = fn(nullptr, id.constData(), buffer.data(),
-                              static_cast<unsigned int>(buffer.size()),
-                              &required, kCallTimeoutMs);
-            if (rc == kBrOk) {
-                return replyFrom(BarcodeSdkStatus::Ok, buffer, required);
-            }
-            if (rc == kBrBufferTooSmall && attempt == 0 && required > 0) {
-                // The reported size is the caller's grow-and-retry signal.
-                buffer = QByteArray(static_cast<int>(required), '\0');
-                continue;
-            }
+        // Checked here as well as in setDllPath() so an injected path that never
+        // passed through the setter still gets an actionable reason rather than
+        // QProcess's generic "failed to start".
+        if (m_program.trimmed().isEmpty() || !QFileInfo::exists(m_program)) {
             BarcodeSdkReply out;
-            out.status = static_cast<BarcodeSdkStatus>(rc);
+            out.status = BarcodeSdkStatus::ProgramUnavailable;
+            return out;
+        }
+        QStringList arguments;
+        // The endpoint is passed EXPLICITLY. The C example treats an empty
+        // argument as L"" (not NULL), and only NULL is documented to select the
+        // default endpoint — so an empty string is a needless bet. This literal
+        // is the vendor's default endpoint name (BarcodeReaderTrigger.h:26) and
+        // the exact spelling the operator's own command line uses.
+        arguments << QStringLiteral("BarcodeReader.Trigger.v1") << command;
+        if (!requestId.isEmpty())
+            arguments << requestId;
+
+        QProcess process;
+#ifdef _WIN32
+        // Without this every cycle flashes a console window over the HMI.
+        process.setCreateProcessArgumentsModifier(
+            [](QProcess::CreateProcessArguments *args) {
+                args->flags |= CREATE_NO_WINDOW;
+            });
+#endif
+        // The program and every argument are passed separately: no shell is
+        // involved, so a path containing spaces still works and no value is
+        // ever re-parsed as command-line syntax.
+        process.start(m_program, arguments);
+        if (!process.waitForStarted(5000)) {
+            BarcodeSdkReply out;
+            out.status = BarcodeSdkStatus::ProgramUnavailable;
+            return out;
+        }
+        if (!process.waitForFinished(static_cast<int>(m_callTimeoutMs))) {
+            // A wedged CLI must not hold the cycle open. The decode it may have
+            // started is NOT cancelled: the cycle keeps querying the SAME
+            // request id, which is exactly the documented recovery.
+            process.kill();
+            process.waitForFinished(1000);
+            BarcodeSdkReply out;
+            out.status = BarcodeSdkStatus::Timeout;
             return out;
         }
         BarcodeSdkReply out;
-        out.status = BarcodeSdkStatus::BufferTooSmall;
+        if (process.exitStatus() != QProcess::NormalExit) {
+            // Killed by a signal / terminated abnormally: no transport code to
+            // read, and the call did not complete.
+            out.status = BarcodeSdkStatus::Timeout;
+            return out;
+        }
+        const int code = process.exitCode();
+        if (code < 0 || code > kBrResponseTooLarge) {
+            // Not a BR_* code at all (a crash, a wrapper's own exit code):
+            // treat it as "could not talk to the scanner program".
+            out.status = BarcodeSdkStatus::ProgramUnavailable;
+            return out;
+        }
+        out.status = static_cast<BarcodeSdkStatus>(code);
+        if (out.status == BarcodeSdkStatus::Ok) {
+            // `puts(response)` ends the JSON with one newline and nothing else,
+            // so stdout is the payload. Trim defensively anyway: a future CLI
+            // that adds CRLF must not turn into "every reply failed to parse".
+            out.json = process.readAllStandardOutput().trimmed();
+        }
         return out;
     }
 
-    HMODULE m_module = nullptr;
-    StatusFn m_status = nullptr;
-    IdFn m_trigger = nullptr;
-    IdFn m_result = nullptr;
+    QString m_program;
+    qint64 m_callTimeoutMs = 2000;
 };
-
-} // namespace
 
 std::unique_ptr<IBarcodeSdk> makeSystemBarcodeSdk(const QString &dllPath)
 {
-    return std::make_unique<WindowsBarcodeSdk>(dllPath);
+    return std::make_unique<BarcodeCliClient>(dllPath, kCallTimeoutMs);
 }
-
-#else // !_WIN32
-
-// Linux dev loop: the SDK is a Windows named-pipe DLL, so every call reports
-// the same "not available" status. Every test injects a fake instead, so this
-// only ever shows up when someone runs the app on a non-Windows host — where
-// the operator-facing text still tells them to start the scan program.
-std::unique_ptr<IBarcodeSdk> makeSystemBarcodeSdk(const QString &)
-{
-    class UnavailableBarcodeSdk : public IBarcodeSdk
-    {
-    public:
-        BarcodeSdkReply status() override
-        {
-            return {BarcodeSdkStatus::LibraryUnavailable, QByteArray()};
-        }
-        BarcodeSdkReply trigger(const QString &) override
-        {
-            return {BarcodeSdkStatus::LibraryUnavailable, QByteArray()};
-        }
-        BarcodeSdkReply result(const QString &) override
-        {
-            return {BarcodeSdkStatus::LibraryUnavailable, QByteArray()};
-        }
-    };
-    return std::make_unique<UnavailableBarcodeSdk>();
-}
-
-#endif
 
 BarcodeReaderSdkSource::BarcodeReaderSdkSource(IBarcodeSdk *sdk, Config config,
                                                QObject *parent)
@@ -468,7 +441,14 @@ void BarcodeReaderSdkSource::performCycle()
     if (statusError.error == QJsonParseError::NoError)
         m_serverId = statusObject.value(QStringLiteral("serverId")).toString();
 
-    m_requestId = makeRequestId();
+    // The sequence is taken under the same lock as m_sequence, so two cycles can
+    // never build the same timestamp-suffixed id even inside one millisecond.
+    quint64 idSequence = 0;
+    {
+        QMutexLocker lock(&m_mutex);
+        idSequence = ++m_idSequence;
+    }
+    m_requestId = makeRequestId(idSequence);
     result.requestId = m_requestId;
 
     const BarcodeSdkReply triggered = m_sdk->trigger(m_requestId);
@@ -810,8 +790,11 @@ QString BarcodeReaderSdkSource::transportReason(BarcodeSdkStatus status)
 {
     switch (status) {
     case BarcodeSdkStatus::NotConnected:
-    case BarcodeSdkStatus::LibraryUnavailable:
         return QStringLiteral("扫码服务未启动，请先打开 BarcodeReader 并点击运行");
+    case BarcodeSdkStatus::ProgramUnavailable:
+        // The program itself could not be started — a deployment problem, not a
+        // "start the scan program" one, so it gets its own actionable wording.
+        return QStringLiteral("扫码程序无法启动，请检查扫码程序路径");
     case BarcodeSdkStatus::BufferTooSmall:
     case BarcodeSdkStatus::ResponseTooLarge:
         return QStringLiteral("扫码结果过大，请检查相机/识别区域配置");

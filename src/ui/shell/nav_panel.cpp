@@ -8,7 +8,8 @@
 namespace hlm {
 
 namespace {
-// The 7 pages (spec §11.1, §11.3). Order must match MainWindow page stack.
+// The 8 pages (spec §11.1, §11.3; 扫码服务 added 2026-09-23). Order must match
+// MainWindow page stack.
 const QStringList kPages = {
     QStringLiteral("总览"),
     QStringLiteral("配方与调宽"),
@@ -17,6 +18,7 @@ const QStringList kPages = {
     QStringLiteral("操作记录"),
     QStringLiteral("I/O 与诊断"),
     QStringLiteral("用户与设置"),
+    QStringLiteral("扫码服务"),
 };
 } // namespace
 
