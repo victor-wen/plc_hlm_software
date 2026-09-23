@@ -66,7 +66,13 @@ struct BarcodeSdkSourceConfig {
     // How long the forward program may run before it is killed and the cycle
     // reports a visible timeout (user decision 2026-09-23). Injectable for the
     // same reason as the deadline above.
-    qint64 forwardTimeoutMs = 10000;
+    //
+    // The default is 15 s, not the 10 s this started at: the supplied forward
+    // program (TCP_HMI V1.0.5) budgets ConnectTimeout 5 s + ResponseTimeout
+    // 10 s for its own handshake, so a slower-but-correct downstream would have
+    // been reported as 外发超时 and killed mid-send. The budget must exceed the
+    // program's own, or "timeout" stops meaning "it is stuck".
+    qint64 forwardTimeoutMs = 15000;
 };
 
 class BarcodeReaderSdkSource : public IBarcodeSource
