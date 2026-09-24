@@ -61,7 +61,6 @@ class RecipeWidthPage;
 class ManualControlPage;
 class AlarmPage;
 class AuditLogPage;
-class DiagnosticsPage;
 class OverviewPage;
 class ScanServicePage;
 
@@ -117,6 +116,9 @@ private:
     void publishScanVerdict(const BarcodeResult &result);
     void reportScanVerdict(const QString &detail, bool ok);
     void handleBarcodeResult(const BarcodeResult &result);
+    // Re-feeds the selected recipe's 条码个数 to the barcode source; called on
+    // a recipe list reload and on a selection change (user decision 2026-09-24).
+    void syncExpectedBarcodeCount();
     void failPendingBarcodePathSave(const QString &reason);
     void handleSettingLoaded(const std::optional<SettingRecord> &setting);
     void handleSubmissionCompleted(const SubmissionCompletion &completion);
@@ -128,6 +130,10 @@ private:
     void handleLogoutRequested();
     void handleLoginResult(const LoginResult &result);
     void handleAuditLoaded(const QVector<AuditRecord> &records);
+    // 清空操作记录 (user decision 2026-09-24): permission + confirmation here,
+    // then DatabaseService::clearAudit and the follow-up audit record.
+    void handleAuditClearRequested();
+    void handleAuditCleared(bool ok, const QString &error);
     void handleAlarmsLoaded(const QVector<AlarmEventRecord> &alarms);
     void handleCommandResult(Command cmd, bool ok, const QString &detail);
     // Projects one operator-command lifecycle state into ShellModel. A new user
@@ -157,7 +163,6 @@ private:
     ManualControlPage *m_manualPage = nullptr;
     AlarmPage *m_alarmPage = nullptr;
     AuditLogPage *m_auditPage = nullptr;
-    DiagnosticsPage *m_diagPage = nullptr;
     OverviewPage *m_overviewPage = nullptr;
     ScanServicePage *m_scanPage = nullptr;
 
@@ -270,6 +275,9 @@ private:
 
     // Audit paging bookkeeping (spec §12 滚动加载).
     int m_auditLoadedCount = 0;
+    // Single-flight guard for 清空操作记录: DatabaseService::auditCleared carries
+    // no request id, so an arrival while nothing is pending is not ours.
+    bool m_auditClearPending = false;
 };
 
 } // namespace hlm

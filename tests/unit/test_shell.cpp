@@ -313,10 +313,10 @@ void ShellTest::modelFlagsUseOwningBlockOnly()
 
 void ShellTest::navigationHasEightItems()
 {
-    // 7 production pages + 扫码服务 (user decision 2026-09-23: the scan service
-    // gets its own page rather than a block on 总览).
+    // 7 pages (user decision 2026-09-24: I/O 与诊断 removed; 扫码服务 moved
+    // ahead of 用户与设置, which is now last).
     MainWindow w;
-    QCOMPARE(w.navItemCount(), 8);
+    QCOMPARE(w.navItemCount(), 7);
 }
 
 void ShellTest::navigationSwitchesPages()

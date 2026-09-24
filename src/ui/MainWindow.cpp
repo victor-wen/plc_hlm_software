@@ -11,7 +11,6 @@
 #include "ui/pages/manual_control_page.h"
 #include "ui/pages/alarm_page.h"
 #include "ui/pages/audit_log_page.h"
-#include "ui/pages/diagnostics_page.h"
 #include "ui/pages/users_settings_page.h"
 #include "ui/widgets/hold_button.h"
 #include "ui/widgets/permission_button.h"
@@ -107,12 +106,13 @@ void MainWindow::buildLayout()
 
 void MainWindow::createPages()
 {
-    // Order must match NavPanel's 8 items (spec §11.1, §11.3). Each page lives
-    // inside a widget-resizable QScrollArea so a page taller/wider than the
-    // presented envelope scrolls instead of forcing a minimum window size
-    // (F-02/NF-01 responsive envelope, PLC-HMI-006 D1/D2). Pages must not
-    // become children of the scroll viewport: page tests instantiate them
-    // standalone and every page keeps its own layout.
+    // Order must match NavPanel's 7 items (spec §11.1, §11.3; I/O 与诊断 removed
+    // 2026-09-24, 扫码服务 moved ahead of 用户与设置). Each page lives inside a
+    // widget-resizable QScrollArea so a page taller/wider than the presented
+    // envelope scrolls instead of forcing a minimum window size (F-02/NF-01
+    // responsive envelope, PLC-HMI-006 D1/D2). Pages must not become children
+    // of the scroll viewport: page tests instantiate them standalone and every
+    // page keeps its own layout.
     m_pages->addWidget(wrapPageInScrollArea(new OverviewPage(*m_model, this)));
     m_pages->addWidget(wrapPageInScrollArea(new RecipeWidthPage(*m_model, this)));
     auto *manualPage = new ManualControlPage(*m_model, this);
@@ -123,12 +123,25 @@ void MainWindow::createPages()
         registerHoldWidget(hb);
     m_pages->addWidget(wrapPageInScrollArea(new AlarmPage(this)));
     m_pages->addWidget(wrapPageInScrollArea(new AuditLogPage(this)));
-    m_pages->addWidget(wrapPageInScrollArea(new DiagnosticsPage(*m_model, this)));
-    m_pages->addWidget(wrapPageInScrollArea(new UsersSettingsPage(*m_model, this)));
     // 扫码服务 (user decision 2026-09-23: "条码服务要单独做一栏 … 总体要单独为
-    // 一页"). Appended LAST so every existing page keeps its stack index — the
-    // restricted-mode and first-run flows route to 用户与设置 by index.
+    // 一页"), moved directly after 操作记录 (user decision 2026-09-24:
+    // 扫码服务往前放).
     m_pages->addWidget(wrapPageInScrollArea(new ScanServicePage(*m_model, this)));
+    // 用户与设置 last (user decision 2026-09-24). Still index 6, so the
+    // restricted-mode and first-run routes that used a bare 6 keep working; new
+    // code resolves the index through pageIndexOf() instead of hard-coding it.
+    m_pages->addWidget(wrapPageInScrollArea(new UsersSettingsPage(*m_model, this)));
+}
+
+int MainWindow::pageIndexOf(const QWidget *page) const
+{
+    if (page == nullptr)
+        return -1;
+    for (int i = 0; i < m_pages->count(); ++i) {
+        if (pageWidget(i) == page)
+            return i;
+    }
+    return -1;
 }
 
 QScrollArea *MainWindow::wrapPageInScrollArea(QWidget *page)

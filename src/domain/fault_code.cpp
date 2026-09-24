@@ -17,6 +17,13 @@ FaultCodeTable::FaultCodeTable()
     m_entries.push_back({8, QStringLiteral("回原点反转超时"), true});
     m_entries.push_back({9, QStringLiteral("回原点正转超时"), true});
     m_entries.push_back({10, QStringLiteral("调宽定位超时"), true});
+    // Code 11 = 扫码失败 (user decision 2026-09-24, from the machine): the
+    // field PLC reports a failed scan cycle on D110 after the HMI's M88 扫码失败
+    // answer. The supplied ladder only reaches MOV K10 D110, so this code is a
+    // field-confirmed addition like code 10, not a ladder-derived one. Without
+    // it the banner showed the generic 未知锁存故障 and the operator could not
+    // tell a scan failure from an unknown fault.
+    m_entries.push_back({11, QStringLiteral("扫码失败"), true});
 }
 
 const FaultCodeTable &FaultCodeTable::instance()

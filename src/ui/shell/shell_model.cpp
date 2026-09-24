@@ -89,6 +89,14 @@ bool ShellModel::modeKnown() const
     // must not blank the whole top bar (spec §9, §11.2). The adapters publish
     // real per-block quality/age (PLC-HMI-003 D6), so a stale or failed fast
     // block downgrades this gate instead of degenerating to connected().
+    //
+    // The link state is checked first (user decision 2026-09-24). The gateway
+    // emits only connectionStateChanged(false) on a link loss — it never
+    // publishes a disconnected snapshot — so the cached snapshot keeps its own
+    // connected()==true and every verdict derived from it would otherwise
+    // survive the outage and describe a machine nobody is talking to.
+    if (!m_online)
+        return false;
     const DeviceSnapshot &s = snapshot();
     return s.connected() && s.fastQuality() == DataQuality::Valid;
 }
@@ -128,7 +136,12 @@ bool ShellModel::isEstop() const
     // M0 is in the fast block, M100 in the command readback block. Require
     // each source's own block quality so an untrusted (stale/errored) block
     // never fabricates an estop state (spec §8.2, §11.2; PLC-HMI-003 D6/D7
-    // real block quality).
+    // real block quality). A down link short-circuits first: the last snapshot
+    // still claims connected()==true, so without this an estop that was
+    // released after the outage began stayed on screen and kept the estop
+    // control mapped to "release" (user decision 2026-09-24).
+    if (!m_online)
+        return false;
     const DeviceSnapshot &s = snapshot();
     const bool fastKnown =
         s.connected() && s.fastQuality() == DataQuality::Valid;
@@ -144,9 +157,17 @@ QString ShellModel::userName() const
 
 QString ShellModel::activeAlarmText() const
 {
-    // Priority (spec §11.1): estop > latched fault > fault > offline notice.
-    // Deliberately reads the raw snapshot without block-quality gating:
-    // fail-safe, a possibly-stale estop/fault is reported rather than hidden.
+    // Priority (spec §11.1): offline > estop > latched fault > fault.
+    //
+    // Offline comes FIRST (user decision 2026-09-24). This used to read the
+    // cached snapshot first and only then check the link, so after a link loss
+    // it kept announcing the last snapshot's 急停/存在锁存故障 — states the
+    // machine may have left minutes earlier. With no link there is no evidence
+    // at all, and 通讯中断 is the only honest thing to show. The fault/estop
+    // branches still read the bits fail-safe (no quality gating) once the link
+    // is up: a possibly-stale latched fault is reported rather than hidden.
+    if (!m_online)
+        return QStringLiteral("通讯中断");
     if (m_snapshot.has_value()) {
         const DeviceSnapshot &s = *m_snapshot;
         if (s.m0() || s.m100())
@@ -158,8 +179,6 @@ QString ShellModel::activeAlarmText() const
                 ? QStringLiteral("故障 代码 %1").arg(s.faultCode())
                 : s.fault().meaning;
     }
-    if (!m_online)
-        return QStringLiteral("通讯中断");
     return QString();
 }
 

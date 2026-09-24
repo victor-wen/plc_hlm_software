@@ -202,6 +202,12 @@ public:
     virtual QVector<AuditRecord> recent(int limit, int offset = 0) const = 0;
     virtual bool purgeBefore(const QDateTime &cutoff, qint64 *removed = nullptr,
                              QString *error = nullptr) = 0;
+    // Deletes EVERY audit row (user decision 2026-09-24: 操作记录一栏要求有清空
+    // 功能). Unlike purgeBefore this ignores the retention window, so the caller
+    // is responsible for permission and confirmation; the operation itself is
+    // audited by the caller writing a fresh record afterwards. Returns the
+    // number of removed rows through `removed` when given.
+    virtual bool clear(qint64 *removed = nullptr, QString *error = nullptr) = 0;
 };
 
 } // namespace hlm
