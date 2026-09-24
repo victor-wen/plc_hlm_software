@@ -434,6 +434,19 @@ void DatabaseService::listRecentAudit(int limit, int offset)
     emit recentAuditLoaded(m_audit->recent(limit, offset));
 }
 
+void DatabaseService::clearAudit()
+{
+    if (queueToWorkerIfNeeded([this]() { clearAudit(); }))
+        return;
+    if (!m_audit) {
+        emit auditCleared(false, QStringLiteral("database restricted"));
+        return;
+    }
+    QString error;
+    const bool ok = m_audit->clear(nullptr, &error);
+    emit auditCleared(ok, error);
+}
+
 void DatabaseService::runRetentionCleanup()
 {
     if (queueToWorkerIfNeeded([this]() { runRetentionCleanup(); }))

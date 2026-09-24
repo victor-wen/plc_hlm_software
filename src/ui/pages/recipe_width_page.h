@@ -91,9 +91,17 @@ signals:
     // millimetres with one decimal (user decision 2026-09-21).
     // `barcodeCount` is the recipe's expected barcode count (0 = do not check);
     // it is a plain count, not a scaled register value.
+    // `recipeId` is the record to OVERWRITE (-1 = create a new one). Saving
+    // under an existing name used to be an unconditional INSERT, which the
+    // UNIQUE(name) constraint rejected, so an existing recipe could never be
+    // edited (user decision 2026-09-24: 旧配方可以随时更改宽度和扫码个数).
     void saveRecipeRequested(const QString &name, int targetWidthRaw,
-                             int barcodeCount);
+                             int barcodeCount, qint64 recipeId);
     void deleteRecipeRequested(qint64 recipeId);
+    // The operator picked a different recipe (or cleared the selection). The
+    // composition root re-feeds the 条码个数 that judges scan cycles, so a
+    // selection change takes effect without waiting for a list reload.
+    void recipeSelectionChanged();
 
 protected:
     // Page switch (QStackedWidget hides the page) clears the armed
@@ -107,8 +115,12 @@ private:
     void onRecipeSelected(int row);
     void onSaveClicked();
     void onDeleteClicked();
+    // The record a save overwrites, or -1 to create one (see the .cpp).
+    qint64 resolveSaveTargetId(const QString &name) const;
     // Resets the two-step confirmation to the idle label.
     void disarmApply();
+    // Resets the armed 确认覆盖 state (no-op when none is armed).
+    void disarmSaveOverwrite();
 
     ShellModel &m_model;
     RecipeWidthModel m_pageModel;
@@ -124,6 +136,9 @@ private:
     PermissionButton *m_save = nullptr;
     PermissionButton *m_delete = nullptr;
     bool m_applyArmed = false;
+    // Armed 确认覆盖 state: the recipe id whose overwrite the next 保存配方
+    // click will dispatch, or -1 when nothing is armed.
+    qint64 m_saveOverwriteId = -1;
 };
 
 } // namespace hlm

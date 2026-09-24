@@ -9,8 +9,9 @@ class QListWidgetItem;
 
 namespace hlm {
 
-// Left navigation, ~176 px, 7 items (spec §11.1):
-// 总览、配方与调宽、手动控制、报警、操作记录、I/O 与诊断、用户与设置.
+// Left navigation, ~176 px, 7 items (spec §11.1; I/O 与诊断 removed
+// 2026-09-24, 扫码服务 moved ahead of 用户与设置):
+// 总览、配方与调宽、手动控制、报警、操作记录、扫码服务、用户与设置.
 class NavPanel : public QWidget
 {
     Q_OBJECT

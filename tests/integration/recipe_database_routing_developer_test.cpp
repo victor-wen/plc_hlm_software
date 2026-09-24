@@ -13,7 +13,9 @@
 #include <QApplication>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QListWidgetItem>
 #include <QSignalSpy>
+#include <QSpinBox>
 #include <QTemporaryDir>
 
 #include "adapters/simulator/simulated_plc_gateway.h"
@@ -108,7 +110,60 @@ class RecipeDatabaseRoutingDeveloperTest : public QObject
 private slots:
     void saveAndDeleteResultsRouteToPageAndReloadList();
     void failureResultsRouteErrorDetailToPage();
+    // 条码个数 must reach the database, and editing an existing recipe must
+    // UPDATE it rather than insert a duplicate name (user decision 2026-09-24).
+    void barcodeCountIsPersistedAndAnExistingRecipeIsUpdated();
 };
+
+void RecipeDatabaseRoutingDeveloperTest::barcodeCountIsPersistedAndAnExistingRecipeIsUpdated()
+{
+    StartedApp started;
+    Application app(started.cfg);
+    DatabaseService *db = nullptr;
+    startAndWaitReady(app, db);
+    loginAsAdmin(app, db);
+    auto *page = app.window()->findChild<RecipeWidthPage *>();
+    QVERIFY(page != nullptr);
+
+    // Create a recipe with 条码个数 = 6 through the page -> database route.
+    // The signal carries four arguments and Qt silently drops any the slot does
+    // not declare, so this asserts the value actually lands in the row rather
+    // than only that a save happened.
+    QSignalSpy savedSpy(db, &DatabaseService::recipeSaved);
+    emit page->saveRecipeRequested(QStringLiteral("扫码配方"), 200, 6, -1);
+    QTRY_COMPARE_WITH_TIMEOUT(savedSpy.count(), 1, 5000);
+    QVERIFY2(savedSpy[0][0].toBool(),
+             qPrintable(QStringLiteral("save reported failure: '%1'")
+                            .arg(savedSpy[0][1].toString())));
+    QTRY_COMPARE_WITH_TIMEOUT(page->recipeList()->count(), 1, 5000);
+
+    const qint64 id =
+        page->recipeList()->item(0)->data(Qt::UserRole).toLongLong();
+    QVERIFY(id >= 0);
+    page->recipeList()->setCurrentRow(0);
+    QApplication::processEvents();
+    QCOMPARE(page->barcodeCountSpin()->value(), 6);
+
+    // Edit the SAME record: a different width and count, still one recipe.
+    // Before this the save always INSERTed and the UNIQUE(name) constraint
+    // rejected it, so an existing recipe could never be changed.
+    QSignalSpy updateSpy(db, &DatabaseService::recipeSaved);
+    emit page->saveRecipeRequested(QStringLiteral("扫码配方"), 350, 4, id);
+    QTRY_COMPARE_WITH_TIMEOUT(updateSpy.count(), 1, 5000);
+    QVERIFY2(updateSpy[0][0].toBool(),
+             qPrintable(QStringLiteral("update reported failure: '%1'")
+                            .arg(updateSpy[0][1].toString())));
+
+    QTRY_COMPARE_WITH_TIMEOUT(page->recipeList()->count(), 1, 5000);
+    const QListWidgetItem *row = page->recipeList()->item(0);
+    QVERIFY2(row->text().contains(QStringLiteral("35.0")),
+             qPrintable(QStringLiteral("row text was '%1'").arg(row->text())));
+    QVERIFY2(row->text().contains(QStringLiteral("条码 4")),
+             qPrintable(QStringLiteral("row text was '%1'").arg(row->text())));
+    QCOMPARE(row->data(Qt::UserRole).toLongLong(), id);
+
+    app.shutdown();
+}
 
 void RecipeDatabaseRoutingDeveloperTest::saveAndDeleteResultsRouteToPageAndReloadList()
 {
@@ -121,7 +176,7 @@ void RecipeDatabaseRoutingDeveloperTest::saveAndDeleteResultsRouteToPageAndReloa
     QVERIFY(page != nullptr);
 
     QSignalSpy savedSpy(db, &DatabaseService::recipeSaved);
-    emit page->saveRecipeRequested(QStringLiteral("路由配方"), 200, 0);
+    emit page->saveRecipeRequested(QStringLiteral("路由配方"), 200, 0, -1);
 
     // Pending is immediately visible and never claims success (D2).
     QVERIFY2(!page->statusText().trimmed().isEmpty(),
@@ -182,7 +237,7 @@ void RecipeDatabaseRoutingDeveloperTest::failureResultsRouteErrorDetailToPage()
     QSignalSpy savedSpy(db, &DatabaseService::recipeSaved);
     // Width 0 violates the schema CHECK constraint: the database reports a
     // real failure without any permission or PLC involvement.
-    emit page->saveRecipeRequested(QStringLiteral("坏宽度配方"), 0, 0);
+    emit page->saveRecipeRequested(QStringLiteral("坏宽度配方"), 0, 0, -1);
     QVERIFY(!page->statusText().contains(QStringLiteral("已保存")));
 
     QTRY_COMPARE_WITH_TIMEOUT(savedSpy.count(), 1, 5000);

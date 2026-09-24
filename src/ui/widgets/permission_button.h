@@ -45,9 +45,9 @@ protected:
 
 private:
     void apply();
-    QSize withReasonHeight(const QSize &base) const;
-    // Keeps the bottom-aligned reason below the top-painted title even when the
-    // surrounding layout is tighter than the reason's natural height.
+    // Keeps the bottom-aligned reason to its single reserved line below the
+    // top-painted title (user decision 2026-09-24: the height never follows the
+    // reason text, so the control keeps a fixed size).
     void clampReasonHeight();
 
     QString m_reason;

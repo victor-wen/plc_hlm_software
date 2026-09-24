@@ -128,6 +128,15 @@ void AuditLogPage::buildLayout()
     m_reload->setMinimumHeight(48);
     filterRow->addWidget(m_reload);
 
+    // 清空操作记录 (user decision 2026-09-24). The page only emits the intent:
+    // the permission check, the confirmation dialog and the follow-up
+    // "somebody cleared the log" record all belong to the composition root
+    // (spec §11.2: 页面不发控制命令, 只发数据/操作意图).
+    m_clear = new QPushButton(QStringLiteral("清空操作记录"), this);
+    m_clear->setObjectName(QStringLiteral("auditClear"));
+    m_clear->setMinimumHeight(48);
+    filterRow->addWidget(m_clear);
+
     root->addLayout(filterRow);
 
     // --- status line (加载中 / 加载失败 / 无操作记录) -----------------------------
@@ -214,6 +223,7 @@ void AuditLogPage::buildLayout()
         refreshStatus();
     });
     connect(m_reload, &QPushButton::clicked, this, &AuditLogPage::requestReload);
+    connect(m_clear, &QPushButton::clicked, this, &AuditLogPage::requestClear);
 
     // 滚动到底部: 请求加载更多 (异步分页, Task 20 接 DatabaseService).
     // 已到底部时 valueChanged 会重复触发; m_moreRequested 去重, 直到新数据
@@ -230,6 +240,7 @@ void AuditLogPage::buildLayout()
 
 void AuditLogPage::setLoading()
 {
+    m_clearResultText.clear(); // a fresh load supersedes the last clear result
     m_model.setLoading();
     refreshTable();
     refreshStatus();
@@ -238,6 +249,7 @@ void AuditLogPage::setLoading()
 void AuditLogPage::setRecords(const QVector<AuditRecord> &records)
 {
     m_moreRequested = false; // 新数据到达, 允许再次请求加载更多
+    m_clearResultText.clear();
     m_model.setRecords(records);
     refreshTable();
     refreshStatus();
@@ -255,6 +267,20 @@ void AuditLogPage::setLoadFailed(const QString &reason)
 {
     m_model.setLoadFailed(reason);
     refreshTable();
+    refreshStatus();
+}
+
+void AuditLogPage::setClearResult(bool ok, const QString &detail)
+{
+    // Page-local status only (spec §11.2): the clear result is not a machine
+    // command and never enters the shell's OperatorCommandStatus projection.
+    // A failure keeps its reason visible until the next load replaces it.
+    m_clearResultText =
+        ok ? QStringLiteral("操作记录已清空")
+           : QStringLiteral("清空失败%1")
+                 .arg(detail.trimmed().isEmpty()
+                          ? QString()
+                          : QStringLiteral(": %1").arg(detail));
     refreshStatus();
 }
 
@@ -287,7 +313,11 @@ void AuditLogPage::refreshTable()
 
 void AuditLogPage::refreshStatus()
 {
-    m_status->setText(m_model.statusText());
+    // A clear outcome takes precedence over the load status: it is the more
+    // recent event and the operator is looking for it right now. The next
+    // setRecords/setLoading clears it back to the load status.
+    m_status->setText(m_clearResultText.isEmpty() ? m_model.statusText()
+                                                  : m_clearResultText);
 }
 
 QString AuditLogPage::statusText() const

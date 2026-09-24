@@ -14,6 +14,10 @@
 namespace hlm {
 
 namespace {
+// The command-status box never changes height (user decision 2026-09-24). 40 px
+// holds two lines of the 12-13 px shell font on the 683x384 compact envelope.
+constexpr int kCommandStatusHeight = 40;
+
 // Combines permission + interlock results into one reason string.
 QString combinedReason(const PermissionResult &p, const InterlockResult &i)
 {
@@ -99,12 +103,16 @@ ActionBar::ActionBar(ShellModel &model, QWidget *parent)
 
     // Persistent machine-command status (D8): visible from every page, never
     // modal, and always the latest projected state + human-readable detail.
+    //
+    // Fixed height (user decision 2026-09-24: 要求长度高度固定). It used to be
+    // min 32 / max 96 with word wrap, so a long detail string pushed every
+    // button below it up and down. The detail is still written in full as the
+    // tooltip; the box itself never changes size.
     m_commandStatus = new QLabel(content);
     m_commandStatus->setObjectName(QStringLiteral("commandStatus"));
     m_commandStatus->setAlignment(Qt::AlignCenter);
     m_commandStatus->setWordWrap(true);
-    m_commandStatus->setMinimumHeight(32);
-    m_commandStatus->setMaximumHeight(96);
+    m_commandStatus->setFixedHeight(kCommandStatusHeight);
     m_commandStatus->setStyleSheet(QStringLiteral(
         "QLabel#commandStatus { background-color: rgba(0, 0, 0, 0.06);"
         " border: 1px solid #b8c4d0; border-radius: 4px; padding: 4px; }"));
@@ -208,11 +216,17 @@ void ActionBar::refreshCommandStatus()
     const OperatorCommandStatus status = m_model.operatorCommandStatus();
     if (status.lifecycle_state == OperatorCommandState::Idle) {
         m_commandStatus->setText(QStringLiteral("就绪"));
+        m_commandStatus->setToolTip(QString());
         return;
     }
-    m_commandStatus->setText(QStringLiteral("%1: %2")
-                                 .arg(toString(status.lifecycle_state),
-                                      status.human_readable_detail));
+    const QString text = QStringLiteral("%1: %2")
+                             .arg(toString(status.lifecycle_state),
+                                  status.human_readable_detail);
+    m_commandStatus->setText(text);
+    // The box is a fixed height, so a long detail is elided by the layout
+    // rather than shrinking the controls below it; the full text stays
+    // reachable on hover.
+    m_commandStatus->setToolTip(text);
 }
 
 void ActionBar::refresh()

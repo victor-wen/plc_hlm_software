@@ -26,7 +26,11 @@ bool AlarmEdgeDetector::onPlcSnapshot(quint16 d110, bool m14, bool m4, quint64 s
     }
 
     const bool codeChanged = d110 != m_lastD110;
-    const bool cleared = d110 == 0 && !m14 && !m4;
+    // The latch bits end the event, not the code (user decision 2026-09-24).
+    // The PLC program never writes 0 back into D110, so requiring d110 == 0
+    // here left every PLC alarm event open forever after the operator cleared
+    // the fault — the 报警 page showed a permanently active alarm.
+    const bool cleared = !m14 && !m4;
 
     if (d110 != 0 && codeChanged) {
         // 0 -> non-zero, or a change between non-zero codes: end the previous

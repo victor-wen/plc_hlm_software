@@ -8,17 +8,22 @@
 namespace hlm {
 
 namespace {
-// The 8 pages (spec §11.1, §11.3; 扫码服务 added 2026-09-23). Order must match
+// The 7 pages (spec §11.1, §11.3; 扫码服务 added 2026-09-23; I/O 与诊断 removed
+// 2026-09-24, user decision: IO诊断一栏 直接删掉; 扫码服务 moved ahead of 用户与
+// 设置 and 用户与设置 put last, user decision 2026-09-24). Order must match
 // MainWindow page stack.
+//
+// 用户与设置 stays at index 6 — the restricted-mode and first-run flows route
+// there, and Application resolves it through MainWindow::pageIndexOf() rather
+// than a bare number, so this order can change without breaking that routing.
 const QStringList kPages = {
     QStringLiteral("总览"),
     QStringLiteral("配方与调宽"),
     QStringLiteral("手动控制"),
     QStringLiteral("报警"),
     QStringLiteral("操作记录"),
-    QStringLiteral("I/O 与诊断"),
-    QStringLiteral("用户与设置"),
     QStringLiteral("扫码服务"),
+    QStringLiteral("用户与设置"),
 };
 } // namespace
 
