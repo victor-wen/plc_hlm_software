@@ -181,7 +181,19 @@ DeviceSnapshotData decodeFastBlock(const quint16 raw[41], quint64 sequence,
     d.heartbeat = raw[40];
 
     // Range checks (spec §9): out-of-range fields are marked invalid.
-    checkRange(d, SnapshotField::FaultCode, d.faultCode, 0, 10);
+    //
+    // D110 (故障代码) is deliberately NOT range-checked (user decision
+    // 2026-09-24). It carried 0..10, and the machine now reports 11 (扫码失败).
+    // An out-of-range field marks the WHOLE snapshot OutOfRange through
+    // aggregateQuality(), which disables every snapshotFresh()-gated control —
+    // the operator's "所有按钮都交互不上", with the scan trigger among the
+    // casualties (Application gates M11 on snapshotFresh()). It is the exact
+    // failure mode the D128 decision below already removed once.
+    //
+    // A fault code has no out-of-range value anyway: spec §9 fixes that an
+    // unknown non-zero code is reported as 未知锁存故障, not as bad data. The
+    // FaultCodeTable is the authority on which codes are known, and it answers
+    // for every value.
     checkRange(d, SnapshotField::CurrentStep, d.currentStep, 0, 5);
     checkRange(d, SnapshotField::BeltSpeed, d.beltSpeed, 100, 20000);
     // D128 (目标宽度) is NOT range-checked (user decision 2026-09-21): the

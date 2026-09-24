@@ -126,9 +126,14 @@ bool ShellModel::isFaulted() const
 {
     if (!modeKnown())
         return false;
-    // M14 (D100 bit14) and D110 fault code both live in the fast block.
+    // Presence comes from the latch bits — M14 故障锁存 or M4 实时故障 — and
+    // D110 only NAMES the fault (user decision 2026-09-24). The PLC program
+    // never writes 0 back into D110 (every write in the ladder is MOV K1..K11),
+    // so a code outlives the fault it describes; treating a non-zero code as
+    // "still faulted" left 故障/急停 on screen after the operator had cleared
+    // the latch with 复位. See activeAlarmText().
     const DeviceSnapshot &s = snapshot();
-    return s.m14() || s.faultCode() != 0;
+    return s.m14() || s.m4();
 }
 
 bool ShellModel::isEstop() const
@@ -172,12 +177,16 @@ QString ShellModel::activeAlarmText() const
         const DeviceSnapshot &s = *m_snapshot;
         if (s.m0() || s.m100())
             return QStringLiteral("急停有效");
-        if (s.m14())
-            return QStringLiteral("存在锁存故障");
-        if (s.faultCode() != 0)
-            return s.fault().meaning.isEmpty()
-                ? QStringLiteral("故障 代码 %1").arg(s.faultCode())
-                : s.fault().meaning;
+        // The latch bits decide WHETHER there is a fault; D110 only says which
+        // one (user decision 2026-09-24). Every D110 write in the PLC program is
+        // MOV K1..K11 and nothing ever writes 0 back, so a stale code keeps
+        // naming a fault that 复位 already cleared. While the latch is still on
+        // the code is shown — it is the diagnosis the operator needs.
+        if (s.m14() || s.m4()) {
+            return s.faultCode() != 0 && !s.fault().meaning.isEmpty()
+                ? s.fault().meaning
+                : QStringLiteral("存在锁存故障");
+        }
     }
     return QString();
 }
