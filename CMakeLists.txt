@@ -176,8 +176,6 @@ add_library(hlm_ui STATIC
     src/ui/pages/alarm_page.cpp
     src/ui/pages/audit_log_model.cpp
     src/ui/pages/audit_log_page.cpp
-    src/ui/pages/diagnostics_model.cpp
-    src/ui/pages/diagnostics_page.cpp
     src/ui/pages/users_settings_model.cpp
     src/ui/pages/users_settings_page.cpp
     src/ui/pages/scan_service_page.cpp

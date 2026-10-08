@@ -34,6 +34,7 @@ private slots:
     void slowBlockOutOfRangeMarksFieldInvalid();
     void aggregateQualityWorstWins();
     void unknownFaultCodeDoesNotCrash();
+    void faultCodeNeverMarksTheSnapshotOutOfRange();
     void addressTableLookup();
     void snapshotIsImmutable();
 };
@@ -328,6 +329,41 @@ void SnapshotDecodeTest::unknownFaultCodeDoesNotCrash()
     DeviceSnapshot s(d);
     QCOMPARE(s.fault().code, quint16(99));
     QVERIFY(s.fault().isLatched);
+}
+
+// D110 was range-checked to 0..10 (user decision 2026-09-24: removed). The
+// machine reports 11 = 扫码失败, and an out-of-range field marks the WHOLE
+// snapshot OutOfRange through aggregateQuality() — which disables every
+// snapshotFresh()-gated control, scan trigger included. That is the operator's
+// "所有按钮都交互不上". A fault code has no out-of-range value in the first
+// place: an unknown non-zero code is 未知锁存故障, per spec §9.
+void SnapshotDecodeTest::faultCodeNeverMarksTheSnapshotOutOfRange()
+{
+    for (quint16 code : {quint16(0), quint16(10), quint16(11), quint16(99),
+                         quint16(0xFFFF)}) {
+        quint16 raw[41] = {0};
+        raw[0] = 0;       // D100: no latch bit set
+        raw[10] = code;   // D110 fault code
+        raw[20] = 0;      // D120 step, in range
+        raw[22] = 1500;   // D122 belt speed, in range
+        raw[40] = 1;      // D140 heartbeat
+        const QDateTime now = QDateTime::currentDateTime();
+        const DeviceSnapshotData d =
+            decodeFastBlock(raw, 1, true, 0, now, now, DataQuality::Valid);
+        const DeviceSnapshot snapshot(d);
+
+        QVERIFY2(snapshot.fieldValid(SnapshotField::FaultCode),
+                 qPrintable(QStringLiteral("fault code %1 marked invalid").arg(code)));
+        QCOMPARE(snapshot.faultCode(), code);
+        QCOMPARE(d.overall_quality, DataQuality::Valid);
+    }
+
+    // The address table must agree: no upper bound on D110.
+    const AddressDef *d110 =
+        AddressTable::instance().find(QStringLiteral("D"), 110);
+    QVERIFY(d110 != nullptr);
+    QCOMPARE(d110->min, 0.0);
+    QCOMPARE(d110->max, 0.0); // 0/0 = unbounded
 }
 
 void SnapshotDecodeTest::addressTableLookup()

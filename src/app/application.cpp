@@ -26,7 +26,6 @@
 #include "ui/MainWindow.h"
 #include "ui/pages/alarm_page.h"
 #include "ui/pages/audit_log_page.h"
-#include "ui/pages/diagnostics_page.h"
 #include "ui/pages/manual_control_page.h"
 #include "ui/pages/overview_page.h"
 #include "ui/pages/recipe_width_page.h"
@@ -154,7 +153,6 @@ void Application::createObjects()
     m_manualPage = m_window->findChild<ManualControlPage *>();
     m_alarmPage = m_window->findChild<AlarmPage *>();
     m_auditPage = m_window->findChild<AuditLogPage *>();
-    m_diagPage = m_window->findChild<DiagnosticsPage *>();
     m_overviewPage = m_window->findChild<OverviewPage *>();
     m_scanPage = m_window->findChild<ScanServicePage *>();
 
@@ -415,10 +413,18 @@ void Application::wireSignals()
     connect(m_recipePage, &RecipeWidthPage::applyAdjustRequested, m_coordinator,
             &ControlCoordinator::adjustWidth);
     connect(m_recipePage, &RecipeWidthPage::saveRecipeRequested, this,
-            [this](const QString &name, int targetWidthRaw) {
+            [this](const QString &name, int targetWidthRaw, int barcodeCount,
+                   qint64 recipeId) {
                 RecipeRecord r;
+                // A non-negative id makes the repository UPDATE that record
+                // instead of INSERTing a duplicate name (which the UNIQUE
+                // constraint rejects). Qt silently drops signal arguments a
+                // slot does not declare, so every parameter of this signal
+                // must be listed here — a missing one is not a compile error.
+                r.id = recipeId;
                 r.name = name;
                 r.targetWidthRaw = targetWidthRaw;
+                r.barcodeCount = barcodeCount;
                 r.createdBy = m_lifecycle ? m_lifecycle->currentUsername()
                                           : QStringLiteral("anonymous");
                 r.updatedBy = r.createdBy;
@@ -464,6 +470,8 @@ void Application::wireSignals()
         // (spec §12); listRecentAudit(200, offset) pages by offset.
         m_db->listRecentAudit(200, m_auditLoadedCount);
     });
+    connect(m_auditPage, &AuditLogPage::requestClear, this,
+            &Application::handleAuditClearRequested);
 
     // --- DatabaseService -> pages / lifecycle ---------------------------------
     connect(m_db, &DatabaseService::ready, this, &Application::onReady);
@@ -480,7 +488,9 @@ void Application::wireSignals()
                 unavailable.ok = false;
                 unavailable.reason = QStringLiteral("database restricted");
                 m_usersPage->setLoginResult(unavailable);
-                m_window->setCurrentPage(6);
+                // Resolved by page pointer, not by index: re-ordering the
+                // navigation must not silently send this route elsewhere.
+                m_window->setCurrentPage(m_window->pageIndexOf(m_usersPage));
             });
     connect(m_db, &DatabaseService::initialAdminNeeded, this,
             [this](bool needed) {
@@ -489,7 +499,7 @@ void Application::wireSignals()
                 // directly to the mandatory bootstrap card instead of leaving
                 // it hidden behind the last navigation item.
                 if (needed)
-                    m_window->setCurrentPage(6);
+                    m_window->setCurrentPage(m_window->pageIndexOf(m_usersPage));
             });
     connect(m_db, &DatabaseService::initialAdminCreated, this,
             [this](bool ok, const QString &error) {
@@ -520,15 +530,13 @@ void Application::wireSignals()
     connect(m_db, &DatabaseService::recipesLoaded, this,
             [this](const QVector<RecipeRecord> &recipes) {
                 m_recipePage->setRecipes(recipes);
-                // The selected recipe's 条码个数 is what a scan cycle is judged
-                // against (user decision 2026-09-23). No selection = no check.
-                if (m_barcodeSource == nullptr)
-                    return;
-                const std::optional<RecipeRecord> selected =
-                    m_recipePage->selectedRecipe();
-                m_barcodeSource->setExpectedBarcodeCount(
-                    selected.has_value() ? selected->barcodeCount : 0);
+                syncExpectedBarcodeCount();
             });
+    // Selecting a different recipe re-judges scan cycles at once (user decision
+    // 2026-09-24): before this the expectation only followed a list reload, so
+    // a freshly picked 条码个数 stayed unused until something else reloaded.
+    connect(m_recipePage, &RecipeWidthPage::recipeSelectionChanged, this,
+            &Application::syncExpectedBarcodeCount);
     connect(m_db, &DatabaseService::recipeSaved, this,
             [this](bool ok, const QString &error) {
                 // Route the database outcome into the page-local status; the
@@ -556,21 +564,14 @@ void Application::wireSignals()
             &Application::handleAlarmsLoaded);
     connect(m_db, &DatabaseService::recentAuditLoaded, this,
             &Application::handleAuditLoaded);
+    connect(m_db, &DatabaseService::auditCleared, this,
+            &Application::handleAuditCleared);
 
-    // --- VisionService -> diagnostics page ------------------------------------
-    if (m_vision) {
-        connect(m_vision, &IVisionService::selfTestPassed, m_diagPage,
-                [this](const QString &version) {
-                    m_diagPage->setVisionStatus(version, true, QString());
-                });
-        connect(m_vision, &IVisionService::selfTestFailed, m_diagPage,
-                [this](const QString &reason) {
-                    m_diagPage->setVisionStatus(QString(), false, reason);
-                });
-    } else {
-        m_diagPage->setVisionStatus(QString(), false,
-                                    QStringLiteral("视觉模块未启用"));
-    }
+    // --- VisionService --------------------------------------------------------
+    // The I/O 与诊断 page that used to display this was removed (user decision
+    // 2026-09-24: IO诊断一栏 直接删掉). The service is still composed and its
+    // self-test still runs — it is simply no longer surfaced on its own page,
+    // and a failing self-test never affected PLC control (spec §13).
 }
 
 // True when an event's gateway generation is not older than the generation
@@ -630,18 +631,9 @@ void Application::wireGateway(IPlcGateway *gw)
     connect(gw, &IPlcGateway::submissionCompleted, m_coordinator,
             &ControlCoordinator::onSubmissionCompleted);
     // Communication statistics come from the port signal itself (spec §16,
-    // D4): no concrete-gateway cast, and the real per-block age is displayed.
-    connect(gw, &IPlcGateway::commStatsChanged, this,
-            [this](const PlcCommStats &stats) {
-                if (!acceptGatewayGeneration(stats.gateway_generation))
-                    return;
-                CommStats display;
-                display.lastDataAgeMs = stats.per_block_age_ms;
-                display.sequence = stats.snapshot_sequence;
-                display.reconnectCount = int(stats.reconnect_count);
-                display.failedPolls = int(stats.failed_polls);
-                m_diagPage->setCommStats(display);
-            });
+    // D4). The I/O 与诊断 page that rendered them was removed (user decision
+    // 2026-09-24); the counters stay in the port contract for the next surface
+    // that needs them.
 }
 
 void Application::startGatewayIfNeeded()
@@ -1398,6 +1390,18 @@ void Application::reportScanVerdict(const QString &detail, bool ok)
                           detail, /*newRequest=*/true);
 }
 
+// The selected recipe's 条码个数 is what a scan cycle is judged against (user
+// decision 2026-09-23). No selection = no check. Kept in one place because two
+// triggers feed it: a recipe list reload and a selection change.
+void Application::syncExpectedBarcodeCount()
+{
+    if (m_barcodeSource == nullptr || m_recipePage == nullptr)
+        return;
+    const std::optional<RecipeRecord> selected = m_recipePage->selectedRecipe();
+    m_barcodeSource->setExpectedBarcodeCount(
+        selected.has_value() ? selected->barcodeCount : 0);
+}
+
 void Application::handleBarcodeResult(const BarcodeResult &result)
 {
     // Readback only: the scan program is the authoritative peer, so the
@@ -1571,8 +1575,8 @@ void Application::onLoginLogoutRequested()
     if (m_shell->role() != Role::Anonymous) {
         handleLogoutRequested();
     } else {
-        // 未登录: 切到用户与设置页 (index 6) 显示登录面板.
-        m_window->setCurrentPage(6);
+        // 未登录: 切到用户与设置页显示登录面板 (按页面指针定位, 不再写死 index).
+        m_window->setCurrentPage(m_window->pageIndexOf(m_usersPage));
     }
 }
 
@@ -1688,6 +1692,55 @@ void Application::handleAuditLoaded(const QVector<AuditRecord> &records)
         m_auditPage->appendRecords(records);
     }
     m_auditLoadedCount += records.size();
+}
+
+void Application::handleAuditClearRequested()
+{
+    // 清空操作记录 (user decision 2026-09-24). Destructive and irreversible, so
+    // it is admin-only and confirmed; a refusal is reported on the page's own
+    // status line rather than silently ignored (spec §11.2).
+    if (m_shell == nullptr || m_shell->role() != Role::Admin) {
+        m_auditPage->setClearResult(false, QStringLiteral("需要管理员权限"));
+        return;
+    }
+    const auto answer = QMessageBox::question(
+        m_window, QStringLiteral("清空操作记录"),
+        QStringLiteral("将删除全部操作记录（不可恢复），是否继续？"),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (answer != QMessageBox::Yes)
+        return;
+    m_auditClearPending = true;
+    m_db->clearAudit();
+}
+
+void Application::handleAuditCleared(bool ok, const QString &error)
+{
+    if (!m_auditClearPending)
+        return; // not ours
+    m_auditClearPending = false;
+    if (!ok) {
+        m_auditPage->setClearResult(false, error);
+        return;
+    }
+    // The clear is itself an auditable event: the deleted rows are gone, so
+    // the record written here is the only remaining evidence of who cleared
+    // the log and when (user decision 2026-09-24: 留一条清空记录). It is
+    // appended AFTER the delete, then the list reloads and shows exactly it.
+    AuditRecord a;
+    a.occurredAt = QDateTime::currentDateTimeUtc();
+    a.username = m_lifecycle ? m_lifecycle->currentUsername()
+                             : QStringLiteral("anonymous");
+    a.role = m_shell ? m_shell->role() : Role::Anonymous;
+    a.action = QStringLiteral("audit.clear");
+    a.target = QStringLiteral("audit_log");
+    a.redactedParameters = QString();
+    a.result = AuditResult::Success;
+    a.reason = QStringLiteral("清空操作记录");
+    m_db->appendAudit(a);
+
+    m_auditPage->setClearResult(true, QString());
+    m_auditLoadedCount = 0;
+    m_db->listRecentAudit(200);
 }
 
 } // namespace hlm

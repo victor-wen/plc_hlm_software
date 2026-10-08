@@ -175,7 +175,15 @@ void RecipeWidthPage::buildLayout()
     connect(m_recipeList, &QListWidget::currentRowChanged, this,
             &RecipeWidthPage::onRecipeSelected);
     connect(m_nameEdit, &QLineEdit::textChanged, this,
-            [this](const QString &t) { m_pageModel.setEditedName(t); });
+            [this](const QString &t) {
+                m_pageModel.setEditedName(t);
+                // An armed 确认覆盖 names the record it would overwrite; once
+                // the name changes that label is stale, and the next click
+                // re-resolves the target anyway (spec §11.1-§11.2 门控变化清零
+                // 意图).
+                if (m_saveOverwriteId >= 0)
+                    disarmSaveOverwrite();
+            });
     connect(m_widthSpin, &QSpinBox::valueChanged, this,
             [this](int v) { m_pageModel.setEditedWidth(v); });
     connect(m_barcodeCountSpin, &QSpinBox::valueChanged, this,
@@ -222,6 +230,9 @@ QString RecipeWidthPage::statusText() const
 
 void RecipeWidthPage::setRecipes(const QVector<RecipeRecord> &recipes)
 {
+    // A reload may have removed the record an armed 确认覆盖 named, so the
+    // stale confirmation is cleared here; the next click re-resolves the target.
+    disarmSaveOverwrite();
     // An asynchronous reload must not discard the user's unsaved input or the
     // current selection while the selected record still exists. Only a
     // confirmed deletion (selected id absent from the reloaded list) resets
@@ -237,10 +248,19 @@ void RecipeWidthPage::setRecipes(const QVector<RecipeRecord> &recipes)
         const QSignalBlocker blocker(m_recipeList);
         m_recipeList->clear();
         for (const RecipeRecord &r : recipes) {
+            // 条码个数 is shown in the row itself (user decision 2026-09-24):
+            // the editor gave no way to confirm what had been stored, so the
+            // saved count is echoed back next to the name and width. 0 keeps
+            // its meaning ("do not check") spelled out rather than as a bare 0.
+            const QString countText =
+                r.barcodeCount > 0
+                    ? QString::number(r.barcodeCount)
+                    : QStringLiteral("不检查");
             auto *item = new QListWidgetItem(
-                QStringLiteral("%1  (%2 mm)")
+                QStringLiteral("%1  (%2 mm · 条码 %3)")
                     .arg(r.name)
-                    .arg(width_units::rawToDisplay(quint16(r.targetWidthRaw))),
+                    .arg(width_units::rawToDisplay(quint16(r.targetWidthRaw)))
+                    .arg(countText),
                 m_recipeList);
             item->setData(Qt::UserRole, r.id);
         }
@@ -327,11 +347,18 @@ void RecipeWidthPage::disarmApply()
     m_apply->setText(QStringLiteral("应用并调宽"));
 }
 
+void RecipeWidthPage::disarmSaveOverwrite()
+{
+    m_saveOverwriteId = -1;
+    m_save->setText(QStringLiteral("保存配方"));
+}
+
 void RecipeWidthPage::hideEvent(QHideEvent *event)
 {
     // Page switch (QStackedWidget hides the page) clears the armed
-    // confirmation (spec §11.1-§11.2 页面切换清零意图).
+    // confirmations (spec §11.1-§11.2 页面切换清零意图).
     disarmApply();
+    disarmSaveOverwrite();
     QWidget::hideEvent(event);
 }
 
@@ -345,6 +372,10 @@ void RecipeWidthPage::onRecipeSelected(int row)
     m_widthSpin->setValue(m_pageModel.editedWidth());
     m_barcodeCountSpin->setValue(m_pageModel.editedBarcodeCount());
     refresh();
+    // The composition root re-feeds the 条码个数 that judges scan cycles from
+    // this signal, so picking a recipe takes effect immediately instead of
+    // only after the next list reload (user decision 2026-09-24).
+    emit recipeSelectionChanged();
 }
 
 void RecipeWidthPage::onSaveClicked()
@@ -369,10 +400,45 @@ void RecipeWidthPage::onSaveClicked()
         refresh();
         return;
     }
+    // 旧配方改名/改宽度/改扫码个数 (user decision 2026-09-24): saving over an
+    // existing record UPDATEs it instead of hitting the UNIQUE(name)
+    // constraint. The confirm is asked ONLY when a record really would be
+    // overwritten; a brand-new recipe saves in one click, and the programmatic
+    // save paths (no selection, fresh name) are never interrupted.
+    //
+    // The confirmation is the same two-step armed state 应用并调宽 uses
+    // (spec §10.3): a modal dialog would block the event loop of a touch HMI
+    // and would fire the moment a finger lands, which is exactly what a
+    // second, deliberate tap should prevent.
+    const qint64 targetId = resolveSaveTargetId(name);
+    if (targetId >= 0 && m_saveOverwriteId != targetId) {
+        m_saveOverwriteId = targetId;
+        m_save->setText(QStringLiteral("确认覆盖「%1」?").arg(name));
+        refresh();
+        return;
+    }
+    disarmSaveOverwrite();
     m_pageModel.setRecipeSavePending();
     emit saveRecipeRequested(name, m_widthSpin->value(),
-                             m_barcodeCountSpin->value());
+                             m_barcodeCountSpin->value(), targetId);
     refresh();
+}
+
+// Which record a save overwrites (-1 = create a new one). Selecting a recipe
+// loads it into the editors, so the common "edit an existing recipe" path is
+// decided by the current selection; a typed name that matches an existing row
+// resolves to that row as well, otherwise the save would hit the UNIQUE(name)
+// constraint and fail with a bare database error (user decision 2026-09-24:
+// 旧配方可以随时更改宽度和扫码个数).
+qint64 RecipeWidthPage::resolveSaveTargetId(const QString &name) const
+{
+    if (const std::optional<RecipeRecord> selected = m_pageModel.selectedRecipe())
+        return selected->id;
+    for (const RecipeRecord &r : m_pageModel.recipes()) {
+        if (r.name == name)
+            return r.id;
+    }
+    return -1;
 }
 
 void RecipeWidthPage::onDeleteClicked()
@@ -447,6 +513,11 @@ void RecipeWidthPage::refresh()
                                        : QStringLiteral("需要管理员权限");
     const bool savePending = m_pageModel.recipeSavePending();
     const bool deletePending = m_pageModel.recipeDeletePending();
+    // A gate change that disables save must not leave a stale armed
+    // overwrite confirmation: the next click would dispatch without a fresh
+    // confirm (spec §11.1-§11.2 门控变化清零意图).
+    if (!canEdit && m_saveOverwriteId >= 0)
+        disarmSaveOverwrite();
     m_save->setEnabledWithReason(
         canEdit && !savePending,
         savePending ? QStringLiteral("正在保存配方, 请稍候") : permReason);

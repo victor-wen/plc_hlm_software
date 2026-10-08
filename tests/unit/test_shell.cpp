@@ -313,10 +313,10 @@ void ShellTest::modelFlagsUseOwningBlockOnly()
 
 void ShellTest::navigationHasEightItems()
 {
-    // 7 production pages + 扫码服务 (user decision 2026-09-23: the scan service
-    // gets its own page rather than a block on 总览).
+    // 7 pages (user decision 2026-09-24: I/O 与诊断 removed; 扫码服务 moved
+    // ahead of 用户与设置, which is now last).
     MainWindow w;
-    QCOMPARE(w.navItemCount(), 8);
+    QCOMPARE(w.navItemCount(), 7);
 }
 
 void ShellTest::navigationSwitchesPages()
@@ -412,12 +412,27 @@ void ShellTest::alarmBannerGreenWhenNoFault()
 
 void ShellTest::alarmBannerShowsFault()
 {
+    // A fault is announced while its LATCH bit is up (user decision 2026-09-24).
+    // The PLC program never writes 0 back into D110, so a code alone is not
+    // evidence that a fault is still present: after 复位 clears M14/M4 a stale
+    // code must not keep the banner red.
     MainWindow w;
     DeviceSnapshotData d = validSnapshotData();
-    d.faultCode = 3; // latched fault
+    d.statusWord1 = quint16(1) << 14; // M14 故障锁存
+    d.faultCode = 3;
     w.shellModel()->updateSnapshot(DeviceSnapshot(d));
     QVERIFY(w.alarmBannerText() != QStringLiteral("无报警"));
     QVERIFY(!w.alarmBannerText().isEmpty());
+    QVERIFY2(w.alarmBannerText().contains(QStringLiteral("安全光栅遮挡")),
+             qPrintable(QStringLiteral("the banner should name the code, got: %1")
+                            .arg(w.alarmBannerText())));
+
+    // 复位 cleared the latch; the stale code stays in D110 but the banner must
+    // go back to 无报警.
+    DeviceSnapshotData cleared = validSnapshotData();
+    cleared.faultCode = 3; // never written back to 0 by the PLC
+    w.shellModel()->updateSnapshot(DeviceSnapshot(cleared));
+    QCOMPARE(w.alarmBannerText(), QStringLiteral("无报警"));
 }
 
 // --- MainWindow action bar ---------------------------------------------------

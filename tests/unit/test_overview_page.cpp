@@ -185,8 +185,11 @@ void OverviewPageTest::modelLatestAlarmText()
     model.updateSnapshot(DeviceSnapshot(validSnapshotData()));
     QCOMPARE(m.latestAlarmText(), QStringLiteral("无报警"));
 
-    // Fault code 3: the code's meaning is shown.
+    // Fault code 3 while M14 故障锁存 is up: the code's meaning is shown.
+    // Presence comes from the latch bit, D110 only names the fault (user
+    // decision 2026-09-24) — the PLC program never writes 0 back into D110.
     DeviceSnapshotData d = validSnapshotData();
+    d.statusWord1 = quint16(1) << 14; // M14
     d.faultCode = 3;
     model.updateSnapshot(DeviceSnapshot(d));
     QVERIFY(m.latestAlarmText().contains(QStringLiteral("安全光栅遮挡")));
@@ -250,6 +253,7 @@ void OverviewPageTest::pageShowsLatestAlarm()
     QCOMPARE(page.latestAlarmText(), QStringLiteral("无报警"));
 
     DeviceSnapshotData d = validSnapshotData();
+    d.statusWord1 = quint16(1) << 14; // M14 故障锁存
     d.faultCode = 3;
     model.updateSnapshot(DeviceSnapshot(d));
     QVERIFY(page.latestAlarmText().contains(QStringLiteral("安全光栅遮挡")));

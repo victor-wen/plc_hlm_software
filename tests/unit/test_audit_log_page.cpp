@@ -398,8 +398,14 @@ void AuditLogPageTest::filterControlsMeetTouchTargetSize()
 
 void AuditLogPageTest::onlySignalsAreDataRequests()
 {
-    // 页面只读, 不发任何控制命令 (spec §11.3, §11.4): 唯一信号是数据请求
-    // (requestReload / requestMore). 任何控制命令信号都会使本测试失败.
+    // 页面只读, 不发任何控制命令 (spec §11.3, §11.4): 唯一信号是数据/操作请求
+    // (requestReload / requestMore / requestClear). 任何机器控制命令信号都会使
+    // 本测试失败.
+    //
+    // requestClear (user decision 2026-09-24: 操作记录一栏要求有清空功能) is an
+    // intent like the other two: the page never deletes anything itself. The
+    // composition root checks the role, confirms, calls the database and writes
+    // the follow-up record.
     AuditLogPage page;
     QStringList signalNames;
     const QMetaObject *mo = page.metaObject();
@@ -410,7 +416,8 @@ void AuditLogPageTest::onlySignalsAreDataRequests()
             signalNames << QString::fromLatin1(method.name());
     }
     signalNames.sort();
-    const QStringList expected{QStringLiteral("requestMore"),
+    const QStringList expected{QStringLiteral("requestClear"),
+                               QStringLiteral("requestMore"),
                                QStringLiteral("requestReload")};
     QCOMPARE(signalNames, expected);
 }

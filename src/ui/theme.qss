@@ -19,7 +19,6 @@ QWidget#recipeWidthPage,
 QWidget#manualControlPage,
 QWidget#alarmPage,
 QWidget#auditLogPage,
-QWidget#diagnosticsPage,
 QWidget#usersSettingsPage,
 QWidget#adminSettingsContent,
 QScrollArea#adminSettingsScroll {

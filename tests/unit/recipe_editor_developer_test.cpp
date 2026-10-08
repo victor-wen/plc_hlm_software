@@ -349,8 +349,14 @@ void RecipeEditorDeveloperTest::adminCanDispatchSaveAndDeleteWithoutAnySnapshot(
     QSignalSpy deleteSpy(&page, &RecipeWidthPage::deleteRecipeRequested);
 
     page.nameEdit()->setText(QStringLiteral("离线配方"));
+    // An existing record is overwritten, so the save asks for confirmation
+    // first — as an armed second click, exactly like 应用并调宽 (user decision
+    // 2026-09-24). The first click only arms; the second dispatches.
+    clickAt(page.saveButton());
+    QCOMPARE(saveSpy.count(), 0);
     clickAt(page.saveButton());
     QCOMPARE(saveSpy.count(), 1);
+    QCOMPARE(saveSpy.first().at(3).toLongLong(), qint64(3));
     page.setRecipeSaveResult(true, QString());
 
     clickAt(page.deleteButton());

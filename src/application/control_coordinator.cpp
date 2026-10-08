@@ -1113,13 +1113,24 @@ void ControlCoordinator::onAdjustSnapshot(const DeviceSnapshot &s)
         finishCommand(Command::AdjustWidth, true, QStringLiteral("调宽完成"));
         return;
     }
-    // 2. Explicit failure: the width-timeout fault code (D110 == 10) or the
-    //    latched fault M14 (D100 bit14). Both are visible in the fast block.
-    if (s.faultCode() == kWidthTimeoutFaultCode || s.m14()) {
+    // 2. Explicit failure: a latch bit (M14 故障锁存 / M4 实时故障), or a fault
+    //    code that is not the width-timeout one. Both are visible in the fast
+    //    block.
+    //
+    //    The code is read as "some other fault is up" rather than "== 10"
+    //    (user decision 2026-09-24): the PLC program never writes 0 back into
+    //    D110, so once any code has been reported it stays there for the rest
+    //    of the session. Requiring exactly 10 meant a latched 11 (扫码失败)
+    //    fell through to the generic "调宽未到位" verdict below.
+    if (s.m14() || s.m4() || s.faultCode() != 0) {
+        const bool widthTimeout = s.faultCode() == kWidthTimeoutFaultCode;
         finishCommand(Command::AdjustWidth, false,
-                      s.faultCode() == kWidthTimeoutFaultCode
+                      widthTimeout
                           ? QStringLiteral("调宽失败: 调宽超时 (D110=10)")
-                          : QStringLiteral("调宽失败: 设备故障锁存 (M14)"));
+                          : QStringLiteral("调宽失败: %1")
+                                .arg(s.fault().meaning.isEmpty()
+                                         ? QStringLiteral("设备故障锁存")
+                                         : s.fault().meaning));
         return;
     }
     // 3. Anything else: the PLC stopped adjusting without reaching the target

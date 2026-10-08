@@ -17,13 +17,18 @@ namespace {
 //
 // The button-level stylesheets (theme QSS for the action bar, the estop danger
 // sheet) set a 17 px font that Qt's stylesheet style otherwise cascades into
-// the child label. A label-level rule keeps the compact size authoritative;
-// the reserved height is capped at kReasonMaximumLines so a pathological text
-// can never inflate the surrounding layout.
+// the child label. A label-level rule keeps the compact size authoritative.
+//
+// ONE line, always (user decision 2026-09-24: 按钮大小固定). The reserved
+// region used to grow with the wrapped reason (up to 3 lines), which made
+// every button and the whole rail re-flow whenever an interlock or permission
+// changed — the "高度一直来回跳" the operator reported. The full reason is
+// still the label's text and is still the tooltip; only the *displayed* region
+// is a fixed single line.
 constexpr int kReasonPixelSize = 12;
 constexpr int kReasonMinimumFontHeight = 12;
 constexpr int kReasonHorizontalMargin = 6;
-constexpr int kReasonMaximumLines = 3;
+constexpr int kReasonMaximumLines = 1;
 
 void applyReasonFont(QLabel *label)
 {
@@ -132,37 +137,34 @@ void PermissionButton::apply()
         clampReasonHeight();
     }
     setEnabled(m_allowed);
-    // The reserved reason height depends on the current reason text.
-    updateGeometry();
+    // Geometry is deliberately NOT recomputed here: the button's height no
+    // longer depends on the reason text (see sizeHint), so a reason change must
+    // not re-flow the surrounding layout.
 }
 
-QSize PermissionButton::withReasonHeight(const QSize &base) const
-{
-    if (m_reasonLabel == nullptr || m_reasonLabel->isHidden())
-        return base;
-    const int available = width() - 2 * kReasonHorizontalMargin;
-    const int reasonHeight = available > 0
-                                 ? m_reasonLabel->heightForWidth(available)
-                                 : m_reasonLabel->sizeHint().height();
-    QSize hint = base;
-    // The cap keeps the reserved region bounded even for pathological texts;
-    // the label itself is clamped to the same height.
-    hint.setHeight(hint.height() + qBound(0, reasonHeight, reasonHeightCap(m_reasonLabel)));
-    return hint;
-}
-
+// The reason is rendered INSIDE the control, on top of the base height:
+// QPushButton paints its own title at the top (text-align: top) and the label
+// occupies the layout's remaining space, so the control never needs to reserve
+// room beyond the caller's fixed minimum height. The former implementation
+// ADDED the wrapped reason height to the hints, which made sizeHint() — and
+// therefore every button in the rail — grow and shrink with the reason text
+// (user decision 2026-09-24: 手动自动等按钮大小固定, 现在高度会一直来回跳).
+//
+// The height therefore depends only on the caller's minimum, and while
+// disabled the label still carries the reason, stays un-hidden, keeps its
+// legible font, and sits inside the control below the painted title.
 QSize PermissionButton::sizeHint() const
 {
     QSize base = QPushButton::sizeHint();
     base.setHeight(qMax(base.height(), minimumHeight()));
-    return withReasonHeight(base);
+    return base;
 }
 
 QSize PermissionButton::minimumSizeHint() const
 {
     QSize base = QPushButton::minimumSizeHint();
     base.setHeight(qMax(base.height(), minimumHeight()));
-    return withReasonHeight(base);
+    return base;
 }
 
 } // namespace hlm

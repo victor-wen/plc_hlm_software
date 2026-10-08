@@ -56,6 +56,9 @@ public:
     QLineEdit *targetFilterEdit() const { return m_targetFilter; }
     QComboBox *resultFilterCombo() const { return m_resultFilter; }
     QPushButton *reloadButton() const { return m_reload; }
+    // 清空操作记录 (user decision 2026-09-24): emits requestClear, the
+    // composition root owns permission, confirmation and the follow-up record.
+    QPushButton *clearButton() const { return m_clear; }
     QLabel *statusLabel() const { return m_status; }
     QString statusText() const;
 
@@ -65,11 +68,20 @@ public slots:
     void setRecords(const QVector<AuditRecord> &records);
     void appendRecords(const QVector<AuditRecord> &records);
     void setLoadFailed(const QString &reason);
+    // Result of a 清空操作记录 request, fed by the composition root. A success
+    // is shown as its own status line until the follow-up reload lands; a
+    // failure keeps the reason visible, never silently.
+    void setClearResult(bool ok, const QString &detail);
 
 signals:
     // The app shell (Task 20) connects these to DatabaseService::listRecentAudit.
     void requestReload();
     void requestMore();
+    // 清空操作记录 (user decision 2026-09-24): an intent, not a command. The
+    // composition root checks the role, asks for confirmation, calls
+    // DatabaseService::clearAudit and then appends the audit record that
+    // documents the clear.
+    void requestClear();
 
 protected:
     // Page switch (QStackedWidget shows the page): request fresh data.
@@ -101,10 +113,13 @@ private:
     QLineEdit *m_targetFilter = nullptr;
     QComboBox *m_resultFilter = nullptr;
     QPushButton *m_reload = nullptr;
+    QPushButton *m_clear = nullptr;
     QLabel *m_status = nullptr;
     QElapsedTimer m_timer;
     qint64 m_lastReloadMs = 0;
     bool m_moreRequested = false;
+    // Latest 清空操作记录 outcome; shown until the next load replaces it.
+    QString m_clearResultText;
 };
 
 } // namespace hlm

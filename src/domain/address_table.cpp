@@ -163,7 +163,7 @@ AddressTable::AddressTable()
     m_defs.push_back(def(QStringLiteral("D"), 105, QStringLiteral("D105"),
         QStringLiteral("状态字5 M316~M331映射(扩展输入)"), AccessType::Read, ValueType::U16));
     m_defs.push_back(def(QStringLiteral("D"), 110, QStringLiteral("D110"),
-        QStringLiteral("故障代码"), AccessType::Read, ValueType::U16, 0, 0, 10));
+        QStringLiteral("故障代码"), AccessType::Read, ValueType::U16, 0, 0, 0));
     m_defs.push_back(def(QStringLiteral("D"), 120, QStringLiteral("D120"),
         QStringLiteral("当前步骤号"), AccessType::Read, ValueType::U16, 0, 0, 5));
     m_defs.push_back(def(QStringLiteral("D"), 122, QStringLiteral("D122"),

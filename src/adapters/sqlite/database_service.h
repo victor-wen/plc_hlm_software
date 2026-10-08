@@ -88,6 +88,10 @@ public slots:
     void listRecentAlarms(int limit);
     void appendAudit(const AuditRecord &record);
     void listRecentAudit(int limit, int offset = 0);
+    // Deletes every audit row (user decision 2026-09-24: 操作记录一栏要求有清空
+    // 功能). Reports through auditCleared; like every other repository result
+    // this is one correlated outcome, never silent.
+    void clearAudit();
     // Daily retention cleanup (spec §12): purges ended alarms and audit rows
     // older than 365 days. Active alarms are never deleted.
     void runRetentionCleanup();
@@ -114,6 +118,7 @@ signals:
     void hmiAlarmEnded(bool ok, const QString &error);
     void recentAlarmsLoaded(const QVector<AlarmEventRecord> &alarms);
     void auditAppended(bool ok, const QString &error);
+    void auditCleared(bool ok, const QString &error);
     void recentAuditLoaded(const QVector<AuditRecord> &records);
     void retentionCleanupDone(qint64 removedAlarms, qint64 removedAudit);
 

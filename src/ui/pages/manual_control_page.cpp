@@ -34,6 +34,25 @@ constexpr quint16 kM114 = 114; // 模拟前站进板信号
 constexpr quint16 kM115 = 115; // 模拟后站要板信号
 constexpr quint16 kM116 = 116; // 模拟前站要板请求信号
 constexpr quint16 kM117 = 117; // 模拟后站出站请求信号
+
+// One line of the compact bullet font: the height every disabled-reason slot
+// under a button keeps, whether or not it currently carries text.
+constexpr int kReasonSlotHeight = 20;
+
+// Fixes a reason slot to one line and keeps its space while it is empty
+// (user decision 2026-09-24: 手动控制一栏 要求和设备操作一样 按钮大小固定).
+// The labels used to be hidden outright when their gate opened, which collapsed
+// the whole column and re-flowed the page by a block's worth of pixels on every
+// interlock change. retainSizeWhenHidden keeps the column geometry still while
+// the label stays genuinely non-visible when allowed, which is what the
+// visible-reason tests require.
+void makeFixedReasonSlot(QLabel *label)
+{
+    label->setFixedHeight(kReasonSlotHeight);
+    QSizePolicy policy = label->sizePolicy();
+    policy.setRetainSizeWhenHidden(true);
+    label->setSizePolicy(policy);
+}
 } // namespace
 
 ManualControlPage::ManualControlPage(ShellModel &model, QWidget *parent)
@@ -86,7 +105,7 @@ void ManualControlPage::buildLayout()
     m_widthReason = new QLabel(manualBox);
     m_widthReason->setObjectName(QStringLiteral("widthJogReason"));
     m_widthReason->setWordWrap(true);
-    m_widthReason->setMinimumHeight(20);
+    makeFixedReasonSlot(m_widthReason);
     widthFwdColumn->addWidget(m_widthReason);
     manualRow->addLayout(widthFwdColumn);
 
@@ -99,7 +118,7 @@ void ManualControlPage::buildLayout()
     m_widthRevReason = new QLabel(manualBox);
     m_widthRevReason->setObjectName(QStringLiteral("widthJogReasonRev"));
     m_widthRevReason->setWordWrap(true);
-    m_widthRevReason->setMinimumHeight(20);
+    makeFixedReasonSlot(m_widthRevReason);
     widthRevColumn->addWidget(m_widthRevReason);
     manualRow->addLayout(widthRevColumn);
 
@@ -117,7 +136,7 @@ void ManualControlPage::buildLayout()
     m_jogReason = new QLabel(manualBox);
     m_jogReason->setObjectName(QStringLiteral("beltJogReason"));
     m_jogReason->setWordWrap(true);
-    m_jogReason->setMinimumHeight(20);
+    makeFixedReasonSlot(m_jogReason);
     jogColumn->addWidget(m_jogReason);
     manualRow->addLayout(jogColumn);
     m_stopGate = new PermissionButton(QStringLiteral("挡停伸出"), manualBox);

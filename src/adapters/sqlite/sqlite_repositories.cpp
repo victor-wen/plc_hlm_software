@@ -541,4 +541,17 @@ bool SqliteAuditRepository::purgeBefore(const QDateTime &cutoff, qint64 *removed
     return true;
 }
 
+bool SqliteAuditRepository::clear(qint64 *removed, QString *error)
+{
+    // No WHERE clause, by design (user decision 2026-09-24). The caller owns
+    // the permission check, the confirmation, and the follow-up audit record
+    // that proves the clear happened.
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral("DELETE FROM audit_log")))
+        return setError(error, q);
+    if (removed)
+        *removed = q.numRowsAffected();
+    return true;
+}
+
 } // namespace hlm

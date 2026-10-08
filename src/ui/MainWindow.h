@@ -50,6 +50,10 @@ public:
     int navItemMinimumHeight() const;
     // Page widget at a stack index (the scroll area's content, not the area).
     QWidget *pageWidget(int index) const;
+    // Stack index of a page widget, or -1 when it is not in the stack. The
+    // composition root routes to 用户与设置 through this instead of a bare
+    // index, so re-ordering the navigation cannot silently redirect it.
+    int pageIndexOf(const QWidget *page) const;
 
     QPushButton *estopButton() const;   // from ActionBar
     QPushButton *startButton() const;

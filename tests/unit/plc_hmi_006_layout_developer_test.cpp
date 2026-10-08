@@ -100,8 +100,9 @@ void PlcHmi006LayoutDeveloperTest::actionRailAndPagesStayReachableInTheCompactEn
     // viewport stays inside the window, so its content is reachable.
     auto *stack = w.findChild<QStackedWidget *>();
     QVERIFY(stack != nullptr);
-    // 8 pages: the 7 production pages + 扫码服务 (user decision 2026-09-23).
-    QCOMPARE(stack->count(), 8);
+    // 7 pages (user decision 2026-09-24: I/O 与诊断 removed, 扫码服务 moved
+    // ahead of 用户与设置).
+    QCOMPARE(stack->count(), 7);
     for (int i = 0; i < stack->count(); ++i) {
         auto *wrap = qobject_cast<QScrollArea *>(stack->widget(i));
         QVERIFY2(wrap != nullptr, qPrintable(QStringLiteral("page %1").arg(i)));

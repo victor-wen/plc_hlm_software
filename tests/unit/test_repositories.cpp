@@ -28,6 +28,7 @@ private slots:
     void settingsUpsert();
     void auditAppendAndQuery();
     void auditPurgeBefore();
+    void auditClearRemovesEveryRow();
     void alarmPurgeEndedBeforeKeepsActive();
 };
 
@@ -258,6 +259,50 @@ void RepositoryTest::auditPurgeBefore()
         QVERIFY(repo.purgeBefore(cutoff, &removed, &error));
         QCOMPARE(removed, qint64(1));
         QCOMPARE(repo.recent(10).size(), 1);
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("repo_test"));
+}
+
+// 清空操作记录 (user decision 2026-09-24): clear() removes every row regardless
+// of age, unlike purgeBefore which honours the retention window. The caller
+// writes the follow-up record that documents the clear.
+void RepositoryTest::auditClearRemovesEveryRow()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    {
+        QSqlDatabase db = hlm_test::createMigratedDb(dir, QStringLiteral("repo_test"));
+        QVERIFY(db.isOpen());
+        SqliteAuditRepository repo(db);
+
+        for (int i = 0; i < 3; ++i) {
+            AuditRecord a;
+            // One row is older than the retention window: clear() must remove
+            // it too, which is what distinguishes it from purgeBefore.
+            a.occurredAt = QDateTime::currentDateTimeUtc().addDays(i == 0 ? -400 : 0);
+            a.username = QStringLiteral("admin");
+            a.role = Role::Admin;
+            a.action = QStringLiteral("auth.login");
+            QString error;
+            QVERIFY(repo.append(a, &error));
+        }
+        QCOMPARE(repo.recent(10).size(), 3);
+
+        qint64 removed = 0;
+        QString error;
+        QVERIFY(repo.clear(&removed, &error));
+        QCOMPARE(removed, qint64(3));
+        QCOMPARE(repo.recent(10).size(), 0);
+
+        // Appending afterwards works: the table is empty, not broken.
+        AuditRecord after;
+        after.occurredAt = QDateTime::currentDateTimeUtc();
+        after.username = QStringLiteral("admin");
+        after.role = Role::Admin;
+        after.action = QStringLiteral("audit.clear");
+        QVERIFY(repo.append(after, &error));
+        QCOMPARE(repo.recent(10).size(), 1);
+        QCOMPARE(repo.recent(10).first().action, QStringLiteral("audit.clear"));
     }
     QSqlDatabase::removeDatabase(QStringLiteral("repo_test"));
 }

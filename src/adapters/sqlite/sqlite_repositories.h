@@ -82,6 +82,7 @@ public:
     QVector<AuditRecord> recent(int limit, int offset = 0) const override;
     bool purgeBefore(const QDateTime &cutoff, qint64 *removed = nullptr,
                      QString *error = nullptr) override;
+    bool clear(qint64 *removed = nullptr, QString *error = nullptr) override;
 
 private:
     QSqlDatabase m_db;
